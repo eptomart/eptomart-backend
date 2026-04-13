@@ -30,6 +30,9 @@ const bulkImportRoutes = require('./src/routes/bulkImport');
 
 const app = express();
 
+// ─── Trust Proxy (required for Render/Vercel/Nginx deployments) ──
+app.set('trust proxy', 1);
+
 // ─── Connect to Database ─────────────────────
 connectDB();
 

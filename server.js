@@ -56,7 +56,8 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: '*'
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-session-id', 'Accept', 'Origin', 'X-Requested-With'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range']
 }));
 
 // ─── General Middleware ───────────────────────

@@ -1,0 +1,100 @@
+// ============================================
+// ORDER MODEL
+// ============================================
+const mongoose = require('mongoose');
+
+const orderItemSchema = new mongoose.Schema({
+  product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+  name: String,
+  image: String,
+  price: { type: Number, required: true },
+  quantity: { type: Number, required: true, min: 1 },
+}, { _id: false });
+
+const orderSchema = new mongoose.Schema({
+  orderId: {
+    type: String,
+    unique: true,
+  },
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+  },
+  items: [orderItemSchema],
+  shippingAddress: {
+    fullName: { type: String, required: true },
+    phone: { type: String, required: true },
+    addressLine1: { type: String, required: true },
+    addressLine2: String,
+    city: { type: String, required: true },
+    state: { type: String, required: true },
+    pincode: { type: String, required: true },
+  },
+  pricing: {
+    subtotal: { type: Number, required: true },
+    discount: { type: Number, default: 0 },
+    shipping: { type: Number, default: 0 },
+    tax: { type: Number, default: 0 },
+    total: { type: Number, required: true },
+  },
+  paymentMethod: {
+    type: String,
+    enum: ['cod', 'upi', 'razorpay', 'cashfree', 'stripe'],
+    required: true,
+  },
+  paymentStatus: {
+    type: String,
+    enum: ['pending', 'paid', 'failed', 'refunded'],
+    default: 'pending',
+  },
+  paymentDetails: {
+    transactionId: String,
+    gatewayOrderId: String,
+    paidAt: Date,
+    upiRef: String,
+  },
+  orderStatus: {
+    type: String,
+    enum: ['placed', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'returned'],
+    default: 'placed',
+  },
+  statusHistory: [{
+    status: String,
+    timestamp: { type: Date, default: Date.now },
+    note: String,
+    updatedBy: String,
+  }],
+  trackingNumber: String,
+  deliveryPartner: String,
+  estimatedDelivery: Date,
+  notes: String, // Customer notes
+  adminNotes: String, // Internal notes
+}, {
+  timestamps: true,
+});
+
+// ─── Auto-generate Order ID ───────────────────
+orderSchema.pre('save', async function (next) {
+  if (!this.orderId) {
+    const date = new Date();
+    const prefix = 'EPT';
+    const timestamp = date.getTime().toString().slice(-8);
+    this.orderId = `${prefix}${timestamp}`;
+  }
+
+  // Add status to history when it changes
+  if (this.isModified('orderStatus')) {
+    this.statusHistory.push({ status: this.orderStatus });
+  }
+
+  next();
+});
+
+orderSchema.index({ user: 1, createdAt: -1 });
+orderSchema.index({ orderId: 1 });
+orderSchema.index({ orderStatus: 1 });
+orderSchema.index({ paymentStatus: 1 });
+orderSchema.index({ createdAt: -1 });
+
+module.exports = mongoose.model('Order', orderSchema);

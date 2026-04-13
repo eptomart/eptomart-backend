@@ -6,6 +6,7 @@ const Otp = require('../models/Otp');
 const { generateOtp, parseUserAgent, getClientIp } = require('../utils/generateOtp');
 const { sendTokenResponse } = require('../utils/generateToken');
 const { sendOtpEmail } = require('../utils/sendEmail');
+const { sendOtpSms } = require('../utils/sendSMS');
 
 /**
  * @route   POST /api/auth/send-otp
@@ -50,8 +51,12 @@ const sendOtp = async (req, res) => {
       return res.status(500).json({ success: false, message: 'Failed to send OTP email. Try again.' });
     }
   }
-  // For phone: integrate SMS API here (e.g. Twilio, Fast2SMS)
-  // if (type === 'phone') { await sendSms(contact, code); }
+  if (type === 'phone') {
+    const result = await sendOtpSms(contact, code);
+    if (!result.success) {
+      return res.status(500).json({ success: false, message: 'Failed to send OTP SMS. Try again.' });
+    }
+  }
 
   // In development, return OTP in response for testing
   const devData = process.env.NODE_ENV === 'development' ? { otp: code } : {};

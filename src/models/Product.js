@@ -81,6 +81,10 @@ const productSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  codAvailable: {
+    type: Boolean,
+    default: true,
+  },
   reviews: [reviewSchema],
   ratings: {
     average: { type: Number, default: 0 },

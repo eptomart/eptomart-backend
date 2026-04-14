@@ -229,4 +229,67 @@ const logout = (req, res) => {
   res.json({ success: true, message: 'Logged out successfully' });
 };
 
-module.exports = { sendOtp, verifyOtp, register, getMe, updateProfile, logout };
+/**
+ * @route   POST /api/auth/firebase-phone-verify
+ * @desc    Verify Firebase Phone Auth ID token, return our JWT
+ * @access  Public
+ */
+const verifyFirebasePhone = async (req, res) => {
+  const { idToken, name } = req.body;
+
+  if (!idToken) {
+    return res.status(400).json({ success: false, message: 'Firebase ID token is required' });
+  }
+
+  const getFirebaseAdmin = require('../utils/firebaseAdmin');
+  const firebaseAdmin = getFirebaseAdmin();
+
+  if (!firebaseAdmin) {
+    return res.status(503).json({ success: false, message: 'Phone auth not configured on server' });
+  }
+
+  // Verify the Firebase ID token
+  const decoded = await firebaseAdmin.auth().verifyIdToken(idToken);
+
+  if (!decoded.phone_number) {
+    return res.status(400).json({ success: false, message: 'Token does not contain phone number' });
+  }
+
+  // Extract 10-digit Indian number from +91XXXXXXXXXX
+  const phone = decoded.phone_number.replace(/^\+91/, '');
+
+  // Find or create user
+  let user = await User.findOne({ phone });
+  let isNewUser = false;
+
+  if (!user) {
+    user = await User.create({
+      name: (name || 'User').trim(),
+      phone,
+      isVerified: true,
+      registrationIp: getClientIp(req),
+    });
+    isNewUser = true;
+  } else {
+    if (!user.isVerified) {
+      user.isVerified = true;
+      await user.save();
+    }
+  }
+
+  // Record login
+  const { browser, os, device } = parseUserAgent(req.headers['user-agent'] || '');
+  await User.findByIdAndUpdate(user._id, {
+    lastLogin: new Date(),
+    $push: {
+      loginHistory: {
+        $each: [{ ip: getClientIp(req), userAgent: (req.headers['user-agent'] || '').substring(0, 200), browser, os, device, timestamp: new Date() }],
+        $slice: -20,
+      }
+    }
+  });
+
+  sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!');
+};
+
+module.exports = { sendOtp, verifyOtp, register, getMe, updateProfile, logout, verifyFirebasePhone };

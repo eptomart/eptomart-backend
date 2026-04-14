@@ -1,17 +1,20 @@
 // ============================================
-// PAYMENT CONTROLLER — Phase 1 (COD + UPI)
-// Phase 2: Razorpay/Cashfree ready
+// PAYMENT CONTROLLER — COD + UPI + Razorpay
 // ============================================
 const Order = require('../models/Order');
+const Razorpay = require('razorpay');
+const crypto = require('crypto');
 
-/**
- * @route   POST /api/payment/initiate
- * @desc    Initiate payment (COD or UPI QR)
- * @access  Private
- */
+const getRazorpay = () => {
+  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return null;
+  return new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET,
+  });
+};
+
 const initiatePayment = async (req, res) => {
   const { orderId, method } = req.body;
-
   const order = await Order.findOne({ _id: orderId, user: req.user._id });
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
@@ -19,133 +22,87 @@ const initiatePayment = async (req, res) => {
     order.paymentMethod = 'cod';
     order.paymentStatus = 'pending';
     await order.save();
-
-    return res.json({
-      success: true,
-      message: 'Cash on Delivery confirmed',
-      paymentType: 'cod',
-      order: { orderId: order.orderId, total: order.pricing.total },
-    });
+    return res.json({ success: true, paymentType: 'cod', order: { orderId: order.orderId, total: order.pricing.total } });
   }
 
   if (method === 'upi') {
-    // Generate UPI payment link/QR
     const upiId = process.env.MERCHANT_UPI_ID || 'merchant@upi';
-    const amount = order.pricing.total;
-    const upiLink = `upi://pay?pa=${upiId}&pn=Eptomart&am=${amount}&cu=INR&tn=Order%20${order.orderId}`;
-
-    return res.json({
-      success: true,
-      message: 'Scan QR code or use UPI link to pay',
-      paymentType: 'upi',
-      upiLink,
-      upiId,
-      amount,
-      orderId: order.orderId,
-      instructions: 'After payment, enter your UPI transaction ID to confirm.',
-    });
+    const upiLink = `upi://pay?pa=${upiId}&pn=Eptomart&am=${order.pricing.total}&cu=INR&tn=Order%20${order.orderId}`;
+    return res.json({ success: true, paymentType: 'upi', upiLink, upiId, amount: order.pricing.total, orderId: order.orderId });
   }
 
   res.status(400).json({ success: false, message: 'Invalid payment method' });
 };
 
-/**
- * @route   POST /api/payment/confirm-upi
- * @desc    User submits UPI transaction reference
- * @access  Private
- */
 const confirmUpiPayment = async (req, res) => {
   const { orderId, upiRef } = req.body;
-
-  if (!upiRef) {
-    return res.status(400).json({ success: false, message: 'UPI Transaction ID is required' });
-  }
-
+  if (!upiRef) return res.status(400).json({ success: false, message: 'UPI Transaction ID is required' });
   const order = await Order.findOne({ _id: orderId, user: req.user._id });
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-  // Save UPI reference for admin to verify
   order.paymentDetails.upiRef = upiRef;
-  order.paymentStatus = 'pending'; // Admin will verify and change to 'paid'
+  order.paymentStatus = 'pending';
   order.orderStatus = 'confirmed';
   await order.save();
-
-  res.json({
-    success: true,
-    message: 'Payment reference submitted. Admin will verify within 1 hour.',
-    order: { orderId: order.orderId, upiRef },
-  });
+  res.json({ success: true, message: 'Payment reference submitted. Admin will verify within 1 hour.' });
 };
 
-/**
- * @route   POST /api/payment/admin-verify-upi/:orderId
- * @desc    Admin verifies UPI payment
- * @access  Admin
- */
 const adminVerifyUpi = async (req, res) => {
-  const { verified } = req.body;
   const order = await Order.findById(req.params.orderId);
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-  if (verified) {
+  if (req.body.verified) {
     order.paymentStatus = 'paid';
     order.paymentDetails.paidAt = new Date();
     order.orderStatus = 'processing';
   } else {
     order.paymentStatus = 'failed';
-    order.orderStatus = 'placed'; // Revert to allow retry
+    order.orderStatus = 'placed';
   }
-
   await order.save();
-  res.json({ success: true, message: verified ? 'Payment verified' : 'Payment rejected', order });
+  res.json({ success: true, order });
 };
 
-// ═══════════════════════════════════════════
-// PHASE 2: RAZORPAY INTEGRATION (READY)
-// Uncomment when you add RAZORPAY_KEY_ID and
-// RAZORPAY_KEY_SECRET to .env
-// ═══════════════════════════════════════════
-
-/*
-const Razorpay = require('razorpay');
-const crypto = require('crypto');
-
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
+// ════════════════ RAZORPAY ════════════════
 
 const createRazorpayOrder = async (req, res) => {
+  const razorpay = getRazorpay();
+  if (!razorpay) return res.status(503).json({ success: false, message: 'Razorpay not configured on server' });
+
   const { orderId } = req.body;
-  const order = await Order.findById(orderId);
+  const order = await Order.findOne({ _id: orderId, user: req.user._id });
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
-  const razorpayOrder = await razorpay.orders.create({
-    amount: order.pricing.total * 100, // in paise
+  const rzpOrder = await razorpay.orders.create({
+    amount: Math.round(order.pricing.total * 100),
     currency: 'INR',
     receipt: order.orderId,
-    notes: { orderId: order._id.toString() }
+    notes: { orderId: order._id.toString() },
   });
 
-  order.paymentDetails.gatewayOrderId = razorpayOrder.id;
+  order.paymentDetails = { ...order.paymentDetails, gatewayOrderId: rzpOrder.id };
+  order.paymentMethod = 'razorpay';
   await order.save();
 
   res.json({
     success: true,
-    razorpayOrderId: razorpayOrder.id,
-    amount: razorpayOrder.amount,
-    currency: razorpayOrder.currency,
+    razorpayOrderId: rzpOrder.id,
+    amount: rzpOrder.amount,
+    currency: rzpOrder.currency,
     keyId: process.env.RAZORPAY_KEY_ID,
+    orderId: order._id,
+    orderNumber: order.orderId,
   });
 };
 
 const verifyRazorpayPayment = async (req, res) => {
   const { razorpay_order_id, razorpay_payment_id, razorpay_signature, orderId } = req.body;
 
-  const body = razorpay_order_id + '|' + razorpay_payment_id;
+  if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    return res.status(400).json({ success: false, message: 'Missing payment details' });
+  }
+
   const expectedSignature = crypto
     .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-    .update(body)
+    .update(`${razorpay_order_id}|${razorpay_payment_id}`)
     .digest('hex');
 
   if (expectedSignature !== razorpay_signature) {
@@ -153,17 +110,35 @@ const verifyRazorpayPayment = async (req, res) => {
   }
 
   const order = await Order.findById(orderId);
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
   order.paymentStatus = 'paid';
-  order.paymentDetails = {
-    transactionId: razorpay_payment_id,
-    gatewayOrderId: razorpay_order_id,
-    paidAt: new Date(),
-  };
   order.orderStatus = 'confirmed';
+  order.paymentDetails = { transactionId: razorpay_payment_id, gatewayOrderId: razorpay_order_id, paidAt: new Date() };
   await order.save();
 
-  res.json({ success: true, message: 'Payment successful', order });
+  res.json({ success: true, message: 'Payment successful! Your order is confirmed.', orderId: order.orderId });
 };
-*/
 
-module.exports = { initiatePayment, confirmUpiPayment, adminVerifyUpi };
+const razorpayWebhook = async (req, res) => {
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  if (secret) {
+    const sig = req.headers['x-razorpay-signature'];
+    const expected = crypto.createHmac('sha256', secret).update(JSON.stringify(req.body)).digest('hex');
+    if (sig !== expected) return res.status(400).json({ error: 'Invalid signature' });
+  }
+  if (req.body.event === 'payment.captured') {
+    const payment = req.body.payload.payment.entity;
+    const order = await Order.findOne({ 'paymentDetails.gatewayOrderId': payment.order_id });
+    if (order && order.paymentStatus !== 'paid') {
+      order.paymentStatus = 'paid';
+      order.orderStatus = 'confirmed';
+      order.paymentDetails.transactionId = payment.id;
+      order.paymentDetails.paidAt = new Date();
+      await order.save();
+    }
+  }
+  res.status(200).json({ received: true });
+};
+
+module.exports = { initiatePayment, confirmUpiPayment, adminVerifyUpi, createRazorpayOrder, verifyRazorpayPayment, razorpayWebhook };

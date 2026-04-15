@@ -314,4 +314,29 @@ const verifyFirebasePhone = async (req, res) => {
   sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!');
 };
 
-module.exports = { sendOtp, verifyOtp, register, getMe, updateProfile, logout, verifyFirebasePhone };
+const addAddress = async (req, res) => {
+  const user = await User.findById(req.user._id);
+  const { label, fullName, phone, addressLine1, addressLine2, city, state, pincode, isDefault } = req.body;
+
+  if (isDefault) user.addresses.forEach(a => { a.isDefault = false; });
+
+  user.addresses.push({ label: label || 'Home', fullName, phone, addressLine1, addressLine2, city, state, pincode, isDefault: !!isDefault });
+  await user.save();
+  res.json({ success: true, addresses: user.addresses });
+};
+
+const deleteAddress = async (req, res) => {
+  const user = await User.findById(req.user._id);
+  user.addresses = user.addresses.filter(a => a._id.toString() !== req.params.addressId);
+  await user.save();
+  res.json({ success: true, addresses: user.addresses });
+};
+
+const setDefaultAddress = async (req, res) => {
+  const user = await User.findById(req.user._id);
+  user.addresses.forEach(a => { a.isDefault = a._id.toString() === req.params.addressId; });
+  await user.save();
+  res.json({ success: true, addresses: user.addresses });
+};
+
+module.exports = { sendOtp, verifyOtp, register, getMe, updateProfile, logout, verifyFirebasePhone, addAddress, deleteAddress, setDefaultAddress };

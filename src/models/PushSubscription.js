@@ -33,6 +33,6 @@ const pushSubscriptionSchema = new mongoose.Schema({
 });
 
 pushSubscriptionSchema.index({ user: 1 });
-pushSubscriptionSchema.index({ endpoint: 1 });
+// endpoint index created automatically via unique: true
 
 module.exports = mongoose.model('PushSubscription', pushSubscriptionSchema);

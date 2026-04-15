@@ -83,8 +83,7 @@ const userSchema = new mongoose.Schema({
 });
 
 // ─── Indexes for fast queries ─────────────────
-userSchema.index({ email: 1 });
-userSchema.index({ phone: 1 });
+// email and phone indexes created automatically via unique: true in schema
 userSchema.index({ role: 1 });
 userSchema.index({ createdAt: -1 });
 

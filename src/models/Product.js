@@ -177,7 +177,7 @@ productSchema.methods.updateRatings = function () {
 // ─── Indexes ─────────────────────────────────
 productSchema.index({ name: 'text', description: 'text', tags: 'text' });
 productSchema.index({ category: 1 });
-productSchema.index({ slug: 1 });
+// slug index created automatically via unique: true
 productSchema.index({ price: 1 });
 productSchema.index({ isActive: 1 });
 productSchema.index({ isFeatured: 1 });

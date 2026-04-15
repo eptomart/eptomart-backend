@@ -56,6 +56,6 @@ const sellerSchema = new mongoose.Schema({
 
 sellerSchema.index({ status: 1 });
 sellerSchema.index({ 'address.pincode': 1 });
-sellerSchema.index({ user: 1 }, { unique: true });
+// user index created automatically via unique: true in schema
 
 module.exports = mongoose.model('Seller', sellerSchema);

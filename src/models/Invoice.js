@@ -70,6 +70,6 @@ const invoiceSchema = new mongoose.Schema({
 
 invoiceSchema.index({ customer: 1, createdAt: -1 });
 invoiceSchema.index({ order: 1 });
-invoiceSchema.index({ invoiceNumber: 1 });
+// invoiceNumber index created automatically via unique: true
 
 module.exports = mongoose.model('Invoice', invoiceSchema);

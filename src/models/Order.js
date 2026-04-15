@@ -118,7 +118,7 @@ orderSchema.pre('save', async function (next) {
 });
 
 orderSchema.index({ user: 1, createdAt: -1 });
-orderSchema.index({ orderId: 1 });
+// orderId index created automatically via unique: true
 orderSchema.index({ orderStatus: 1 });
 orderSchema.index({ paymentStatus: 1 });
 orderSchema.index({ createdAt: -1 });

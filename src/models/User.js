@@ -54,9 +54,10 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['user', 'admin'],
+    enum: ['user', 'seller', 'admin'],
     default: 'user',
   },
+  sellerProfile: { type: mongoose.Schema.Types.ObjectId, ref: 'Seller' },
   isVerified: {
     type: Boolean,
     default: false,

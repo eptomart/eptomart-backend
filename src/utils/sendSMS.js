@@ -1,60 +1,40 @@
 // ============================================
-// SMS UTILITY
-// Free Indian SMS APIs:
-//   - Fast2SMS (https://fast2sms.com) — 100 free credits
-//   - TextLocal (https://textlocal.in)
-//   - MSG91 (https://msg91.com)
+// SMS UTILITY — 2Factor.in (Indian OTP API)
+// Sign up free at: https://2factor.in
 // ============================================
 const https = require('https');
 
 /**
- * Send SMS via Fast2SMS (Free Indian API)
- * Sign up at: https://fast2sms.com → API → DLT Route
+ * Send OTP via 2Factor.in (dedicated Indian OTP service)
  */
-const sendSmsViaFast2SMS = async (phone, message) => {
-  const apiKey = process.env.FAST2SMS_API_KEY;
+const sendSmsVia2Factor = async (phone, otp) => {
+  const apiKey = process.env.TWOFACTOR_API_KEY || process.env.FAST2SMS_API_KEY;
 
   if (!apiKey) {
-    console.warn('⚠️ FAST2SMS_API_KEY not set. SMS not sent.');
-    return { success: false, error: 'API key not configured' };
+    console.warn('⚠️ SMS API key not set (TWOFACTOR_API_KEY). SMS not sent.');
+    return { success: false, error: 'SMS API key not configured' };
   }
 
+  // 2Factor OTP API — sends via their default OTP template
+  const url = `https://2factor.in/API/V1/${apiKey}/SMS/${phone}/${otp}/AUTOGEN`;
+
   return new Promise((resolve) => {
-    const postData = JSON.stringify({
-      route: 'q',
-      message: message,
-      language: 'english',
-      flash: 0,
-      numbers: phone,
-    });
-
-    const options = {
-      hostname: 'www.fast2sms.com',
-      path: '/dev/bulkV2',
-      method: 'POST',
-      headers: {
-        'authorization': apiKey,
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(postData),
-      },
-    };
-
-    const req = https.request(options, (res) => {
+    https.get(url, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
-          resolve({ success: parsed.return === true, data: parsed });
+          console.log('2Factor SMS response:', parsed);
+          resolve({ success: parsed.Status === 'Success', data: parsed });
         } catch {
           resolve({ success: false, error: 'Parse error' });
         }
       });
+    }).on('error', (err) => {
+      console.error('SMS send error:', err.message);
+      resolve({ success: false, error: err.message });
     });
-
-    req.on('error', (err) => resolve({ success: false, error: err.message }));
-    req.write(postData);
-    req.end();
   });
 };
 
@@ -62,35 +42,24 @@ const sendSmsViaFast2SMS = async (phone, message) => {
  * Send OTP via SMS
  */
 const sendOtpSms = async (phone, otp) => {
-  // Format phone for India
-  const formattedPhone = phone.startsWith('91') ? phone : `91${phone}`;
-
-  const message = `${otp} is your Eptomart login OTP. Valid for ${process.env.OTP_EXPIRY_MINUTES || 10} minutes. DO NOT share with anyone. - Team Eptomart`;
-
-  return sendSmsViaFast2SMS(phone, message);
+  // Strip country code if present, use 10-digit number
+  const cleanPhone = phone.replace(/^(\+91|91)/, '').trim();
+  return sendSmsVia2Factor(cleanPhone, otp);
 };
 
 /**
  * Send order confirmation SMS
  */
 const sendOrderSms = async (phone, orderId, total) => {
-  const message = `Your Eptomart order #${orderId} is confirmed! Total: Rs.${total}. Track at eptomart.com/orders - Team Eptomart`;
-  return sendSmsViaFast2SMS(phone, message);
+  const otp = `Order #${orderId} confirmed Rs.${total}`;
+  return sendSmsVia2Factor(phone, otp);
 };
 
 /**
  * Send order status update SMS
  */
 const sendOrderStatusSms = async (phone, orderId, status) => {
-  const messages = {
-    confirmed: `Order #${orderId} confirmed! We're preparing it. - Eptomart`,
-    shipped: `Order #${orderId} is on its way! Track at eptomart.com/orders - Eptomart`,
-    delivered: `Order #${orderId} delivered! Hope you love it. Rate us on eptomart.com - Eptomart`,
-    cancelled: `Order #${orderId} has been cancelled. Refund (if any) in 3-5 days. - Eptomart`,
-  };
-
-  const message = messages[status] || `Your order #${orderId} status: ${status}. - Eptomart`;
-  return sendSmsViaFast2SMS(phone, message);
+  return sendSmsVia2Factor(phone, `${orderId} ${status}`);
 };
 
 module.exports = { sendOtpSms, sendOrderSms, sendOrderStatusSms };

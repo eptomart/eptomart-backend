@@ -1,0 +1,187 @@
+const User   = require('../models/User');
+const Seller = require('../models/Seller');
+const { geocode } = require('../utils/deliveryEstimator');
+const { sendOtpEmail } = require('../utils/sendEmail');
+
+// ── Admin: list all sellers ──────────────────────────────
+const listSellers = async (req, res) => {
+  const { status, search, page = 1, limit = 20 } = req.query;
+  const filter = {};
+  if (status) filter.status = status;
+  if (search) {
+    filter.$or = [
+      { businessName: { $regex: search, $options: 'i' } },
+      { 'contact.email': { $regex: search, $options: 'i' } },
+      { 'contact.phone': { $regex: search, $options: 'i' } },
+    ];
+  }
+
+  const [sellers, total] = await Promise.all([
+    Seller.find(filter)
+      .populate('user', 'name email phone role isActive')
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(Number(limit))
+      .lean(),
+    Seller.countDocuments(filter),
+  ]);
+
+  res.json({ success: true, sellers, total, page: Number(page), pages: Math.ceil(total / limit) });
+};
+
+// ── Admin: create seller + user account ─────────────────
+const createSeller = async (req, res) => {
+  const { businessName, email, phone, address, gstNumber, panNumber, notes } = req.body;
+
+  if (!businessName || !address?.pincode || (!email && !phone)) {
+    return res.status(400).json({ success: false, message: 'businessName, address.pincode, and email or phone required' });
+  }
+
+  // Create user account with seller role
+  const tempPassword = Math.random().toString(36).slice(-8) + 'A1!';
+  const user = await User.create({
+    name:      businessName,
+    email:     email || undefined,
+    phone:     phone || undefined,
+    role:      'seller',
+    isVerified: true,
+    password:  tempPassword,
+  });
+
+  // Geocode seller location
+  const coords = await geocode(address.pincode);
+
+  const seller = await Seller.create({
+    user:         user._id,
+    businessName,
+    contact:      { email, phone },
+    address: {
+      ...address,
+      lat: coords?.lat,
+      lng: coords?.lng,
+      geocodedAt: coords ? new Date() : undefined,
+    },
+    gstNumber:    gstNumber || undefined,
+    panNumber:    panNumber || undefined,
+    notes:        notes || undefined,
+    status:       'inactive',
+    createdBy:    req.user._id,
+  });
+
+  // Link seller profile to user
+  await User.findByIdAndUpdate(user._id, { sellerProfile: seller._id });
+
+  // Notify seller by email if email provided
+  if (email) {
+    await sendOtpEmail(email, null, 'seller_welcome', {
+      businessName,
+      loginEmail: email,
+      tempPassword,
+    }).catch(() => {});
+  }
+
+  res.status(201).json({ success: true, seller, user: { _id: user._id, name: user.name, email: user.email, phone: user.phone } });
+};
+
+// ── Admin: get seller detail ─────────────────────────────
+const getSeller = async (req, res) => {
+  const seller = await Seller.findById(req.params.id).populate('user', 'name email phone isActive createdAt').lean();
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+  res.json({ success: true, seller });
+};
+
+// ── Admin: update seller ─────────────────────────────────
+const updateSeller = async (req, res) => {
+  const seller = await Seller.findById(req.params.id);
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+  const allowed = ['businessName','displayName','description','contact','address','gstNumber','panNumber','bankDetails','notes'];
+  allowed.forEach(k => { if (req.body[k] !== undefined) seller[k] = req.body[k]; });
+
+  // Re-geocode if pincode changed
+  if (req.body.address?.pincode && req.body.address.pincode !== seller.address.pincode) {
+    const coords = await geocode(req.body.address.pincode);
+    if (coords) { seller.address.lat = coords.lat; seller.address.lng = coords.lng; seller.address.geocodedAt = new Date(); }
+  }
+
+  await seller.save();
+  res.json({ success: true, seller });
+};
+
+// ── Admin: change seller status ──────────────────────────
+const setSellerStatus = async (req, res) => {
+  const { status } = req.body;
+  if (!['active', 'inactive', 'suspended'].includes(status)) {
+    return res.status(400).json({ success: false, message: 'Invalid status' });
+  }
+
+  const seller = await Seller.findById(req.params.id);
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+  seller.status = status;
+  if (status === 'active' && !seller.activatedAt) seller.activatedAt = new Date();
+  if (status === 'suspended') seller.suspendedAt = new Date();
+  await seller.save();
+
+  // Also activate/deactivate user account
+  await User.findByIdAndUpdate(seller.user, { isActive: status === 'active' });
+
+  res.json({ success: true, seller });
+};
+
+// ── Admin: delete seller (soft) ──────────────────────────
+const deleteSeller = async (req, res) => {
+  const seller = await Seller.findById(req.params.id);
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+  seller.status = 'inactive';
+  await seller.save();
+  await User.findByIdAndUpdate(seller.user, { isActive: false });
+  res.json({ success: true, message: 'Seller deactivated' });
+};
+
+// ── Seller: get own profile ──────────────────────────────
+const getMyProfile = async (req, res) => {
+  const seller = await Seller.findOne({ user: req.user._id }).populate('user', 'name email phone').lean();
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller profile not found' });
+  res.json({ success: true, seller });
+};
+
+// ── Seller: update own profile ───────────────────────────
+const updateMyProfile = async (req, res) => {
+  const seller = await Seller.findOne({ user: req.user._id });
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller profile not found' });
+
+  const allowed = ['displayName', 'description', 'contact', 'bankDetails'];
+  allowed.forEach(k => { if (req.body[k] !== undefined) seller[k] = req.body[k]; });
+  await seller.save();
+  res.json({ success: true, seller });
+};
+
+// ── Seller: stats ────────────────────────────────────────
+const getSellerStats = async (req, res) => {
+  const sellerId = req.params.id || req.seller?._id;
+  const seller   = await Seller.findById(sellerId).lean();
+  if (!seller) return res.status(404).json({ success: false, message: 'Not found' });
+
+  const Product = require('../models/Product');
+  const Order   = require('../models/Order');
+
+  const [productStats, orderStats] = await Promise.all([
+    Product.aggregate([
+      { $match: { seller: seller._id } },
+      { $group: { _id: '$approvalStatus', count: { $sum: 1 } } },
+    ]),
+    Order.aggregate([
+      { $match: { 'sellerBreakdown.seller': seller._id } },
+      { $group: { _id: null, totalOrders: { $sum: 1 }, totalRevenue: { $sum: '$pricing.total' } } },
+    ]),
+  ]);
+
+  const products = {};
+  productStats.forEach(s => { products[s._id] = s.count; });
+  const orders = orderStats[0] || { totalOrders: 0, totalRevenue: 0 };
+
+  res.json({ success: true, stats: { products, orders } });
+};
+
+module.exports = { listSellers, createSeller, getSeller, updateSeller, setSellerStatus, deleteSeller, getMyProfile, updateMyProfile, getSellerStats };

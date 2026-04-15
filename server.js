@@ -27,6 +27,12 @@ const categoryRoutes = require('./src/routes/categories');
 const notificationRoutes = require('./src/routes/notifications');
 const wishlistRoutes = require('./src/routes/wishlist');
 const bulkImportRoutes = require('./src/routes/bulkImport');
+const sellerRoutes   = require('./src/routes/sellers');
+const approvalRoutes = require('./src/routes/approvals');
+const deliveryRoutes = require('./src/routes/delivery');
+const invoiceRoutes  = require('./src/routes/invoices');
+const expenseRoutes  = require('./src/routes/expenses');
+const cartRoutes     = require('./src/routes/cart');
 
 const app = express();
 
@@ -77,6 +83,12 @@ app.use('/api/categories', categoryRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/bulk', bulkImportRoutes);
+app.use('/api/sellers',   sellerRoutes);
+app.use('/api/approvals', approvalRoutes);
+app.use('/api/delivery',  deliveryRoutes);
+app.use('/api/invoices',  invoiceRoutes);
+app.use('/api/expenses',  expenseRoutes);
+app.use('/api/cart',      cartRoutes);
 
 // ─── Health Check ────────────────────────────
 app.get('/api/health', (req, res) => {

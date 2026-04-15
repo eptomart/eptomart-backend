@@ -85,6 +85,40 @@ const productSchema = new mongoose.Schema({
     type: Boolean,
     default: true,
   },
+
+  // Multi-vendor fields
+  seller:        { type: mongoose.Schema.Types.ObjectId, ref: 'Seller' },
+  masterProduct: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+
+  // GST
+  gstRate:         { type: Number, default: 18, enum: [0, 5, 12, 18, 28] },
+  hsnCode:         String,
+  priceIncludesGst: { type: Boolean, default: true },
+
+  // Location (for delivery estimation)
+  location: {
+    city:    String,
+    state:   String,
+    pincode: String,
+    lat:     Number,
+    lng:     Number,
+  },
+
+  // Approval workflow
+  approvalStatus: {
+    type: String,
+    enum: ['draft', 'pending', 'approved', 'rejected', 'correction_needed'],
+    default: 'approved',
+  },
+  approvalNote:  String,
+  approvedBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  approvedAt:    Date,
+  submittedAt:   Date,
+
+  // Insights
+  likeCount:        { type: Number, default: 0 },
+  repeatBuyerCount: { type: Number, default: 0 },
+
   reviews: [reviewSchema],
   ratings: {
     average: { type: Number, default: 0 },

@@ -68,8 +68,34 @@ const orderSchema = new mongoose.Schema({
   trackingNumber: String,
   deliveryPartner: String,
   estimatedDelivery: Date,
-  notes: String, // Customer notes
-  adminNotes: String, // Internal notes
+  notes: String,
+  adminNotes: String,
+
+  // Invoice reference
+  invoice: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
+
+  // GST breakdown
+  gstBreakdown: {
+    subtotalExGst: Number,
+    cgstTotal:     Number,
+    sgstTotal:     Number,
+    igstTotal:     Number,
+    gstTotal:      Number,
+    gstType:       { type: String, enum: ['intra', 'inter'] },
+    sellerState:   String,
+    customerState: String,
+  },
+
+  // Seller breakdown for multi-vendor
+  sellerBreakdown: [{
+    seller:      { type: mongoose.Schema.Types.ObjectId, ref: 'Seller' },
+    sellerName:  String,
+    subtotal:    Number,
+    gstTotal:    Number,
+    total:       Number,
+    status:      { type: String, enum: ['pending','processing','shipped','delivered'], default: 'pending' },
+    trackingId:  String,
+  }],
 }, {
   timestamps: true,
 });

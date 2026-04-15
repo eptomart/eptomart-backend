@@ -13,11 +13,32 @@ const { sendOtpSms } = require('../utils/sendSMS');
  * @desc    Send OTP to email or phone
  * @access  Public
  */
+// Auto-detect contact type from value
+const detectContactType = (contact) => {
+  if (!contact) return null;
+  const c = contact.trim();
+  if (/^\S+@\S+\.\S+$/.test(c)) return 'email';
+  if (/^[6-9]\d{9}$/.test(c))   return 'phone';
+  return null;
+};
+
 const sendOtp = async (req, res) => {
-  const { contact, type = 'email', purpose = 'login' } = req.body;
+  const { contact, purpose = 'login' } = req.body;
+  // Accept explicit type OR auto-detect
+  let type = req.body.type;
 
   if (!contact) {
     return res.status(400).json({ success: false, message: 'Email or phone is required' });
+  }
+
+  if (!type) {
+    type = detectContactType(contact.trim());
+    if (!type) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid contact. Enter a valid email or 10-digit phone number.',
+      });
+    }
   }
 
   // Validate email format
@@ -64,6 +85,7 @@ const sendOtp = async (req, res) => {
   res.json({
     success: true,
     message: `OTP sent to ${type === 'email' ? contact : `XXXXX${contact.slice(-5)}`}`,
+    detectedType: type,
     expiresIn: `${process.env.OTP_EXPIRY_MINUTES || 10} minutes`,
     ...devData,
   });

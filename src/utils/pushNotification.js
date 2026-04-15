@@ -14,13 +14,17 @@
 let webPush;
 try {
   webPush = require('web-push');
-  webPush.setVapidDetails(
-    process.env.VAPID_EMAIL || 'mailto:admin@eptomart.com',
-    process.env.VAPID_PUBLIC_KEY || '',
-    process.env.VAPID_PRIVATE_KEY || ''
-  );
-} catch {
-  console.warn('⚠️ web-push not installed. Run: npm install web-push');
+  if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+    webPush.setVapidDetails(
+      process.env.VAPID_EMAIL || 'mailto:admin@eptomart.com',
+      process.env.VAPID_PUBLIC_KEY,
+      process.env.VAPID_PRIVATE_KEY
+    );
+  } else {
+    console.log('ℹ️  Push notifications disabled — VAPID keys not set (optional feature)');
+  }
+} catch (err) {
+  console.warn('⚠️ web-push error:', err.message);
 }
 
 const PushSubscription = require('../models/PushSubscription');

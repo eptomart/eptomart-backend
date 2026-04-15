@@ -39,8 +39,40 @@ const app = express();
 // ─── Trust Proxy (required for Render/Vercel/Nginx deployments) ──
 app.set('trust proxy', 1);
 
-// ─── Connect to Database ─────────────────────
-connectDB();
+// ─── Connect to Database + Auto-seed ─────────
+const autoSeed = async () => {
+  try {
+    const ExpenseCategory = require('./src/models/ExpenseCategory');
+    const count = await ExpenseCategory.countDocuments();
+    if (count === 0) {
+      const defaults = [
+        { name: 'Client Visit',        icon: '🤝', isDefault: true },
+        { name: 'Website Maintenance', icon: '💻', isDefault: true },
+        { name: 'Office Supplies',     icon: '📦', isDefault: true },
+        { name: 'Marketing',           icon: '📢', isDefault: true },
+        { name: 'Logistics',           icon: '🚚', isDefault: true },
+        { name: 'Miscellaneous',       icon: '💰', isDefault: true },
+        { name: 'Rent & Utilities',    icon: '🏢', isDefault: true },
+        { name: 'Travel',              icon: '✈️',  isDefault: true },
+      ];
+      await ExpenseCategory.insertMany(defaults);
+      console.log('🌱 Expense categories seeded');
+    }
+    // Mark all legacy products without approvalStatus as approved
+    const Product = require('./src/models/Product');
+    const updated = await Product.updateMany(
+      { approvalStatus: { $exists: false } },
+      { $set: { approvalStatus: 'approved', gstRate: 18, priceIncludesGst: true } }
+    );
+    if (updated.modifiedCount > 0) {
+      console.log(`🌱 Migrated ${updated.modifiedCount} legacy products → approvalStatus: approved`);
+    }
+  } catch (err) {
+    console.error('⚠️ Auto-seed error (non-fatal):', err.message);
+  }
+};
+
+connectDB().then(autoSeed).catch(() => {});
 
 // ─── Security Middleware ──────────────────────
 app.use(helmet({

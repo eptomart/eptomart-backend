@@ -63,7 +63,7 @@ categorySchema.virtual('subcategories', {
   foreignField: 'parentCategory',
 });
 
-categorySchema.index({ slug: 1 });
+// slug index created automatically via unique: true
 categorySchema.index({ parentCategory: 1 });
 
 module.exports = mongoose.model('Category', categorySchema);

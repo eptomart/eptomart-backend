@@ -2,6 +2,19 @@ const User   = require('../models/User');
 const Seller = require('../models/Seller');
 const { geocode } = require('../utils/deliveryEstimator');
 const { sendOtpEmail } = require('../utils/sendEmail');
+const { sendOtpSms }   = require('../utils/sendSMS');
+
+// Send plain welcome SMS (not OTP)
+const sendWelcomeSms = async (phone, message) => {
+  const apiKey = process.env.TWOFACTOR_API_KEY || process.env.FAST2SMS_API_KEY;
+  if (!apiKey) return;
+  const https = require('https');
+  const encoded = encodeURIComponent(message);
+  const url = `https://2factor.in/API/V1/${apiKey}/ADDON_SERVICES/SEND/TSMS?From=EPTOMT&To=${phone}&Msg=${encoded}`;
+  return new Promise(resolve => {
+    https.get(url, (res) => { res.resume(); resolve(); }).on('error', () => resolve());
+  });
+};
 
 // ── Admin: list all sellers ──────────────────────────────
 const listSellers = async (req, res) => {
@@ -71,13 +84,17 @@ const createSeller = async (req, res) => {
   // Link seller profile to user
   await User.findByIdAndUpdate(user._id, { sellerProfile: seller._id });
 
-  // Notify seller by email if email provided
+  // Notify seller by email
   if (email) {
     await sendOtpEmail(email, null, 'seller_welcome', {
-      businessName,
-      loginEmail: email,
-      tempPassword,
+      businessName, loginEmail: email, tempPassword,
     }).catch(() => {});
+  }
+
+  // Send SMS welcome to seller's phone
+  if (phone) {
+    const welcomeMsg = `Welcome to Eptomart! Your seller account for "${businessName}" is created. Login: ${email || phone} | Password: ${tempPassword} | Manage at eptomart.com/seller`;
+    await sendWelcomeSms(phone, welcomeMsg).catch(() => {});
   }
 
   res.status(201).json({ success: true, seller, user: { _id: user._id, name: user.name, email: user.email, phone: user.phone } });

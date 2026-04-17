@@ -32,19 +32,23 @@ const generateInvoicePDF = (invoice) => new Promise((resolve, reject) => {
   const ba = invoice.billingAddress || {};
   const sa = invoice.shippingAddress || ba;
 
+  // BILL TO: Name at top, address, phone at END
   doc.fontSize(9).font('Helvetica-Bold').fillColor('#333').text('BILL TO', 40, 118);
+  doc.font('Helvetica-Bold').fillColor('#333').text(ba.fullName || ba.name || '', 40, 130);
   doc.font('Helvetica').fillColor('#555')
-     .text(ba.name || '', 40, 130)
-     .text(ba.phone || '', 40, 141)
-     .text([ba.addressLine1, ba.city, ba.state, ba.pincode].filter(Boolean).join(', '), 40, 152, { width: 220 });
+     .text([ba.addressLine1, ba.addressLine2].filter(Boolean).join(', '), 40, 141, { width: 220 })
+     .text([ba.city, ba.state, ba.pincode].filter(Boolean).join(', '), 40, 152, { width: 220 })
+     .text(ba.phone || '', 40, 163);                        // ← phone at the end
 
+  // SHIP TO: same structure
   doc.fontSize(9).font('Helvetica-Bold').fillColor('#333').text('SHIP TO', 295, 118);
+  doc.font('Helvetica-Bold').fillColor('#333').text(sa.fullName || sa.name || '', 295, 130);
   doc.font('Helvetica').fillColor('#555')
-     .text(sa.name || '', 295, 130)
-     .text(sa.phone || '', 295, 141)
-     .text([sa.addressLine1, sa.city, sa.state, sa.pincode].filter(Boolean).join(', '), 295, 152, { width: 220 });
+     .text([sa.addressLine1, sa.addressLine2].filter(Boolean).join(', '), 295, 141, { width: 220 })
+     .text([sa.city, sa.state, sa.pincode].filter(Boolean).join(', '), 295, 152, { width: 220 })
+     .text(sa.phone || '', 295, 163);                       // ← phone at the end
 
-  const yAfterAddr = doc.y + 16;
+  const yAfterAddr = 180; // fixed Y after address block (name+addr+phone)
 
   // ── Items Table ────────────────────────────────────────
   const colX   = { item: 40, seller: 180, qty: 290, unit: 330, gst: 395, total: 460 };
@@ -109,8 +113,23 @@ const generateInvoicePDF = (invoice) => new Promise((resolve, reject) => {
 
   // ── Payment info ──────────────────────────────────────
   totY += 10;
+  const payMethod = (invoice.paymentMethod || '—').toUpperCase();
+  const rawStatus = invoice.order?.paymentStatus || invoice.paymentStatus || 'pending';
+  // COD and UPI orders awaiting delivery are "Payment Pending" — never show PAID for unconfirmed
+  const isCod = invoice.paymentMethod === 'cod';
+  const isDelivered = invoice.order?.orderStatus === 'delivered';
+  let payStatusLabel;
+  if (isCod && !isDelivered) {
+    payStatusLabel = 'PAYMENT PENDING (COD — collect on delivery)';
+  } else if (rawStatus === 'paid') {
+    payStatusLabel = 'PAID';
+  } else if (rawStatus === 'pending') {
+    payStatusLabel = 'PAYMENT PENDING';
+  } else {
+    payStatusLabel = rawStatus.toUpperCase();
+  }
   doc.fontSize(8).font('Helvetica').fillColor('#888')
-     .text(`Payment: ${invoice.paymentMethod || '—'}  |  Status: PAID`, 40, totY);
+     .text(`Payment Method: ${payMethod}  |  Status: ${payStatusLabel}`, 40, totY);
 
   // ── Footer ────────────────────────────────────────────
   doc.fontSize(7).fillColor('#aaa')

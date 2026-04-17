@@ -85,7 +85,13 @@ const getProduct = async (req, res) => {
  * @access  Admin
  */
 const createProduct = async (req, res) => {
-  const { name, description, shortDescription, price, discountPrice, stock, category, tags, brand, sku, isFeatured, metaTitle, metaDescription } = req.body;
+  const {
+    name, description, shortDescription, price, discountPrice, stock,
+    category, tags, brand, sku, isFeatured, metaTitle, metaDescription,
+    gstRate, hsnCode, codAvailable, seller, variants, instagramLink,
+    // Seller margin fields
+    platformMargin, sellerMargin,
+  } = req.body;
 
   // Handle uploaded images
   const images = req.files?.map((file, index) => ({
@@ -94,7 +100,13 @@ const createProduct = async (req, res) => {
     isDefault: index === 0,
   })) || [];
 
-  const product = await Product.create({
+  // Parse variants if sent as JSON string
+  let parsedVariants = [];
+  if (variants) {
+    parsedVariants = typeof variants === 'string' ? JSON.parse(variants) : variants;
+  }
+
+  const productData = {
     name,
     description,
     shortDescription,
@@ -107,9 +119,27 @@ const createProduct = async (req, res) => {
     brand,
     sku,
     isFeatured: isFeatured === 'true',
+    codAvailable: codAvailable !== 'false',
     metaTitle,
     metaDescription,
-  });
+    gstRate: gstRate ? Number(gstRate) : 18,
+    hsnCode,
+    variants: parsedVariants,
+  };
+
+  // Seller assignment: admin can assign to any seller
+  if (seller) productData.seller = seller;
+
+  // instagramLink — only superAdmin or admin can set
+  if (instagramLink && ['admin', 'superAdmin'].includes(req.user.role)) {
+    productData.instagramLink = instagramLink;
+  }
+
+  // Platform / seller margins (stored for pricing reference)
+  if (platformMargin !== undefined) productData.platformMargin = Number(platformMargin);
+  if (sellerMargin   !== undefined) productData.sellerMargin   = Number(sellerMargin);
+
+  const product = await Product.create(productData);
 
   res.status(201).json({ success: true, message: 'Product created successfully', product });
 };
@@ -139,6 +169,20 @@ const updateProduct = async (req, res) => {
   if (updates.tags && typeof updates.tags === 'string') {
     updates.tags = updates.tags.split(',').map(t => t.trim());
   }
+
+  // Parse variants if sent as JSON string
+  if (updates.variants && typeof updates.variants === 'string') {
+    updates.variants = JSON.parse(updates.variants);
+  }
+
+  // instagramLink — only superAdmin or admin can set/update
+  if ('instagramLink' in updates && !['admin', 'superAdmin'].includes(req.user.role)) {
+    delete updates.instagramLink;
+  }
+
+  // Numeric margin fields
+  if (updates.platformMargin !== undefined) updates.platformMargin = Number(updates.platformMargin);
+  if (updates.sellerMargin   !== undefined) updates.sellerMargin   = Number(updates.sellerMargin);
 
   product = await Product.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true });
 

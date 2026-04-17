@@ -54,7 +54,11 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['user', 'seller', 'admin'],
+    // superAdmin: full access, can create sellers/admins
+    // admin: can only view & confirm orders, coordinate with sellers
+    // seller: manages own products & orders
+    // user: regular customer
+    enum: ['user', 'seller', 'admin', 'superAdmin'],
     default: 'user',
   },
   sellerProfile: { type: mongoose.Schema.Types.ObjectId, ref: 'Seller' },

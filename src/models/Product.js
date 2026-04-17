@@ -86,9 +86,34 @@ const productSchema = new mongoose.Schema({
     default: true,
   },
 
+  // Product variants (e.g. 500g, 1kg, 250ml)
+  variants: [{
+    label:    { type: String, required: true },   // e.g. "500g", "1L", "Pack of 3"
+    value:    { type: Number },                    // numeric value
+    unit:     { type: String, enum: ['g', 'kg', 'ml', 'l', 'pieces', 'pack', 'other'] },
+    price:    Number,                              // optional variant-specific price override
+    stock:    Number,                              // optional variant-specific stock
+    sku:      String,
+  }],
+
+  // Instagram link — settable by superAdmin/admin only
+  instagramLink: {
+    type: String,
+    match: [/^https?:\/\/(www\.)?instagram\.com\//, 'Must be a valid Instagram URL'],
+  },
+
   // Multi-vendor fields
   seller:        { type: mongoose.Schema.Types.ObjectId, ref: 'Seller' },
   masterProduct: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+
+  // Margin & Pricing
+  // platformMargin: Eptomart commission % (e.g., 10 means 10%)
+  // sellerMargin:   Seller's desired profit % on top of cost
+  platformMargin: { type: Number, min: 0, max: 100 },
+  sellerMargin:   { type: Number, min: 0, max: 100 },
+
+  // Shipping slab for this seller's product
+  freeShippingAbove: { type: Number, default: 499 }, // free if order total > this value
 
   // GST
   gstRate:         { type: Number, default: 18, enum: [0, 5, 12, 18, 28] },

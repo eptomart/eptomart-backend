@@ -4,16 +4,19 @@ const {
   getDashboard, getUsers, getUserLoginHistory,
   toggleUserStatus, getAllOrders, updateOrderStatus
 } = require('../controllers/adminController');
-const { protectAdmin } = require('../middleware/adminAuth');
+const { protectAdmin, protectSuperAdmin } = require('../middleware/adminAuth');
 
-// All admin routes are protected
-router.use(protectAdmin);
+// ── Routes accessible to ALL admins (admin + superAdmin) ──
+// Orders: regular admin can view and confirm orders
+router.get('/orders',            ...protectAdmin, getAllOrders);
+router.put('/orders/:id/status', ...protectAdmin, updateOrderStatus);
 
-router.get('/dashboard', getDashboard);
-router.get('/users', getUsers);
-router.get('/users/:id/login-history', getUserLoginHistory);
-router.put('/users/:id/status', toggleUserStatus);
-router.get('/orders', getAllOrders);
-router.put('/orders/:id/status', updateOrderStatus);
+// ── Routes restricted to superAdmin ONLY ──────────────────
+// Dashboard with analytics
+router.get('/dashboard',                   ...protectSuperAdmin, getDashboard);
+// User management
+router.get('/users',                       ...protectSuperAdmin, getUsers);
+router.get('/users/:id/login-history',     ...protectSuperAdmin, getUserLoginHistory);
+router.put('/users/:id/status',            ...protectSuperAdmin, toggleUserStatus);
 
 module.exports = router;

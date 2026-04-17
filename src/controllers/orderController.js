@@ -3,11 +3,39 @@ const Product = require('../models/Product');
 const Seller  = require('../models/Seller');
 const Invoice = require('../models/Invoice');
 const Cart    = require('../models/Cart');
-const { sendOrderConfirmation } = require('../utils/sendEmail');
+const { sendOrderConfirmation, sendOtpEmail } = require('../utils/sendEmail');
 const { calcOrderGst, extractBasePrice } = require('../utils/gstCalculator');
 const { generateInvoicePDF, uploadInvoicePDF } = require('../utils/generateInvoicePDF');
 const { generateInvoiceNumber } = require('../utils/invoiceNumber');
 const business = require('../../config/business');
+
+// ── Notify seller of new order (async, fire-and-forget) ──
+const notifySeller = async (order) => {
+  try {
+    // Group items by seller
+    const sellerMap = {};
+    for (const item of order.items) {
+      const product = await Product.findById(item.product).populate('seller', 'contact businessName').lean();
+      if (!product?.seller) continue;
+      const sid = product.seller._id.toString();
+      if (!sellerMap[sid]) sellerMap[sid] = { seller: product.seller, items: [] };
+      sellerMap[sid].items.push({ name: item.name, qty: item.quantity, price: item.price });
+    }
+    for (const { seller, items } of Object.values(sellerMap)) {
+      if (!seller?.contact?.email) continue;
+      const subject = `New Order #${order.orderId} — Action Required`;
+      const text = `Hello ${seller.businessName},\n\nYou have received a new order:\n` +
+        items.map(i => `  • ${i.name} × ${i.qty} — ₹${i.price * i.qty}`).join('\n') +
+        `\n\nTotal Items: ${items.length}\nOrder ID: ${order.orderId}` +
+        `\n\nPlease log in to your seller dashboard to confirm the order.\n\nhttps://eptomart.com/seller\n\n— Eptomart Team`;
+      await sendOtpEmail(seller.contact.email, null, 'seller_order_notification', {
+        subject, text, sellerName: seller.businessName, orderId: order.orderId, items,
+      }).catch(() => {});
+    }
+  } catch (err) {
+    console.error('[Order Notify Seller] Error:', err.message);
+  }
+};
 
 // ── POST /api/orders ──────────────────────────────────────
 const placeOrder = async (req, res) => {
@@ -88,7 +116,9 @@ const placeOrder = async (req, res) => {
   // Clear server-side cart
   await Cart.findOneAndUpdate({ user: req.user._id }, { items: [] });
 
-  // Generate invoice asynchronously (don't block response)
+  // Generate invoice:
+  // COD orders → invoice created but PDF not generated until delivery (payment_pending)
+  // Online payment → generate full PDF immediately
   let invoice = null;
   try {
     invoice = await createInvoice(order, req.user, gst, shipping);
@@ -97,10 +127,13 @@ const placeOrder = async (req, res) => {
     console.error('[Invoice] Failed to generate:', err.message);
   }
 
-  // Email confirmation
+  // Email confirmation to customer
   if (req.user.email) {
     sendOrderConfirmation(req.user.email, order).catch(() => {});
   }
+
+  // Notify seller(s) of new order (async, non-blocking)
+  notifySeller(order).catch(() => {});
 
   const populated = await Order.findById(order._id).populate('items.product', 'name images');
   res.status(201).json({

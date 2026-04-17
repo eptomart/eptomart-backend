@@ -52,6 +52,25 @@ const sellerSchema = new mongoose.Schema({
   createdBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   activatedAt: Date,
   suspendedAt: Date,
+
+  // Shipping configuration
+  shipping: {
+    freeAbove:      { type: Number, default: 499 },  // free shipping when order ≥ this (₹)
+    defaultCharge:  { type: Number, default: 49 },   // flat charge below threshold
+  },
+
+  // Commission & margin defaults for this seller
+  // (individual products can override these)
+  defaultPlatformMargin: { type: Number, default: 10, min: 0, max: 100 }, // % Eptomart takes
+  defaultSellerMargin:   { type: Number, default: 20, min: 0, max: 100 }, // % seller targets
+
+  // Payment settlement
+  settlement: {
+    status:       { type: String, enum: ['pending', 'processing', 'settled'], default: 'pending' },
+    lastSettledAt: Date,
+    pendingAmount: { type: Number, default: 0 },   // amount due to seller
+    heldAmount:    { type: Number, default: 0 },   // on-hold (COD not yet delivered)
+  },
 }, { timestamps: true });
 
 sellerSchema.index({ status: 1 });

@@ -1,6 +1,16 @@
 const Expense         = require('../models/Expense');
 const ExpenseCategory = require('../models/ExpenseCategory');
 const { generateExpenseExcel } = require('../utils/generateExcel');
+const cloudinary      = require('cloudinary').v2;
+
+// Upload receipt buffer to Cloudinary
+const uploadReceiptToCloudinary = (fileBuffer, mimeType) => new Promise((resolve, reject) => {
+  const stream = cloudinary.uploader.upload_stream(
+    { folder: 'eptomart/expense-receipts', resource_type: 'auto' },
+    (err, result) => { if (err) reject(err); else resolve(result.secure_url); }
+  );
+  stream.end(fileBuffer);
+});
 
 // ── Categories CRUD ──────────────────────────────────────
 const listCategories = async (req, res) => {
@@ -62,10 +72,22 @@ const createExpense = async (req, res) => {
   if (!category || !title || !amount) {
     return res.status(400).json({ success: false, message: 'category, title, amount required' });
   }
+
+  const receipts = [];
+  // Handle receipt file upload if provided
+  if (req.file) {
+    try {
+      const url = await uploadReceiptToCloudinary(req.file.buffer, req.file.mimetype);
+      receipts.push(url);
+    } catch (err) {
+      console.error('[Expense Receipt Upload]', err.message);
+    }
+  }
+
   const expense = await Expense.create({
     category, title, description, amount: Number(amount),
     date: date ? new Date(date) : new Date(),
-    notes, createdBy: req.user._id,
+    notes, receipts, createdBy: req.user._id,
   });
   const populated = await expense.populate(['category', 'createdBy']);
   res.status(201).json({ success: true, expense: populated });
@@ -78,6 +100,17 @@ const updateExpense = async (req, res) => {
   ['category','title','description','amount','date','notes'].forEach(k => {
     if (req.body[k] !== undefined) expense[k] = req.body[k];
   });
+
+  // Handle new receipt file upload
+  if (req.file) {
+    try {
+      const url = await uploadReceiptToCloudinary(req.file.buffer, req.file.mimetype);
+      expense.receipts = [...(expense.receipts || []), url];
+    } catch (err) {
+      console.error('[Expense Receipt Upload]', err.message);
+    }
+  }
+
   expense.updatedBy = req.user._id;
   await expense.save();
   await expense.populate(['category', 'createdBy']);

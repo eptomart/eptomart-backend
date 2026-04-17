@@ -47,6 +47,16 @@ const downloadPDF = async (req, res) => {
     return res.status(403).json({ success: false, message: 'Access denied' });
   }
 
+  // For COD orders: invoice PDF is only available after delivery
+  const order = invoice.order;
+  if (order?.paymentMethod === 'cod' && order?.orderStatus !== 'delivered') {
+    return res.status(202).json({
+      success: false,
+      codPending: true,
+      message: 'Invoice will be available for download after the order is delivered and payment is collected.',
+    });
+  }
+
   // If PDF already generated, redirect to Cloudinary
   if (invoice.pdfUrl) {
     return res.redirect(invoice.pdfUrl);

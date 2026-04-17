@@ -198,4 +198,61 @@ const updateOrderStatus = async (req, res) => {
   res.json({ success: true, message: 'Order updated', order });
 };
 
-module.exports = { getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, getAllOrders, updateOrderStatus };
+// ── Admin Account Management (superAdmin only) ───────────
+const listAdmins = async (req, res) => {
+  const admins = await User.find({ role: { $in: ['admin', 'superAdmin'] } })
+    .select('name email phone role isActive createdAt lastLogin')
+    .sort({ createdAt: -1 })
+    .lean();
+  res.json({ success: true, admins });
+};
+
+const createAdmin = async (req, res) => {
+  const { name, email, phone } = req.body;
+  if (!name || (!email && !phone)) {
+    return res.status(400).json({ success: false, message: 'Name and email or phone required' });
+  }
+
+  const query = email ? { email } : { phone };
+  const existing = await User.findOne(query);
+  if (existing) {
+    return res.status(400).json({ success: false, message: 'User already exists with this email/phone' });
+  }
+
+  const tempPassword = Math.random().toString(36).slice(-8) + 'A1!';
+  const admin = await User.create({
+    name, email: email || undefined, phone: phone || undefined,
+    role: 'admin', isVerified: true, password: tempPassword,
+  });
+
+  // Send credentials by email if provided
+  if (email) {
+    const { sendOtpEmail } = require('../utils/sendEmail');
+    await sendOtpEmail(email, null, 'seller_welcome', {
+      businessName: name,
+      loginEmail: email,
+      tempPassword,
+    }).catch(() => {});
+  }
+
+  res.status(201).json({
+    success: true,
+    message: 'Admin account created',
+    admin: { _id: admin._id, name: admin.name, email: admin.email, phone: admin.phone, role: admin.role },
+    tempPassword, // Show once so superAdmin can share it
+  });
+};
+
+const deleteAdmin = async (req, res) => {
+  const admin = await User.findById(req.params.id);
+  if (!admin) return res.status(404).json({ success: false, message: 'Admin not found' });
+  if (admin.role === 'superAdmin') {
+    return res.status(403).json({ success: false, message: 'Cannot remove a Super Admin account' });
+  }
+  admin.isActive = false;
+  admin.role = 'user';
+  await admin.save();
+  res.json({ success: true, message: 'Admin access revoked' });
+};
+
+module.exports = { getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, getAllOrders, updateOrderStatus, listAdmins, createAdmin, deleteAdmin };

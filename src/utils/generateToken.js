@@ -17,7 +17,7 @@ const generateToken = (userId, role = 'user') => {
 /**
  * Send JWT as HTTP-only cookie + JSON response
  */
-const sendTokenResponse = (user, statusCode, res, message = 'Success') => {
+const sendTokenResponse = (user, statusCode, res, message = 'Success', extraData = {}) => {
   const token = generateToken(user._id, user.role);
 
   const cookieOptions = {
@@ -41,7 +41,9 @@ const sendTokenResponse = (user, statusCode, res, message = 'Success') => {
         role: user.role,
         avatar: user.avatar,
         isVerified: user.isVerified,
+        addresses: user.addresses || [],
       },
+      ...extraData,
     });
 };
 

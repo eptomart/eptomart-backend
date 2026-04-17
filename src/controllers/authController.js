@@ -182,7 +182,7 @@ const verifyOtp = async (req, res) => {
     }
   });
 
-  sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!');
+  sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!', { isNewUser });
 };
 
 /**
@@ -231,13 +231,34 @@ const getMe = async (req, res) => {
  * @access  Private
  */
 const updateProfile = async (req, res) => {
-  const { name, email, phone } = req.body;
+  const { name, email, phone, address } = req.body;
   const updates = {};
   if (name) updates.name = name;
   if (email) updates.email = email;
   if (phone) updates.phone = phone;
 
   const user = await User.findByIdAndUpdate(req.user._id, updates, { new: true, runValidators: true });
+
+  // If address provided and user has no addresses yet, add it as default
+  if (address && address.addressLine1 && address.city && address.pincode) {
+    const freshUser = await User.findById(req.user._id);
+    if (freshUser.addresses.length === 0) {
+      freshUser.addresses.push({
+        label:        address.label || 'Home',
+        fullName:     name || freshUser.name,
+        phone:        address.phone || phone || freshUser.phone || '',
+        addressLine1: address.addressLine1,
+        addressLine2: address.addressLine2 || '',
+        city:         address.city,
+        state:        address.state || '',
+        pincode:      address.pincode,
+        isDefault:    true,
+      });
+      await freshUser.save();
+      return res.json({ success: true, message: 'Profile updated', user: freshUser });
+    }
+  }
+
   res.json({ success: true, message: 'Profile updated', user });
 };
 
@@ -311,7 +332,7 @@ const verifyFirebasePhone = async (req, res) => {
     }
   });
 
-  sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!');
+  sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!', { isNewUser });
 };
 
 const addAddress = async (req, res) => {

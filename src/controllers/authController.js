@@ -139,13 +139,9 @@ const verifyOtp = async (req, res) => {
   let isNewUser = false;
 
   if (!user) {
-    // Register new user
-    if (!name) {
-      return res.status(400).json({ success: false, message: 'Name is required for new registration' });
-    }
-
+    // Register new user — name is optional at signup; captured in profile step
     const userData = {
-      name: name.trim(),
+      name: (name || '').trim() || 'New User',
       isVerified: true,
       registrationIp: getClientIp(req),
     };
@@ -307,7 +303,7 @@ const verifyFirebasePhone = async (req, res) => {
 
   if (!user) {
     user = await User.create({
-      name: (name || 'User').trim(),
+      name: (name || '').trim() || 'New User',
       phone,
       isVerified: true,
       registrationIp: getClientIp(req),

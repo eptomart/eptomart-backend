@@ -130,7 +130,7 @@ const createProduct = async (req, res) => {
   const {
     name, description, shortDescription, price, discountPrice, stock,
     category, tags, brand, sku, isFeatured, metaTitle, metaDescription,
-    gstRate, hsnCode, codAvailable, seller, variants, instagramLink,
+    gstRate, hsnCode, codAvailable, priceIncludesGst, seller, variants, instagramLink,
     // Seller margin fields
     platformMargin, sellerMargin,
   } = req.body;
@@ -162,6 +162,7 @@ const createProduct = async (req, res) => {
     sku,
     isFeatured: isFeatured === 'true',
     codAvailable: codAvailable !== 'false',
+    priceIncludesGst: priceIncludesGst !== 'false',
     metaTitle,
     metaDescription,
     gstRate: gstRate ? Number(gstRate) : 18,
@@ -176,8 +177,11 @@ const createProduct = async (req, res) => {
     productData.seller = sellerDocId;
     productData.approvalStatus = 'pending'; // seller products need admin approval
     productData.isActive = false;           // hidden until approved
-  } else if (seller) {
-    productData.seller = seller; // admin assigns seller by Seller._id
+  } else if (['admin', 'superAdmin'].includes(req.user.role)) {
+    // Admin-created products are immediately active and approved
+    if (seller) productData.seller = seller;
+    productData.approvalStatus = 'approved';
+    productData.isActive = true;
   }
 
   // instagramLink — only superAdmin or admin can set

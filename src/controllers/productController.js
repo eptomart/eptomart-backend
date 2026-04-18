@@ -51,6 +51,7 @@ const getProducts = async (req, res) => {
   const [products, total] = await Promise.all([
     Product.find(filter)
       .populate('category', 'name slug')
+      .populate('seller', 'businessName')
       .sort(sort)
       .skip(skip)
       .limit(Number(limit))

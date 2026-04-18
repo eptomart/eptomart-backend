@@ -1,8 +1,9 @@
 const User   = require('../models/User');
 const Seller = require('../models/Seller');
 const { geocode } = require('../utils/deliveryEstimator');
-const { sendOtpEmail } = require('../utils/sendEmail');
+const { sendSellerWelcomeEmail, sendSellerActivatedEmail } = require('../utils/sendEmail');
 const { sendOtpSms }   = require('../utils/sendSMS');
+const { sendSellerWelcomeWhatsApp, sendSellerActivatedWhatsApp } = require('../utils/sendWhatsApp');
 
 // Send plain welcome SMS (not OTP)
 const sendWelcomeSms = async (phone, message) => {
@@ -84,17 +85,22 @@ const createSeller = async (req, res) => {
   // Link seller profile to user
   await User.findByIdAndUpdate(user._id, { sellerProfile: seller._id });
 
-  // Notify seller by email
+  const loginId = email || phone;
+
+  // Welcome email with proper template (not OTP template)
   if (email) {
-    await sendOtpEmail(email, null, 'seller_welcome', {
-      businessName, loginEmail: email, tempPassword,
-    }).catch(() => {});
+    sendSellerWelcomeEmail(email, { businessName, loginId, tempPassword }).catch(() => {});
   }
 
-  // Send SMS welcome to seller's phone
+  // Welcome SMS (via existing 2Factor/Fast2SMS integration)
   if (phone) {
-    const welcomeMsg = `Welcome to Eptomart! Your seller account for "${businessName}" is created. Login: ${email || phone} | Password: ${tempPassword} | Manage at eptomart.com/seller`;
-    await sendWelcomeSms(phone, welcomeMsg).catch(() => {});
+    const welcomeMsg = `Welcome to Eptomart! Your seller account for "${businessName}" is ready. Login: ${loginId} | Temp Password: ${tempPassword} | Portal: eptomart.com/seller`;
+    sendWelcomeSms(phone, welcomeMsg).catch(() => {});
+  }
+
+  // Welcome WhatsApp (Meta Cloud API — free tier)
+  if (phone || email) {
+    sendSellerWelcomeWhatsApp(phone || '', { businessName, loginId, tempPassword }).catch(() => {});
   }
 
   res.status(201).json({ success: true, seller, user: { _id: user._id, name: user.name, email: user.email, phone: user.phone } });
@@ -135,6 +141,7 @@ const setSellerStatus = async (req, res) => {
   const seller = await Seller.findById(req.params.id);
   if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
 
+  const wasAlreadyActive = seller.status === 'active';
   seller.status = status;
   if (status === 'active' && !seller.activatedAt) seller.activatedAt = new Date();
   if (status === 'suspended') seller.suspendedAt = new Date();
@@ -142,6 +149,20 @@ const setSellerStatus = async (req, res) => {
 
   // Also activate/deactivate user account
   await User.findByIdAndUpdate(seller.user, { isActive: status === 'active' });
+
+  // Send activation notifications (only on first activation, not every toggle)
+  if (status === 'active' && !wasAlreadyActive) {
+    const sellerEmail = seller.contact?.email;
+    const sellerPhone = seller.contact?.phone;
+    const businessName = seller.businessName;
+
+    if (sellerEmail) {
+      sendSellerActivatedEmail(sellerEmail, { businessName }).catch(() => {});
+    }
+    if (sellerPhone) {
+      sendSellerActivatedWhatsApp(sellerPhone, { businessName }).catch(() => {});
+    }
+  }
 
   res.json({ success: true, seller });
 };

@@ -1,11 +1,41 @@
 const PDFDocument = require('pdfkit');
 const cloudinary  = require('cloudinary').v2;
 const { Readable } = require('stream');
+const https  = require('https');
+const http   = require('http');
 const business = require('../../config/business');
 
 const fmtINR = (n) => `Rs. ${(Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
 
-const generateInvoicePDF = (invoice) => new Promise((resolve, reject) => {
+// Fetch logo image as Buffer (resolves with Buffer or null on failure)
+const fetchLogoBuffer = () => new Promise((resolve) => {
+  try {
+    const logoUrl = `${process.env.FRONTEND_URL || 'https://eptomart.pages.dev'}/logo-v3.png`;
+    const client  = logoUrl.startsWith('https') ? https : http;
+    client.get(logoUrl, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('error', () => resolve(null));
+    }).on('error', () => resolve(null));
+  } catch { resolve(null); }
+});
+
+// Human-readable order status labels
+const ORDER_STATUS_LABELS = {
+  placed:     'Order Placed — Awaiting Confirmation',
+  confirmed:  'Confirmed by Seller',
+  processing: 'Processing / Being Packed',
+  shipped:    'Shipped — In Transit',
+  delivered:  'Delivered',
+  cancelled:  'Cancelled',
+  returned:   'Returned',
+};
+
+const generateInvoicePDF = async (invoice) => {
+  const logoBuf = await fetchLogoBuffer();
+
+  return new Promise((resolve, reject) => {
   const doc    = new PDFDocument({ size: 'A4', margin: 40 });
   const chunks = [];
   doc.on('data', c => chunks.push(c));
@@ -15,11 +45,21 @@ const generateInvoicePDF = (invoice) => new Promise((resolve, reject) => {
   const W = 515; // usable width
 
   // ── Header ──────────────────────────────────────────────
-  doc.fontSize(22).font('Helvetica-Bold').fillColor('#f97316').text('EPTOMART', 40, 40);
+  // Left: logo image (or fallback text) + address
+  if (logoBuf && logoBuf.length > 500) {
+    try {
+      doc.image(logoBuf, 40, 36, { height: 32, fit: [180, 32] });
+    } catch (_) {
+      doc.fontSize(22).font('Helvetica-Bold').fillColor('#f97316').text('EPTOMART', 40, 40);
+    }
+  } else {
+    doc.fontSize(22).font('Helvetica-Bold').fillColor('#f97316').text('EPTOMART', 40, 40);
+  }
   doc.fontSize(9).font('Helvetica').fillColor('#666')
-     .text(business.address, 40, 66)
-     .text(`Phone: ${business.phone}  |  Email: ${business.email}  |  ${business.website}`, 40, 78);
+     .text(business.address, 40, 72)
+     .text(`Phone: ${business.phone}  |  Email: ${business.email}  |  ${business.website}`, 40, 84);
 
+  // Right: TAX INVOICE + meta
   doc.fontSize(18).font('Helvetica-Bold').fillColor('#333').text('TAX INVOICE', 380, 40, { align: 'right' });
   doc.fontSize(9).font('Helvetica').fillColor('#555')
      .text(`Invoice No: ${invoice.invoiceNumber}`, 380, 66, { align: 'right' })
@@ -111,32 +151,47 @@ const generateInvoicePDF = (invoice) => new Promise((resolve, reject) => {
   totY += 6;
   tRow('GRAND TOTAL', fmtINR(invoice.grandTotal), true);
 
-  // ── Payment info ──────────────────────────────────────
-  totY += 10;
+  // ── Payment & Shipment Status box ─────────────────────
+  totY += 14;
+  const boxH = 46;
+  doc.rect(40, totY, W, boxH).fill('#f0fdf4').stroke('#bbf7d0');
+
   // paymentMethod may live on invoice directly OR on the populated order
   const payMethod = (invoice.order?.paymentMethod || invoice.paymentMethod || '—').toUpperCase();
   const rawStatus = invoice.order?.paymentStatus || invoice.paymentStatus || 'pending';
   const isCod = (invoice.order?.paymentMethod || invoice.paymentMethod) === 'cod';
-  const isDelivered = invoice.order?.orderStatus === 'delivered';
+  const orderStatus   = invoice.order?.orderStatus || 'placed';
+  const isDelivered   = orderStatus === 'delivered';
+
   let payStatusLabel;
   if (isCod && !isDelivered) {
-    payStatusLabel = 'PAYMENT PENDING (COD — collect on delivery)';
+    payStatusLabel = 'PENDING — Pay on Delivery';
   } else if (rawStatus === 'paid') {
     payStatusLabel = 'PAID';
   } else if (rawStatus === 'pending') {
-    payStatusLabel = 'PAYMENT PENDING';
+    payStatusLabel = 'PENDING';
   } else {
     payStatusLabel = rawStatus.toUpperCase();
   }
-  doc.fontSize(8).font('Helvetica').fillColor('#888')
-     .text(`Payment Method: ${payMethod}  |  Status: ${payStatusLabel}`, 40, totY);
+
+  const shipLabel = ORDER_STATUS_LABELS[orderStatus] || orderStatus.toUpperCase();
+
+  doc.fontSize(8).font('Helvetica-Bold').fillColor('#166534')
+     .text('PAYMENT', 52, totY + 8)
+     .text('SHIPMENT STATUS', 52, totY + 22);
+  doc.fontSize(8).font('Helvetica').fillColor('#15803d')
+     .text(`${payMethod}  —  ${payStatusLabel}`, 160, totY + 8)
+     .text(shipLabel, 160, totY + 22);
+
+  totY += boxH + 12;
 
   // ── Footer ────────────────────────────────────────────
   doc.fontSize(7).fillColor('#aaa')
      .text('This is a computer-generated invoice. No signature required.', 40, 760, { align: 'center', width: W });
 
   doc.end();
-});
+  }); // end new Promise
+};
 
 // Upload PDF buffer to Cloudinary and return { url, publicId }
 const uploadInvoicePDF = (buffer, invoiceNumber) => new Promise((resolve, reject) => {

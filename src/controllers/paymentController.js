@@ -4,6 +4,8 @@
 const Order = require('../models/Order');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
+// notifySeller is imported lazily to avoid circular-dependency issues at startup
+const getNotifySeller = () => require('./orderController').notifySeller;
 
 const getRazorpay = () => {
   if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return null;
@@ -41,7 +43,6 @@ const confirmUpiPayment = async (req, res) => {
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
   order.paymentDetails.upiRef = upiRef;
   order.paymentStatus = 'pending'; // stays pending until admin verifies UPI
-  // orderStatus stays 'placed' — seller must confirm separately
   await order.save();
   res.json({ success: true, message: 'Payment reference submitted. Admin will verify within 1 hour.' });
 };
@@ -49,15 +50,21 @@ const confirmUpiPayment = async (req, res) => {
 const adminVerifyUpi = async (req, res) => {
   const order = await Order.findById(req.params.orderId);
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
   if (req.body.verified) {
     order.paymentStatus = 'paid';
     order.paymentDetails.paidAt = new Date();
     order.orderStatus = 'processing';
+    await order.save();
+
+    // Payment confirmed — now notify the seller(s)
+    getNotifySeller()(order).catch(() => {});
   } else {
     order.paymentStatus = 'failed';
     order.orderStatus = 'placed';
+    await order.save();
   }
-  await order.save();
+
   res.json({ success: true, order });
 };
 
@@ -113,9 +120,11 @@ const verifyRazorpayPayment = async (req, res) => {
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
   order.paymentStatus = 'paid';
-  // orderStatus stays 'placed' — seller must confirm separately after payment
   order.paymentDetails = { transactionId: razorpay_payment_id, gatewayOrderId: razorpay_order_id, paidAt: new Date() };
   await order.save();
+
+  // Payment verified — notify seller(s) now
+  getNotifySeller()(order).catch(() => {});
 
   res.json({ success: true, message: 'Payment successful! Your order is placed and awaiting seller confirmation.', orderId: order.orderId });
 };
@@ -132,10 +141,13 @@ const razorpayWebhook = async (req, res) => {
     const order = await Order.findOne({ 'paymentDetails.gatewayOrderId': payment.order_id });
     if (order && order.paymentStatus !== 'paid') {
       order.paymentStatus = 'paid';
-      // orderStatus stays 'placed' — seller confirms separately
       order.paymentDetails.transactionId = payment.id;
       order.paymentDetails.paidAt = new Date();
       await order.save();
+
+      // Webhook confirmed payment — notify seller(s)
+      // (guard against double-notify if verifyRazorpayPayment already ran)
+      getNotifySeller()(order).catch(() => {});
     }
   }
   res.status(200).json({ received: true });

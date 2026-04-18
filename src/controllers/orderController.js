@@ -174,8 +174,10 @@ const placeOrder = async (req, res) => {
     paymentMethod: order.paymentMethod,
   }).catch(() => {});
 
-  // Notify seller(s) of new order (async, non-blocking)
-  notifySeller(order).catch(() => {});
+  // Notify seller(s) only for COD — online-payment orders notify after payment is confirmed
+  if (order.paymentMethod === 'cod') {
+    notifySeller(order).catch(() => {});
+  }
 
   const populated = await Order.findById(order._id).populate('items.product', 'name images');
   res.status(201).json({
@@ -385,4 +387,4 @@ const sellerConfirmOrder = async (req, res) => {
   res.json({ success: true, message: 'Order confirmed successfully', order });
 };
 
-module.exports = { placeOrder, getMyOrders, getOrder, cancelOrder, createInvoice, getSellerOrders, sellerConfirmOrder };
+module.exports = { placeOrder, getMyOrders, getOrder, cancelOrder, createInvoice, notifySeller, getSellerOrders, sellerConfirmOrder };

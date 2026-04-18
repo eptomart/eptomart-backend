@@ -230,71 +230,146 @@ const sendSellerNewOrderEmail = async (to, { businessName, orderId, items = [], 
 /**
  * Send seller welcome / onboarding email
  */
-const sendSellerWelcomeEmail = async (to, { businessName, loginId, tempPassword }) => {
+const sendSellerWelcomeEmail = async (to, { businessName, loginId }) => {
   const html = `
     <!DOCTYPE html>
     <html>
     <head><meta charset="utf-8">
     <style>
-      body { font-family: Arial, sans-serif; background: #f4f4f4; margin: 0; padding: 20px; }
-      .container { max-width: 560px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-      .header { background: linear-gradient(135deg, #f97316, #ea580c); padding: 36px 30px; text-align: center; }
-      .header h1 { color: white; margin: 0 0 4px; font-size: 28px; }
-      .header p { color: rgba(255,255,255,0.85); margin: 0; font-size: 15px; }
-      .body { padding: 32px 30px; }
-      .creds { background: #fff7ed; border: 2px dashed #f97316; border-radius: 8px; padding: 20px; margin: 20px 0; }
-      .creds p { margin: 6px 0; font-size: 14px; color: #444; }
-      .creds strong { color: #ea580c; font-family: monospace; font-size: 15px; }
-      .btn { display: inline-block; background: linear-gradient(135deg,#f97316,#ea580c); color: white !important; text-decoration: none; padding: 13px 28px; border-radius: 8px; font-weight: 700; font-size: 15px; margin: 20px 0; }
-      .steps { margin: 20px 0; }
-      .steps li { margin-bottom: 8px; font-size: 14px; color: #555; }
-      .footer { background: #f9f9f9; padding: 16px 30px; text-align: center; font-size: 12px; color: #999; }
+      * { box-sizing: border-box; }
+      body { font-family: Arial, sans-serif; background: #f0f2f5; margin: 0; padding: 28px 16px; }
+      .wrap { max-width: 600px; margin: 0 auto; }
+
+      /* Header */
+      .header { background: linear-gradient(135deg, #f97316 0%, #c2410c 100%); border-radius: 16px 16px 0 0; padding: 40px 36px 32px; text-align: center; }
+      .header img { height: 48px; display: block; margin: 0 auto 18px; }
+      .header h1 { color: white; margin: 0 0 6px; font-size: 26px; font-weight: 800; }
+      .header p { color: rgba(255,255,255,0.85); margin: 0; font-size: 14px; }
+
+      /* Body */
+      .body { background: white; padding: 36px; }
+      .greeting { font-size: 20px; font-weight: 700; color: #111; margin: 0 0 10px; }
+      .intro { color: #555; font-size: 15px; line-height: 1.7; margin: 0 0 30px; }
+
+      /* Login guide */
+      .login-card { border: 1.5px solid #fed7aa; border-radius: 14px; overflow: hidden; margin-bottom: 30px; }
+      .login-card-header { background: #fff7ed; padding: 14px 20px; border-bottom: 1px solid #fed7aa; }
+      .login-card-header p { margin: 0; font-size: 13px; font-weight: 800; color: #c2410c; text-transform: uppercase; letter-spacing: 0.7px; }
+      .login-card-body { padding: 20px; }
+      .step { display: flex; gap: 14px; margin-bottom: 16px; align-items: flex-start; }
+      .step:last-of-type { margin-bottom: 0; }
+      .step-badge { background: #f97316; color: white; font-size: 12px; font-weight: 800; min-width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px; }
+      .step-body { font-size: 14px; color: #444; line-height: 1.6; }
+      .step-body strong { color: #111; }
+      .email-chip { display: inline-block; margin-top: 6px; background: #fff; border: 1.5px solid #f97316; border-radius: 8px; padding: 7px 14px; font-family: monospace; font-size: 14px; font-weight: 700; color: #c2410c; }
+      .otp-note { background: #fefce8; border: 1px solid #fde68a; border-radius: 10px; padding: 12px 16px; margin-top: 16px; font-size: 13px; color: #78350f; line-height: 1.6; }
+
+      /* CTA */
+      .cta-wrap { text-align: center; margin: 6px 0 30px; }
+      .btn { display: inline-block; background: linear-gradient(135deg, #f97316, #c2410c); color: white !important; text-decoration: none; padding: 15px 36px; border-radius: 10px; font-weight: 800; font-size: 15px; }
+
+      /* Checklist */
+      .section-title { font-size: 14px; font-weight: 700; color: #222; margin: 0 0 14px; }
+      .checklist { margin: 0 0 28px; padding: 0; list-style: none; }
+      .checklist li { font-size: 14px; color: #555; padding: 9px 0; border-bottom: 1px solid #f3f4f6; display: flex; align-items: center; gap: 10px; }
+      .checklist li:last-child { border-bottom: none; }
+
+      /* Divider */
+      .divider { height: 1px; background: #f3f4f6; margin: 0 0 24px; }
+
+      /* Footer */
+      .footer { background: #f9fafb; border-top: 1px solid #e5e7eb; border-radius: 0 0 16px 16px; padding: 20px 36px; text-align: center; font-size: 12px; color: #9ca3af; }
+      .footer a { color: #f97316; text-decoration: none; }
     </style>
     </head>
     <body>
-      <div class="container">
-        <div class="header">
-          <h1>🛒 Eptomart</h1>
-          <p>Welcome to India's growing seller community!</p>
-        </div>
-        <div class="body">
-          <h2 style="color:#333;margin-top:0;">Hello, ${businessName}! 🎉</h2>
-          <p style="color:#555;font-size:15px;line-height:1.6;">
-            We're thrilled to have you on the <strong>Eptomart Seller Platform</strong>.
-            Your account has been set up and you're ready to start your selling journey.
-            Reach thousands of customers across India — all from one simple dashboard.
-          </p>
+    <div class="wrap">
 
-          <div class="creds">
-            <p>🔑 <strong>Login ID:</strong> <strong>${loginId}</strong></p>
-            <p>🔒 <strong>Temp Password:</strong> <strong>${tempPassword}</strong></p>
-            <p style="color:#f97316;font-size:12px;margin-top:10px;">⚠️ Please change your password after your first login.</p>
-          </div>
-
-          <a href="https://eptomart.com/seller" class="btn">Go to Seller Portal →</a>
-
-          <p style="color:#555;font-size:14px;font-weight:600;margin-bottom:8px;">Getting started checklist:</p>
-          <ul class="steps">
-            <li>✅ Log in to your seller portal</li>
-            <li>📦 Add your first product listing</li>
-            <li>🏦 Set up your bank details for payments</li>
-            <li>📋 Review seller guidelines</li>
-          </ul>
-
-          <p style="color:#555;font-size:14px;line-height:1.6;">
-            Your account will be reviewed and activated by our team shortly.
-            You'll receive a confirmation as soon as it goes live. 🚀
-          </p>
-        </div>
-        <div class="footer">
-          <p>Questions? Email us at <a href="mailto:support@eptomart.com" style="color:#f97316;">support@eptomart.com</a></p>
-          <p>© ${new Date().getFullYear()} Eptomart. All rights reserved.</p>
-        </div>
+      <!-- Header -->
+      <div class="header">
+        <img src="https://eptomart.pages.dev/logo-v3.png" alt="Eptomart" />
+        <h1>Welcome aboard, ${businessName}! 🎉</h1>
+        <p>Your Eptomart seller account is ready — let's get you started.</p>
       </div>
+
+      <!-- Body -->
+      <div class="body">
+        <p class="intro">
+          We're excited to have you join the <strong>Eptomart Seller Platform</strong>.
+          You're now part of India's growing community of online sellers.
+          Here's everything you need to log in and set up your store.
+        </p>
+
+        <!-- OTP Login Guide -->
+        <div class="login-card">
+          <div class="login-card-header">
+            <p>🔐 How to Log In — No Password Needed</p>
+          </div>
+          <div class="login-card-body">
+
+            <div class="step">
+              <div class="step-badge">1</div>
+              <div class="step-body">
+                Go to <strong>eptomart.com/login</strong> and enter your registered email address:
+                <br/><span class="email-chip">${loginId}</span>
+              </div>
+            </div>
+
+            <div class="step">
+              <div class="step-badge">2</div>
+              <div class="step-body">
+                Click <strong>"Send OTP"</strong> — a <strong>6-digit one-time code</strong> will arrive in this inbox within a few seconds.
+              </div>
+            </div>
+
+            <div class="step">
+              <div class="step-badge">3</div>
+              <div class="step-body">
+                Enter the 6-digit OTP on the next screen and you're in. No password required, ever.
+              </div>
+            </div>
+
+            <div class="otp-note">
+              💡 <strong>Eptomart uses secure OTP-based login.</strong> There is no password to remember or reset.
+              A fresh OTP is generated each time you sign in — keeping your account safe automatically.
+            </div>
+          </div>
+        </div>
+
+        <!-- CTA -->
+        <div class="cta-wrap">
+          <a href="https://eptomart.com/login" class="btn">Log In to Seller Dashboard →</a>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- Checklist -->
+        <p class="section-title">Your getting started checklist:</p>
+        <ul class="checklist">
+          <li>🔑 Log in using your email OTP</li>
+          <li>📦 Upload your first product with photos, description &amp; pricing</li>
+          <li>🏦 Add your bank account details for payouts</li>
+          <li>📋 Read the seller guidelines &amp; shipping policies</li>
+          <li>🚀 Go live and start receiving orders!</li>
+        </ul>
+
+        <p style="color:#777;font-size:13px;line-height:1.7;margin:0;">
+          Your account is currently under review by our team. You'll receive a separate
+          email confirmation the moment it's activated and visible to customers.
+        </p>
+      </div>
+
+      <!-- Footer -->
+      <div class="footer">
+        <p>Questions? Reach us at <a href="mailto:support@eptomart.com">support@eptomart.com</a></p>
+        <p style="margin:4px 0 0;">© ${new Date().getFullYear()} Eptomart. All rights reserved.</p>
+      </div>
+
+    </div>
     </body>
     </html>
   `;
-  return sendViaResend(to, `Welcome to Eptomart Seller Platform — ${businessName}`, html);
+  return sendViaResend(to, `Welcome to Eptomart — Your Seller Account is Ready, ${businessName}!`, html);
 };
 
 /**

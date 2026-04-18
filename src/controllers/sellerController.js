@@ -90,12 +90,12 @@ const createSeller = async (req, res) => {
 
   // Welcome email with proper template (not OTP template)
   if (email) {
-    sendSellerWelcomeEmail(email, { businessName, loginId, tempPassword }).catch(() => {});
+    sendSellerWelcomeEmail(email, { businessName, loginId }).catch(() => {});
   }
 
   // Welcome SMS (via existing 2Factor/Fast2SMS integration)
   if (phone) {
-    const welcomeMsg = `Welcome to Eptomart! Your seller account for "${businessName}" is ready. Login: ${loginId} | Temp Password: ${tempPassword} | Portal: eptomart.com/seller`;
+    const welcomeMsg = `Welcome to Eptomart! Your seller account for "${businessName}" is ready. Login at eptomart.com/login using your mobile OTP — no password needed.`;
     sendWelcomeSms(phone, welcomeMsg).catch(() => {});
   }
 

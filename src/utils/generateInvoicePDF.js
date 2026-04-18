@@ -147,13 +147,14 @@ const generateInvoicePDF = async (invoice) => {
     doc.moveTo(ML, rowY).lineTo(MR, rowY).strokeColor(BORDER).lineWidth(1).stroke();
 
     // ── TOTALS ─────────────────────────────────────────────────
-    const totX = 358, valX = 455;
+    // Label col: x=310, w=130 → ends at 440. Value col: x=450, w=95 → ends at 545
+    const totX = 310, labW = 130, valX = 450, valW = 95;
     let totY = rowY + 16;
 
     const tRow = (label, val, bold = false) => {
       doc.fontSize(9).font(bold ? 'Helvetica-Bold' : 'Helvetica').fillColor(bold ? DARK : GRAY)
-         .text(label, totX, totY)
-         .text(val, valX, totY, { width: 90, align: 'right' });
+         .text(label, totX, totY, { width: labW })
+         .text(val, valX, totY, { width: valW, align: 'right' });
       totY += 16;
     };
 
@@ -167,14 +168,14 @@ const generateInvoicePDF = async (invoice) => {
     if (invoice.shipping > 0) tRow('Shipping', fmtINR(invoice.shipping));
     if (invoice.discount > 0) tRow('Discount', `- ${fmtINR(invoice.discount)}`);
 
-    doc.moveTo(totX, totY).lineTo(MR, totY).strokeColor(BORDER).lineWidth(0.5).stroke();
+    doc.moveTo(totX - 8, totY).lineTo(MR + 5, totY).strokeColor(BORDER).lineWidth(0.5).stroke();
     totY += 6;
 
-    // Grand Total — dark band
-    doc.rect(totX - 8, totY, MR - totX + 18, 26).fill(DARK);
+    // Grand Total — dark band spanning both columns
+    doc.rect(totX - 8, totY, MR - totX + 13, 26).fill(DARK);
     doc.fontSize(10.5).font('Helvetica-Bold').fillColor('white')
-       .text('GRAND TOTAL', totX, totY + 8)
-       .text(fmtINR(invoice.grandTotal), valX, totY + 8, { width: 90, align: 'right' });
+       .text('GRAND TOTAL', totX, totY + 8, { width: labW })
+       .text(fmtINR(invoice.grandTotal), valX, totY + 8, { width: valW, align: 'right' });
     totY += 38;
 
     // ── PAYMENT & SHIPMENT STATUS ──────────────────────────────

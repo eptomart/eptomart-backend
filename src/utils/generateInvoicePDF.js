@@ -1,18 +1,15 @@
-const PDFDocument       = require('pdfkit');
-const cloudinary        = require('cloudinary').v2;
-const { Readable }      = require('stream');
-const path              = require('path');
-const fs                = require('fs');
-const BusinessSettings  = require('../models/BusinessSettings');
+const PDFDocument      = require('pdfkit');
+const cloudinary       = require('cloudinary').v2;
+const { Readable }     = require('stream');
+const path             = require('path');
+const fs               = require('fs');
+const BusinessSettings = require('../models/BusinessSettings');
 
 const fmtINR = (n) => `Rs. ${(Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
 
-// Load logo from local assets — always reliable, no network needed
 const LOGO_PATH = path.join(__dirname, '../assets/logo.png');
 const fetchLogoBuffer = () => {
-  try {
-    if (fs.existsSync(LOGO_PATH)) return fs.readFileSync(LOGO_PATH);
-  } catch (_) {}
+  try { if (fs.existsSync(LOGO_PATH)) return fs.readFileSync(LOGO_PATH); } catch (_) {}
   return null;
 };
 
@@ -26,10 +23,11 @@ const ORDER_STATUS_LABELS = {
   returned:   'Returned',
 };
 
+// Colour palette — clean, minimal
 const ORANGE = '#f97316';
-const DARK   = '#1a1a2e';
-const GRAY   = '#6b7280';
-const LGRAY  = '#f3f4f6';
+const DARK   = '#1e293b';
+const GRAY   = '#64748b';
+const BORDER = '#e2e8f0';
 
 const generateInvoicePDF = async (invoice) => {
   const logoBuf  = fetchLogoBuffer();
@@ -42,150 +40,134 @@ const generateInvoicePDF = async (invoice) => {
     doc.on('end',  () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
-    const PW = 595; // page width
-    const ML = 40;  // left margin
-    const MR = 555; // right edge
-    const CW = 515; // content width
+    const PW = 595, ML = 45, MR = 550, CW = 505;
 
-    // ═══════════════════════════════════════════════
-    // HEADER BAND — orange top stripe
-    // ═══════════════════════════════════════════════
-    doc.rect(0, 0, PW, 6).fill(ORANGE);
-
-    // Left: Logo (large, no overlap) — y=16 to y=90
-    const LOGO_Y = 16;
-    const LOGO_H = 72;
+    // ── LOGO (left) — y=20, height=60 → ends at y=80 ──────────
     if (logoBuf && logoBuf.length > 500) {
       try {
-        doc.image(logoBuf, ML, LOGO_Y, { height: LOGO_H, fit: [260, LOGO_H] });
+        doc.image(logoBuf, ML, 20, { height: 60, fit: [220, 60] });
+        // Darken logo slightly
+        doc.save().rect(ML, 20, 220, 60).fillOpacity(0.28).fill('#000000').restore();
       } catch (_) {
-        doc.fontSize(28).font('Helvetica-Bold').fillColor(ORANGE).text('EPTOMART', ML, LOGO_Y + 18);
+        doc.fontSize(24).font('Helvetica-Bold').fillColor(DARK).text('EPTOMART', ML, 30);
       }
     } else {
-      doc.fontSize(28).font('Helvetica-Bold').fillColor(ORANGE).text('EPTOMART', ML, LOGO_Y + 18);
+      doc.fontSize(24).font('Helvetica-Bold').fillColor(DARK).text('EPTOMART', ML, 30);
     }
 
-    // Right: TAX INVOICE label — aligned top right
-    doc.fontSize(22).font('Helvetica-Bold').fillColor(DARK)
-       .text('TAX INVOICE', ML, 20, { width: CW, align: 'right' });
+    // ── TAX INVOICE (top right) ────────────────────────────────
+    doc.fontSize(20).font('Helvetica-Bold').fillColor(DARK)
+       .text('TAX INVOICE', 310, 22, { width: 235, align: 'right' });
 
-    // Business address block — BELOW logo (logo ends at y=88)
-    const addrY = LOGO_Y + LOGO_H + 6; // y=94
+    // Invoice meta — label | value, right-aligned
+    const mY = [50, 62, 74];
+    ['Invoice No', 'Date', 'Order ID'].forEach((l, i) =>
+      doc.fontSize(8).font('Helvetica').fillColor(GRAY).text(l, 370, mY[i])
+    );
+    [
+      invoice.invoiceNumber,
+      new Date(invoice.generatedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+      `#${invoice.order?.orderId || invoice.order}`,
+    ].forEach((v, i) =>
+      doc.fontSize(8).font('Helvetica-Bold').fillColor(DARK).text(v, 425, mY[i], { width: 120, align: 'right' })
+    );
+
+    // ── BUSINESS ADDRESS — below logo (logo ends y=80, start y=88) ──
+    doc.fontSize(7.5).font('Helvetica').fillColor(GRAY)
+       .text(business.address, ML, 88, { lineBreak: false });
+    doc.fontSize(7.5).font('Helvetica').fillColor(GRAY)
+       .text(
+         `Ph: ${business.phone}   ·   ${business.email}   ·   ${business.website}`,
+         ML, 99, { lineBreak: false }
+       );
+    if (business.gstNo) {
+      doc.fontSize(7.5).font('Helvetica').fillColor(GRAY)
+         .text(`GSTIN: ${business.gstNo}`, ML, 110, { lineBreak: false });
+    }
+
+    // ── HEADER DIVIDER ─────────────────────────────────────────
+    doc.moveTo(ML, 116).lineTo(MR, 116).strokeColor(BORDER).lineWidth(1).stroke();
+
+    // ── BILL TO / SHIP TO ──────────────────────────────────────
+    const bsY = 122, bsH = 80;
+    const ba  = invoice.billingAddress  || {};
+    const sa  = invoice.shippingAddress || ba;
+
+    // Bill To
+    doc.fontSize(7).font('Helvetica-Bold').fillColor(GRAY).text('BILL TO', ML, bsY);
+    doc.fontSize(9.5).font('Helvetica-Bold').fillColor(DARK).text(ba.fullName || ba.name || '', ML, bsY + 12);
     doc.fontSize(8).font('Helvetica').fillColor(GRAY)
-       .text(business.address, ML, addrY, { width: 280 })
-       .text(`Ph: ${business.phone}   Email: ${business.email}   ${business.website}`, ML, addrY + 11, { width: 320 });
+       .text([ba.addressLine1, ba.addressLine2].filter(Boolean).join(', '), ML, bsY + 25, { width: 225, lineBreak: false })
+       .text([ba.city, ba.state, ba.pincode].filter(Boolean).join(', '), ML, bsY + 37, { width: 225 })
+       .text(ba.phone || '', ML, bsY + 49);
 
-    // Invoice meta — right column, aligned with address row
-    doc.fontSize(8.5).font('Helvetica').fillColor(GRAY)
-       .text('Invoice No',  MR - 200, addrY,      { width: 160, align: 'right' })
-       .text('Date',        MR - 200, addrY + 12,  { width: 160, align: 'right' })
-       .text('Order ID',    MR - 200, addrY + 24,  { width: 160, align: 'right' });
-    doc.fontSize(8.5).font('Helvetica-Bold').fillColor(DARK)
-       .text(invoice.invoiceNumber, MR - 200, addrY,      { width: 160, align: 'right' })
-       .text(new Date(invoice.generatedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
-             MR - 200, addrY + 12,  { width: 160, align: 'right' })
-       .text(`#${invoice.order?.orderId || invoice.order}`,
-             MR - 200, addrY + 24,  { width: 160, align: 'right' });
+    // Vertical separator
+    doc.moveTo(PW / 2, bsY).lineTo(PW / 2, bsY + bsH - 4).strokeColor(BORDER).lineWidth(0.5).stroke();
 
-    // Divider line below header
-    const divY = addrY + 44;
-    doc.rect(0, divY, PW, 1).fill(ORANGE);
-
-    // ═══════════════════════════════════════════════
-    // BILL TO / SHIP TO — light gray panel
-    // ═══════════════════════════════════════════════
-    const ba   = invoice.billingAddress  || {};
-    const sa   = invoice.shippingAddress || ba;
-    const addrPanelY = divY + 2;
-
-    doc.rect(0, addrPanelY, PW, 68).fill(LGRAY);
-
-    // Left: Bill To
-    doc.fontSize(7.5).font('Helvetica-Bold').fillColor(ORANGE)
-       .text('BILL TO', ML, addrPanelY + 8);
-    doc.fontSize(9).font('Helvetica-Bold').fillColor(DARK)
-       .text(ba.fullName || ba.name || '', ML, addrPanelY + 20);
+    // Ship To
+    const shipX = PW / 2 + 10;
+    doc.fontSize(7).font('Helvetica-Bold').fillColor(GRAY).text('SHIP TO', shipX, bsY);
+    doc.fontSize(9.5).font('Helvetica-Bold').fillColor(DARK).text(sa.fullName || sa.name || '', shipX, bsY + 12);
     doc.fontSize(8).font('Helvetica').fillColor(GRAY)
-       .text([ba.addressLine1, ba.addressLine2].filter(Boolean).join(', '), ML, addrPanelY + 32, { width: 230 })
-       .text([ba.city, ba.state, ba.pincode].filter(Boolean).join(', '), ML, addrPanelY + 43, { width: 230 })
-       .text(ba.phone || '', ML, addrPanelY + 54);
+       .text([sa.addressLine1, sa.addressLine2].filter(Boolean).join(', '), shipX, bsY + 25, { width: 225, lineBreak: false })
+       .text([sa.city, sa.state, sa.pincode].filter(Boolean).join(', '), shipX, bsY + 37, { width: 225 })
+       .text(sa.phone || '', shipX, bsY + 49);
 
-    // Thin vertical separator
-    doc.moveTo(PW / 2 - 10, addrPanelY + 10)
-       .lineTo(PW / 2 - 10, addrPanelY + 58)
-       .strokeColor('#d1d5db').lineWidth(0.5).stroke();
+    // Divider below bill/ship
+    doc.moveTo(ML, bsY + bsH).lineTo(MR, bsY + bsH).strokeColor(BORDER).lineWidth(1).stroke();
 
-    // Right: Ship To
-    const shipX = PW / 2;
-    doc.fontSize(7.5).font('Helvetica-Bold').fillColor(ORANGE)
-       .text('SHIP TO', shipX, addrPanelY + 8);
-    doc.fontSize(9).font('Helvetica-Bold').fillColor(DARK)
-       .text(sa.fullName || sa.name || '', shipX, addrPanelY + 20);
-    doc.fontSize(8).font('Helvetica').fillColor(GRAY)
-       .text([sa.addressLine1, sa.addressLine2].filter(Boolean).join(', '), shipX, addrPanelY + 32, { width: 230 })
-       .text([sa.city, sa.state, sa.pincode].filter(Boolean).join(', '), shipX, addrPanelY + 43, { width: 230 })
-       .text(sa.phone || '', shipX, addrPanelY + 54);
+    // ── ITEMS TABLE ────────────────────────────────────────────
+    const tblY = bsY + bsH + 4;
+    const col  = { item: ML, seller: 196, qty: 308, unit: 348, gst: 416, total: 470 };
 
-    // ═══════════════════════════════════════════════
-    // ITEMS TABLE
-    // ═══════════════════════════════════════════════
-    const tblY  = addrPanelY + 72;
-    const colX  = { item: ML, seller: 190, qty: 300, unit: 340, gst: 408, total: 468 };
-    const HDR_H = 20;
-
-    // Table header bar
-    doc.rect(0, tblY, PW, HDR_H).fill(DARK);
+    // Header — dark slate
+    doc.rect(ML, tblY, CW, 22).fill(DARK);
     doc.fontSize(7.5).font('Helvetica-Bold').fillColor('white')
-       .text('ITEM DESCRIPTION', colX.item,   tblY + 6)
-       .text('SELLER',           colX.seller,  tblY + 6)
-       .text('QTY',              colX.qty,     tblY + 6)
-       .text('UNIT (ex-GST)',    colX.unit,    tblY + 6)
-       .text('GST',              colX.gst,     tblY + 6)
-       .text('TOTAL',            colX.total,   tblY + 6);
+       .text('ITEM DESCRIPTION', col.item,   tblY + 7)
+       .text('SELLER',           col.seller,  tblY + 7)
+       .text('QTY',              col.qty,     tblY + 7)
+       .text('UNIT (ex-GST)',    col.unit,    tblY + 7)
+       .text('GST',              col.gst,     tblY + 7)
+       .text('TOTAL',            col.total,   tblY + 7);
 
-    let rowY = tblY + HDR_H;
+    let rowY = tblY + 22;
     let alt  = false;
 
     for (const item of (invoice.items || [])) {
-      const RH = 30;
-      doc.rect(0, rowY, PW, RH).fill(alt ? '#fff7ed' : 'white');
+      const RH = 34;
+      doc.rect(ML, rowY, CW, RH).fill(alt ? '#fafafa' : 'white');
+      doc.rect(ML, rowY, 3, RH).fill(ORANGE);   // subtle left accent
       alt = !alt;
 
-      // Orange left accent strip per row
-      doc.rect(0, rowY, 4, RH).fill(ORANGE);
-
-      doc.fontSize(8.5).font('Helvetica-Bold').fillColor(DARK)
-         .text(item.productName, colX.item, rowY + 6, { width: 145, ellipsis: true });
+      doc.fontSize(9).font('Helvetica-Bold').fillColor(DARK)
+         .text(item.productName, col.item + 2, rowY + 9, { width: 150, ellipsis: true });
       doc.fontSize(8).font('Helvetica').fillColor(GRAY)
-         .text(item.sellerName || 'Eptomart', colX.seller, rowY + 9, { width: 105 })
-         .text(String(item.quantity),          colX.qty,    rowY + 9)
-         .text(fmtINR(item.unitPriceExGst),   colX.unit,   rowY + 9);
+         .text(item.sellerName || 'Eptomart', col.seller, rowY + 12, { width: 108 })
+         .text(String(item.quantity),          col.qty,    rowY + 12)
+         .text(fmtINR(item.unitPriceExGst),   col.unit,   rowY + 12);
       doc.fontSize(7.5).font('Helvetica').fillColor(GRAY)
-         .text(`${item.gstRate}%`,             colX.gst,    rowY + 5)
-         .text(fmtINR(item.gstAmount),         colX.gst,    rowY + 15);
-      doc.fontSize(8.5).font('Helvetica-Bold').fillColor(DARK)
-         .text(fmtINR(item.lineGrandTotal),    colX.total,  rowY + 9);
+         .text(`${item.gstRate}%`,             col.gst,    rowY + 6)
+         .text(fmtINR(item.gstAmount),         col.gst,    rowY + 18);
+      doc.fontSize(9).font('Helvetica-Bold').fillColor(DARK)
+         .text(fmtINR(item.lineGrandTotal),    col.total,  rowY + 12);
 
       rowY += RH;
     }
 
-    // Thin bottom border for table
-    doc.rect(0, rowY, PW, 1).fill('#e5e7eb');
+    // Table bottom border
+    doc.moveTo(ML, rowY).lineTo(MR, rowY).strokeColor(BORDER).lineWidth(1).stroke();
 
-    // ═══════════════════════════════════════════════
-    // TOTALS
-    // ═══════════════════════════════════════════════
-    const totX = 360;
-    const valX = 460;
-    let totY   = rowY + 14;
+    // ── TOTALS ─────────────────────────────────────────────────
+    const totX = 358, valX = 455;
+    let totY = rowY + 16;
 
-    const tRow = (label, value, bold = false, color = GRAY) => {
+    const tRow = (label, val, bold = false) => {
       doc.fontSize(9)
          .font(bold ? 'Helvetica-Bold' : 'Helvetica')
-         .fillColor(bold ? DARK : color)
+         .fillColor(bold ? DARK : GRAY)
          .text(label, totX, totY)
-         .text(value, valX, totY, { width: 90, align: 'right' });
-      totY += 15;
+         .text(val, valX, totY, { width: 90, align: 'right' });
+      totY += 16;
     };
 
     tRow('Subtotal (excl. GST)', fmtINR(invoice.subtotal));
@@ -196,76 +178,64 @@ const generateInvoicePDF = async (invoice) => {
       tRow('IGST', fmtINR(invoice.igstTotal));
     }
     if (invoice.shipping > 0) tRow('Shipping', fmtINR(invoice.shipping));
-    if (invoice.discount > 0) tRow('Discount', `- ${fmtINR(invoice.discount)}`, false, '#16a34a');
+    if (invoice.discount > 0) tRow('Discount', `- ${fmtINR(invoice.discount)}`);
 
-    // Grand total band
-    doc.rect(totX - 10, totY, MR - totX + 20, 24).fill(ORANGE);
-    doc.fontSize(10).font('Helvetica-Bold').fillColor('white')
-       .text('GRAND TOTAL', totX, totY + 7)
-       .text(fmtINR(invoice.grandTotal), valX, totY + 7, { width: 90, align: 'right' });
-    totY += 36;
+    // Line above grand total
+    doc.moveTo(totX, totY).lineTo(MR, totY).strokeColor(BORDER).lineWidth(0.5).stroke();
+    totY += 6;
 
-    // ═══════════════════════════════════════════════
-    // PAYMENT & SHIPMENT STATUS
-    // ═══════════════════════════════════════════════
+    // Grand Total — dark background
+    doc.rect(totX - 8, totY, MR - totX + 18, 26).fill(DARK);
+    doc.fontSize(10.5).font('Helvetica-Bold').fillColor('white')
+       .text('GRAND TOTAL', totX, totY + 8)
+       .text(fmtINR(invoice.grandTotal), valX, totY + 8, { width: 90, align: 'right' });
+    totY += 38;
+
+    // ── PAYMENT & SHIPMENT STATUS BOXES ────────────────────────
     const payMethod   = (invoice.order?.paymentMethod || invoice.paymentMethod || '—').toUpperCase();
     const rawStatus   = invoice.order?.paymentStatus  || invoice.paymentStatus  || 'pending';
     const isCod       = (invoice.order?.paymentMethod || invoice.paymentMethod) === 'cod';
     const orderStatus = invoice.order?.orderStatus    || 'placed';
     const isDelivered = orderStatus === 'delivered';
 
-    let payStatusLabel;
-    if (isCod && !isDelivered) payStatusLabel = 'Pay on Delivery';
-    else if (rawStatus === 'paid')    payStatusLabel = 'PAID ✓';
-    else if (rawStatus === 'pending') payStatusLabel = 'PENDING';
-    else                              payStatusLabel = rawStatus.toUpperCase();
+    const payLabel  = isCod && !isDelivered ? 'Pay on Delivery'
+                    : rawStatus === 'paid'   ? 'PAID'
+                    : rawStatus.toUpperCase();
+    const payColor  = rawStatus === 'paid' ? '#16a34a' : GRAY;
+    const shipLabel = ORDER_STATUS_LABELS[orderStatus] || orderStatus;
 
-    const shipLabel = ORDER_STATUS_LABELS[orderStatus] || orderStatus.toUpperCase();
+    const spY = totY + 10, spH = 52, hw = (CW - 10) / 2;
 
-    // Two-column status panel
-    const panelY = totY + 6;
-    const panelH = 44;
-    doc.rect(ML, panelY, CW / 2 - 8, panelH).fill('#f0fdf4').stroke('#bbf7d0');
-    doc.rect(ML + CW / 2 - 2, panelY, CW / 2 + 2, panelH).fill('#eff6ff').stroke('#bfdbfe');
+    // Payment box — simple border
+    doc.rect(ML, spY, hw, spH).stroke(BORDER);
+    doc.fontSize(7).font('Helvetica-Bold').fillColor(GRAY).text('PAYMENT', ML + 10, spY + 10);
+    doc.fontSize(9).font('Helvetica-Bold').fillColor(DARK).text(payMethod, ML + 10, spY + 23);
+    doc.fontSize(8.5).font('Helvetica-Bold').fillColor(payColor).text(payLabel, ML + 10, spY + 37);
 
-    doc.fontSize(7).font('Helvetica-Bold').fillColor('#166534')
-       .text('PAYMENT METHOD', ML + 8, panelY + 7);
-    doc.fontSize(9).font('Helvetica-Bold').fillColor('#15803d')
-       .text(`${payMethod}`, ML + 8, panelY + 18)
-       .text(payStatusLabel, ML + 8, panelY + 30, { fontSize: 8 });
+    // Shipment box — simple border
+    const bx = ML + hw + 10;
+    doc.rect(bx, spY, hw, spH).stroke(BORDER);
+    doc.fontSize(7).font('Helvetica-Bold').fillColor(GRAY).text('SHIPMENT STATUS', bx + 10, spY + 10);
+    doc.fontSize(9).font('Helvetica-Bold').fillColor(DARK).text(shipLabel, bx + 10, spY + 25, { width: hw - 20 });
 
-    doc.fontSize(7).font('Helvetica-Bold').fillColor('#1e40af')
-       .text('SHIPMENT STATUS', ML + CW / 2 + 6, panelY + 7);
-    doc.fontSize(9).font('Helvetica-Bold').fillColor('#1d4ed8')
-       .text(shipLabel, ML + CW / 2 + 6, panelY + 20, { width: CW / 2 - 14 });
-
-    // ═══════════════════════════════════════════════
-    // FOOTER
-    // ═══════════════════════════════════════════════
-    doc.rect(0, 820, PW, 22).fill(DARK);
-    doc.fontSize(7.5).font('Helvetica').fillColor('#9ca3af')
-       .text(
-         `This is a computer-generated invoice and does not require a signature.   |   ${business.name}  ·  ${business.email}  ·  ${business.website}`,
-         0, 827, { align: 'center', width: PW }
-       );
+    // ── FOOTER ─────────────────────────────────────────────────
+    doc.moveTo(ML, 800).lineTo(MR, 800).strokeColor(BORDER).lineWidth(0.5).stroke();
+    doc.fontSize(7.5).font('Helvetica').fillColor('#94a3b8')
+       .text('This is a computer-generated invoice and does not require a physical signature.',
+             ML, 808, { align: 'center', width: CW });
+    doc.fontSize(7).fillColor('#94a3b8')
+       .text(`${business.name}   ·   ${business.email}   ·   ${business.website}`,
+             ML, 820, { align: 'center', width: CW });
 
     doc.end();
   });
 };
 
-// Upload PDF buffer to Cloudinary and return { url, publicId }
+// Upload PDF buffer to Cloudinary
 const uploadInvoicePDF = (buffer, invoiceNumber) => new Promise((resolve, reject) => {
   const stream = cloudinary.uploader.upload_stream(
-    {
-      folder:        'eptomart/invoices',
-      public_id:     `invoice-${invoiceNumber}`,
-      resource_type: 'raw',
-      format:        'pdf',
-    },
-    (err, result) => {
-      if (err) return reject(err);
-      resolve({ url: result.secure_url, publicId: result.public_id });
-    }
+    { folder: 'eptomart/invoices', public_id: `invoice-${invoiceNumber}`, resource_type: 'raw', format: 'pdf' },
+    (err, result) => { if (err) return reject(err); resolve({ url: result.secure_url, publicId: result.public_id }); }
   );
   Readable.from(buffer).pipe(stream);
 });

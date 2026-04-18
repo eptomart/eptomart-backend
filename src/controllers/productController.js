@@ -5,11 +5,9 @@ const Product = require('../models/Product');
 const Seller  = require('../models/Seller');
 const { deleteImage } = require('../config/cloudinary');
 
-// Helper: get Seller._id from User._id (sellers have a separate Seller document)
-const getSellerDocId = async (userId) => {
-  const s = await Seller.findOne({ user: userId }).select('_id').lean();
-  return s?._id || null;
-};
+// Helper: get Seller._id from req.user
+// User.sellerProfile is already populated by protect middleware — no extra DB query needed
+const getSellerDocId = (req) => req.user.sellerProfile || null;
 
 /**
  * @route   GET /api/products
@@ -99,8 +97,8 @@ const getProduct = async (req, res) => {
 const getSellerProducts = async (req, res) => {
   const { page = 1, limit = 20, approvalStatus } = req.query;
 
-  // Product.seller is a Seller._id, not User._id — look up the Seller document first
-  const sellerDocId = await getSellerDocId(req.user._id);
+  // Product.seller is a Seller._id, not User._id — sellerProfile is pre-loaded by protect middleware
+  const sellerDocId = getSellerDocId(req);
   if (!sellerDocId) return res.status(404).json({ success: false, message: 'Seller profile not found. Contact admin.' });
 
   const filter = { seller: sellerDocId };
@@ -169,7 +167,7 @@ const createProduct = async (req, res) => {
 
   // Seller assignment: sellers are auto-assigned using their Seller document ID
   if (req.user.role === 'seller') {
-    const sellerDocId = await getSellerDocId(req.user._id);
+    const sellerDocId = getSellerDocId(req);
     if (!sellerDocId) return res.status(404).json({ success: false, message: 'Seller profile not found. Contact admin.' });
     productData.seller = sellerDocId;
     productData.approvalStatus = 'pending'; // seller products need admin approval
@@ -202,7 +200,7 @@ const updateProduct = async (req, res) => {
 
   // Seller can only edit their own products — compare using Seller document ID
   if (req.user.role === 'seller') {
-    const sellerDocId = await getSellerDocId(req.user._id);
+    const sellerDocId = getSellerDocId(req);
     if (!sellerDocId || product.seller?.toString() !== sellerDocId.toString()) {
       return res.status(403).json({ success: false, message: 'You can only edit your own products' });
     }
@@ -255,7 +253,7 @@ const deleteProduct = async (req, res) => {
 
   // Seller can only delete their own products — compare using Seller document ID
   if (req.user.role === 'seller') {
-    const sellerDocId = await getSellerDocId(req.user._id);
+    const sellerDocId = getSellerDocId(req);
     if (!sellerDocId || product.seller?.toString() !== sellerDocId.toString()) {
       return res.status(403).json({ success: false, message: 'You can only delete your own products' });
     }

@@ -20,9 +20,19 @@ const sendWelcomeSms = async (phone, message) => {
 
 // ── Admin: list all sellers ──────────────────────────────
 const listSellers = async (req, res) => {
-  const { status, search, page = 1, limit = 20 } = req.query;
+  const { status, search, page = 1, limit = 20, includeDeleted } = req.query;
   const filter = {};
-  if (status) filter.status = status;
+
+  if (status) {
+    filter.status = status;
+  } else if (includeDeleted === 'true') {
+    // show only deleted sellers
+    filter.status = 'deleted';
+  } else {
+    // default: exclude deleted sellers from the main list
+    filter.status = { $ne: 'deleted' };
+  }
+
   if (search) {
     filter.$or = [
       { businessName: { $regex: search, $options: 'i' } },
@@ -174,7 +184,7 @@ const setSellerStatus = async (req, res) => {
   res.json({ success: true, seller });
 };
 
-// ── Admin: delete seller (hard) ──────────────────────────
+// ── Admin: delete seller (soft — marks as 'deleted', preserved for audit) ────
 const deleteSeller = async (req, res) => {
   const seller = await Seller.findById(req.params.id);
   if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
@@ -182,13 +192,32 @@ const deleteSeller = async (req, res) => {
   // Deactivate all seller products so they vanish from storefront
   await Product.updateMany({ seller: seller._id }, { $set: { isActive: false } });
 
-  // Demote the linked user back to a plain customer (don't delete — they may still shop)
+  // Demote the linked user back to a plain customer
   await User.findByIdAndUpdate(seller.user, { isActive: false, sellerProfile: null, role: 'user' });
 
-  // Hard-delete the seller record so it disappears from the list
-  await seller.deleteOne();
+  // Soft-delete: mark as 'deleted' so it disappears from the active list
+  // but is still visible in the Deleted Sellers section for super admin audit
+  seller.status = 'deleted';
+  seller.deletedAt = new Date();
+  await seller.save();
 
   res.json({ success: true, message: 'Seller deleted' });
+};
+
+// ── Admin: restore a soft-deleted seller ─────────────────
+const restoreSeller = async (req, res) => {
+  const seller = await Seller.findById(req.params.id);
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+  if (seller.status !== 'deleted') return res.status(400).json({ success: false, message: 'Seller is not deleted' });
+
+  seller.status   = 'inactive'; // needs re-activation
+  seller.deletedAt = undefined;
+  await seller.save();
+
+  // Re-link user as seller
+  await User.findByIdAndUpdate(seller.user, { isActive: true, sellerProfile: seller._id, role: 'seller' });
+
+  res.json({ success: true, message: 'Seller restored. Set status to active to re-enable.', seller });
 };
 
 // ── Seller: get own profile ──────────────────────────────
@@ -236,4 +265,4 @@ const getSellerStats = async (req, res) => {
   res.json({ success: true, stats: { products, orders } });
 };
 
-module.exports = { listSellers, createSeller, getSeller, updateSeller, setSellerStatus, deleteSeller, getMyProfile, updateMyProfile, getSellerStats };
+module.exports = { listSellers, createSeller, getSeller, updateSeller, setSellerStatus, deleteSeller, restoreSeller, getMyProfile, updateMyProfile, getSellerStats };

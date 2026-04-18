@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const {
-  getProducts, getProduct, getSellerProducts, createProduct, updateProduct,
+  getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct,
   deleteProduct, removeProductImage, addReview, searchProducts
 } = require('../controllers/productController');
 const { protect } = require('../middleware/auth');
@@ -17,10 +17,11 @@ const protectSeller = [
   },
 ];
 
-router.get('/search', searchProducts);
+router.get('/search',     searchProducts);
+router.get('/admin/all',  protectAdmin, getAdminProducts);   // must be before /:slug
 router.get('/seller/mine', protectSeller, getSellerProducts); // must be before /:slug
-router.get('/', getProducts);
-router.get('/:slug', getProduct);
+router.get('/',           getProducts);
+router.get('/:slug',      getProduct);
 
 // Seller + Admin: create and update products
 router.post('/', protectSeller, uploadProduct.array('images', 5), createProduct);

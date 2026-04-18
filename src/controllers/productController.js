@@ -242,6 +242,12 @@ const updateProduct = async (req, res) => {
   if (updates.platformMargin !== undefined) updates.platformMargin = Number(updates.platformMargin);
   if (updates.sellerMargin   !== undefined) updates.sellerMargin   = Number(updates.sellerMargin);
 
+  // Admin/superAdmin saving a product always marks it active (undoes any deactivation)
+  if (['admin', 'superAdmin'].includes(req.user.role)) {
+    updates.isActive = true;
+    updates.approvalStatus = 'approved';
+  }
+
   product = await Product.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true });
 
   res.json({ success: true, message: 'Product updated', product });
@@ -345,4 +351,46 @@ const searchProducts = async (req, res) => {
   res.json({ success: true, products });
 };
 
-module.exports = { getProducts, getProduct, getSellerProducts, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts };
+/**
+ * @route   GET /api/products/admin/all
+ * @desc    Get ALL products for super admin (all statuses, all sellers, no filters stripped)
+ * @access  Admin / SuperAdmin
+ */
+const getAdminProducts = async (req, res) => {
+  const { page = 1, limit = 20, search, approvalStatus, seller, isActive } = req.query;
+  const filter = {};
+
+  if (approvalStatus) filter.approvalStatus = approvalStatus;
+  if (seller)         filter.seller         = seller;
+  if (isActive !== undefined) filter.isActive = isActive === 'true';
+
+  if (search) {
+    filter.$or = [
+      { name:  { $regex: search, $options: 'i' } },
+      { brand: { $regex: search, $options: 'i' } },
+    ];
+  }
+
+  const skip = (Number(page) - 1) * Number(limit);
+  const [products, total] = await Promise.all([
+    Product.find(filter)
+      .populate('category', 'name')
+      .populate('seller',   'businessName status')
+      .sort('-createdAt')
+      .skip(skip)
+      .limit(Number(limit))
+      .select('-reviews'),
+    Product.countDocuments(filter),
+  ]);
+
+  res.json({
+    success: true,
+    count: products.length,
+    total,
+    totalPages: Math.ceil(total / Number(limit)),
+    currentPage: Number(page),
+    products,
+  });
+};
+
+module.exports = { getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts };

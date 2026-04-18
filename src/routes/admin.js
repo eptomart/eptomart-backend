@@ -2,7 +2,8 @@ const express = require('express');
 const router = express.Router();
 const {
   getDashboard, getUsers, getUserLoginHistory,
-  toggleUserStatus, getAllOrders, updateOrderStatus,
+  toggleUserStatus, updateUser, deleteUser,
+  getAllOrders, updateOrderStatus,
   listAdmins, createAdmin, deleteAdmin, updateAdminPermissions,
 } = require('../controllers/adminController');
 const { protectAdmin, protectSuperAdmin, requirePermission } = require('../middleware/adminAuth');
@@ -18,6 +19,8 @@ router.get('/dashboard',                   ...protectSuperAdmin, getDashboard);
 router.get('/users',                       ...protectSuperAdmin, getUsers);
 router.get('/users/:id/login-history',     ...protectSuperAdmin, getUserLoginHistory);
 router.put('/users/:id/status',            ...protectSuperAdmin, toggleUserStatus);
+router.put('/users/:id',                   ...protectSuperAdmin, updateUser);
+router.delete('/users/:id',               ...protectSuperAdmin, deleteUser);
 // Admin account management (superAdmin only)
 router.get('/admins',                      ...protectSuperAdmin, listAdmins);
 router.post('/admins',                     ...protectSuperAdmin, createAdmin);

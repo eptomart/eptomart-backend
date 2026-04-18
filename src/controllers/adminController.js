@@ -151,6 +151,43 @@ const toggleUserStatus = async (req, res) => {
 };
 
 /**
+ * @route   PUT /api/admin/users/:id
+ * @desc    Edit user name / email / phone
+ * @access  SuperAdmin
+ */
+const updateUser = async (req, res) => {
+  const user = await User.findById(req.params.id);
+  if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+  if (user.role === 'admin' || user.role === 'superAdmin')
+    return res.status(400).json({ success: false, message: 'Cannot edit admin accounts here' });
+
+  const { name, email, phone } = req.body;
+  if (name  !== undefined) user.name  = name.trim();
+  if (email !== undefined) user.email = email.trim().toLowerCase();
+  if (phone !== undefined) user.phone = phone.trim();
+
+  await user.save();
+  res.json({ success: true, message: 'User updated', user });
+};
+
+/**
+ * @route   DELETE /api/admin/users/:id
+ * @desc    Delete a user permanently (cannot delete admins or sellers)
+ * @access  SuperAdmin
+ */
+const deleteUser = async (req, res) => {
+  const user = await User.findById(req.params.id);
+  if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+  if (user.role === 'admin' || user.role === 'superAdmin')
+    return res.status(400).json({ success: false, message: 'Cannot delete admin accounts' });
+  if (user.role === 'seller')
+    return res.status(400).json({ success: false, message: 'Delete via Sellers management instead' });
+
+  await user.deleteOne();
+  res.json({ success: true, message: 'User deleted permanently' });
+};
+
+/**
  * @route   GET /api/admin/orders
  * @desc    Get all orders
  * @access  Admin
@@ -276,4 +313,4 @@ const updateAdminPermissions = async (req, res) => {
   res.json({ success: true, message: 'Permissions updated', permissions: admin.permissions });
 };
 
-module.exports = { getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, getAllOrders, updateOrderStatus, listAdmins, createAdmin, deleteAdmin, updateAdminPermissions };
+module.exports = { getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, updateUser, deleteUser, getAllOrders, updateOrderStatus, listAdmins, createAdmin, deleteAdmin, updateAdminPermissions };

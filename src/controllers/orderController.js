@@ -4,6 +4,7 @@ const Seller  = require('../models/Seller');
 const Invoice = require('../models/Invoice');
 const Cart    = require('../models/Cart');
 const { sendOrderConfirmation, sendOtpEmail } = require('../utils/sendEmail');
+const { sendOrderPlacedWhatsApp, sendAdminNewOrderAlert } = require('../utils/sendWhatsApp');
 const { calcOrderGst, extractBasePrice } = require('../utils/gstCalculator');
 const { generateInvoicePDF, uploadInvoicePDF } = require('../utils/generateInvoicePDF');
 const { generateInvoiceNumber } = require('../utils/invoiceNumber');
@@ -131,6 +132,25 @@ const placeOrder = async (req, res) => {
   if (req.user.email) {
     sendOrderConfirmation(req.user.email, order).catch(() => {});
   }
+
+  // WhatsApp confirmation to customer
+  const customerPhone = req.user.phone || order.shippingAddress?.phone;
+  if (customerPhone) {
+    sendOrderPlacedWhatsApp(customerPhone, {
+      orderId:       order.orderId,
+      total:         order.pricing.total,
+      paymentMethod: order.paymentMethod,
+      items:         order.items,
+    }).catch(() => {});
+  }
+
+  // WhatsApp alert to admin
+  sendAdminNewOrderAlert({
+    orderId:      order.orderId,
+    customerName: req.user.name,
+    total:        order.pricing.total,
+    paymentMethod: order.paymentMethod,
+  }).catch(() => {});
 
   // Notify seller(s) of new order (async, non-blocking)
   notifySeller(order).catch(() => {});

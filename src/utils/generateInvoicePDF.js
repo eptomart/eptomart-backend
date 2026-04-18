@@ -44,7 +44,7 @@ const generateInvoicePDF = async (invoice) => {
   // Left: logo image (or fallback text) + address
   if (logoBuf && logoBuf.length > 500) {
     try {
-      doc.image(logoBuf, 40, 36, { height: 32, fit: [180, 32] });
+      doc.image(logoBuf, 40, 30, { height: 52, fit: [220, 52] });
     } catch (_) {
       doc.fontSize(22).font('Helvetica-Bold').fillColor('#f97316').text('EPTOMART', 40, 40);
     }

@@ -185,13 +185,24 @@ const createInvoice = async (order, user, gst, shipping) => {
     };
   }));
 
+  // Map fullName → name (Invoice addressSnapshotSchema uses `name`, User address uses `fullName`)
+  const addrSnap = {
+    name:         order.shippingAddress?.fullName || order.shippingAddress?.name || user.name || '',
+    phone:        order.shippingAddress?.phone || '',
+    addressLine1: order.shippingAddress?.addressLine1 || '',
+    addressLine2: order.shippingAddress?.addressLine2 || '',
+    city:         order.shippingAddress?.city || '',
+    state:        order.shippingAddress?.state || '',
+    pincode:      order.shippingAddress?.pincode || '',
+  };
+
   const invoice = await Invoice.create({
     invoiceNumber,
     order:           order._id,
     customer:        user._id,
     items:           lineItems,
-    billingAddress:  order.shippingAddress,
-    shippingAddress: order.shippingAddress,
+    billingAddress:  addrSnap,
+    shippingAddress: addrSnap,
     subtotal:        gst.subtotal,
     cgstTotal:       gst.cgstTotal,
     sgstTotal:       gst.sgstTotal,

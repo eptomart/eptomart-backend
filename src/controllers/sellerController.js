@@ -174,16 +174,21 @@ const setSellerStatus = async (req, res) => {
   res.json({ success: true, seller });
 };
 
-// ── Admin: delete seller (soft) ──────────────────────────
+// ── Admin: delete seller (hard) ──────────────────────────
 const deleteSeller = async (req, res) => {
   const seller = await Seller.findById(req.params.id);
   if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
-  seller.status = 'inactive';
-  await seller.save();
-  await User.findByIdAndUpdate(seller.user, { isActive: false });
-  // Grey out all seller products immediately
+
+  // Deactivate all seller products so they vanish from storefront
   await Product.updateMany({ seller: seller._id }, { $set: { isActive: false } });
-  res.json({ success: true, message: 'Seller deactivated' });
+
+  // Demote the linked user back to a plain customer (don't delete — they may still shop)
+  await User.findByIdAndUpdate(seller.user, { isActive: false, sellerProfile: null, role: 'user' });
+
+  // Hard-delete the seller record so it disappears from the list
+  await seller.deleteOne();
+
+  res.json({ success: true, message: 'Seller deleted' });
 };
 
 // ── Seller: get own profile ──────────────────────────────

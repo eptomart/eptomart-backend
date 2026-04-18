@@ -40,8 +40,8 @@ const confirmUpiPayment = async (req, res) => {
   const order = await Order.findOne({ _id: orderId, user: req.user._id });
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
   order.paymentDetails.upiRef = upiRef;
-  order.paymentStatus = 'pending';
-  order.orderStatus = 'confirmed';
+  order.paymentStatus = 'pending'; // stays pending until admin verifies UPI
+  // orderStatus stays 'placed' — seller must confirm separately
   await order.save();
   res.json({ success: true, message: 'Payment reference submitted. Admin will verify within 1 hour.' });
 };
@@ -113,11 +113,11 @@ const verifyRazorpayPayment = async (req, res) => {
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
   order.paymentStatus = 'paid';
-  order.orderStatus = 'confirmed';
+  // orderStatus stays 'placed' — seller must confirm separately after payment
   order.paymentDetails = { transactionId: razorpay_payment_id, gatewayOrderId: razorpay_order_id, paidAt: new Date() };
   await order.save();
 
-  res.json({ success: true, message: 'Payment successful! Your order is confirmed.', orderId: order.orderId });
+  res.json({ success: true, message: 'Payment successful! Your order is placed and awaiting seller confirmation.', orderId: order.orderId });
 };
 
 const razorpayWebhook = async (req, res) => {
@@ -132,7 +132,7 @@ const razorpayWebhook = async (req, res) => {
     const order = await Order.findOne({ 'paymentDetails.gatewayOrderId': payment.order_id });
     if (order && order.paymentStatus !== 'paid') {
       order.paymentStatus = 'paid';
-      order.orderStatus = 'confirmed';
+      // orderStatus stays 'placed' — seller confirms separately
       order.paymentDetails.transactionId = payment.id;
       order.paymentDetails.paidAt = new Date();
       await order.save();

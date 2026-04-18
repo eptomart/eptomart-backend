@@ -68,7 +68,12 @@ const getProducts = async (req, res) => {
  * @access  Public
  */
 const getProduct = async (req, res) => {
-  const product = await Product.findOne({ slug: req.params.slug, isActive: true })
+  // Support ?byId=true for seller edit flow (param is an ObjectId, not slug)
+  const query = req.query.byId === 'true'
+    ? { _id: req.params.slug }
+    : { slug: req.params.slug, isActive: true };
+
+  const product = await Product.findOne(query)
     .populate('category', 'name slug')
     .populate('reviews.user', 'name avatar');
 
@@ -80,9 +85,32 @@ const getProduct = async (req, res) => {
 };
 
 /**
+ * @route   GET /api/products/seller/mine
+ * @desc    Get products belonging to logged-in seller
+ * @access  Seller
+ */
+const getSellerProducts = async (req, res) => {
+  const { page = 1, limit = 20, approvalStatus } = req.query;
+  const filter = { seller: req.user._id };
+  if (approvalStatus) filter.approvalStatus = approvalStatus;
+
+  const [products, total] = await Promise.all([
+    Product.find(filter)
+      .populate('category', 'name slug')
+      .sort('-createdAt')
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit))
+      .select('-reviews'),
+    Product.countDocuments(filter),
+  ]);
+
+  res.json({ success: true, products, total });
+};
+
+/**
  * @route   POST /api/products
- * @desc    Create product (Admin)
- * @access  Admin
+ * @desc    Create product (Admin or Seller)
+ * @access  Admin / Seller
  */
 const createProduct = async (req, res) => {
   const {
@@ -127,8 +155,13 @@ const createProduct = async (req, res) => {
     variants: parsedVariants,
   };
 
-  // Seller assignment: admin can assign to any seller
-  if (seller) productData.seller = seller;
+  // Seller assignment: sellers are auto-assigned; admins can assign to any seller
+  if (req.user.role === 'seller') {
+    productData.seller = req.user._id;
+    productData.approvalStatus = 'pending'; // seller products need approval
+  } else if (seller) {
+    productData.seller = seller;
+  }
 
   // instagramLink — only superAdmin or admin can set
   if (instagramLink && ['admin', 'superAdmin'].includes(req.user.role)) {
@@ -152,6 +185,11 @@ const createProduct = async (req, res) => {
 const updateProduct = async (req, res) => {
   let product = await Product.findById(req.params.id);
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+
+  // Seller can only edit their own products
+  if (req.user.role === 'seller' && product.seller?.toString() !== req.user._id.toString()) {
+    return res.status(403).json({ success: false, message: 'You can only edit your own products' });
+  }
 
   const updates = { ...req.body };
 
@@ -197,6 +235,11 @@ const updateProduct = async (req, res) => {
 const deleteProduct = async (req, res) => {
   const product = await Product.findById(req.params.id);
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+
+  // Seller can only delete their own products
+  if (req.user.role === 'seller' && product.seller?.toString() !== req.user._id.toString()) {
+    return res.status(403).json({ success: false, message: 'You can only delete your own products' });
+  }
 
   // Delete images from Cloudinary
   for (const image of product.images) {
@@ -278,4 +321,4 @@ const searchProducts = async (req, res) => {
   res.json({ success: true, products });
 };
 
-module.exports = { getProducts, getProduct, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts };
+module.exports = { getProducts, getProduct, getSellerProducts, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts };

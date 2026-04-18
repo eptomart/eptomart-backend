@@ -66,7 +66,7 @@ const generateInvoicePDF = (invoice) => new Promise((resolve, reject) => {
   let rowY = hdrY + 20;
   let alt   = false;
 
-  for (const item of invoice.items) {
+  for (const item of (invoice.items || [])) {
     const rh = 28;
     if (alt) doc.rect(40, rowY, W, rh).fill('#fff8f0');
     alt = !alt;
@@ -113,10 +113,10 @@ const generateInvoicePDF = (invoice) => new Promise((resolve, reject) => {
 
   // ── Payment info ──────────────────────────────────────
   totY += 10;
-  const payMethod = (invoice.paymentMethod || '—').toUpperCase();
+  // paymentMethod may live on invoice directly OR on the populated order
+  const payMethod = (invoice.order?.paymentMethod || invoice.paymentMethod || '—').toUpperCase();
   const rawStatus = invoice.order?.paymentStatus || invoice.paymentStatus || 'pending';
-  // COD and UPI orders awaiting delivery are "Payment Pending" — never show PAID for unconfirmed
-  const isCod = invoice.paymentMethod === 'cod';
+  const isCod = (invoice.order?.paymentMethod || invoice.paymentMethod) === 'cod';
   const isDelivered = invoice.order?.orderStatus === 'delivered';
   let payStatusLabel;
   if (isCod && !isDelivered) {

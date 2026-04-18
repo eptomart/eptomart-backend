@@ -1,25 +1,20 @@
-const PDFDocument = require('pdfkit');
-const cloudinary  = require('cloudinary').v2;
-const { Readable } = require('stream');
-const https  = require('https');
-const http   = require('http');
-const business = require('../../config/business');
+const PDFDocument       = require('pdfkit');
+const cloudinary        = require('cloudinary').v2;
+const { Readable }      = require('stream');
+const path              = require('path');
+const fs                = require('fs');
+const BusinessSettings  = require('../models/BusinessSettings');
 
 const fmtINR = (n) => `Rs. ${(Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
 
-// Fetch logo image as Buffer (resolves with Buffer or null on failure)
-const fetchLogoBuffer = () => new Promise((resolve) => {
+// Load logo from local assets (no network call — always reliable)
+const LOGO_PATH = path.join(__dirname, '../assets/logo.png');
+const fetchLogoBuffer = () => {
   try {
-    const logoUrl = `${process.env.FRONTEND_URL || 'https://eptomart.pages.dev'}/logo-v3.png`;
-    const client  = logoUrl.startsWith('https') ? https : http;
-    client.get(logoUrl, (res) => {
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => resolve(Buffer.concat(chunks)));
-      res.on('error', () => resolve(null));
-    }).on('error', () => resolve(null));
-  } catch { resolve(null); }
-});
+    if (fs.existsSync(LOGO_PATH)) return fs.readFileSync(LOGO_PATH);
+  } catch (_) {}
+  return null;
+};
 
 // Human-readable order status labels
 const ORDER_STATUS_LABELS = {
@@ -33,7 +28,8 @@ const ORDER_STATUS_LABELS = {
 };
 
 const generateInvoicePDF = async (invoice) => {
-  const logoBuf = await fetchLogoBuffer();
+  const logoBuf  = fetchLogoBuffer();
+  const business = await BusinessSettings.getSettings();
 
   return new Promise((resolve, reject) => {
   const doc    = new PDFDocument({ size: 'A4', margin: 40 });

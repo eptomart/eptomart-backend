@@ -1,5 +1,6 @@
-const User   = require('../models/User');
-const Seller = require('../models/Seller');
+const User    = require('../models/User');
+const Seller  = require('../models/Seller');
+const Product = require('../models/Product');
 const { geocode } = require('../utils/deliveryEstimator');
 const { sendSellerWelcomeEmail, sendSellerActivatedEmail } = require('../utils/sendEmail');
 const { sendOtpSms }   = require('../utils/sendSMS');
@@ -147,8 +148,14 @@ const setSellerStatus = async (req, res) => {
   if (status === 'suspended') seller.suspendedAt = new Date();
   await seller.save();
 
-  // Also activate/deactivate user account
+  // Activate/deactivate user account
   await User.findByIdAndUpdate(seller.user, { isActive: status === 'active' });
+
+  // Activate/deactivate ALL seller products so they grey out (or come back live)
+  await Product.updateMany(
+    { seller: seller._id },
+    { $set: { isActive: status === 'active' } }
+  );
 
   // Send activation notifications (only on first activation, not every toggle)
   if (status === 'active' && !wasAlreadyActive) {
@@ -174,6 +181,8 @@ const deleteSeller = async (req, res) => {
   seller.status = 'inactive';
   await seller.save();
   await User.findByIdAndUpdate(seller.user, { isActive: false });
+  // Grey out all seller products immediately
+  await Product.updateMany({ seller: seller._id }, { $set: { isActive: false } });
   res.json({ success: true, message: 'Seller deactivated' });
 };
 

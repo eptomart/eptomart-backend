@@ -152,6 +152,14 @@ const verifyOtp = async (req, res) => {
     user = await User.create(userData);
     isNewUser = true;
   } else {
+    // Block deactivated accounts — must contact SuperAdmin
+    if (user.isActive === false) {
+      return res.status(403).json({
+        success: false,
+        blocked: true,
+        message: 'Your account has been deactivated. Please contact the SuperAdmin at eptosicare@gmail.com to restore access.',
+      });
+    }
     // Mark as verified
     if (!user.isVerified) {
       user.isVerified = true;
@@ -310,6 +318,14 @@ const verifyFirebasePhone = async (req, res) => {
     });
     isNewUser = true;
   } else {
+    // Block deactivated accounts
+    if (user.isActive === false) {
+      return res.status(403).json({
+        success: false,
+        blocked: true,
+        message: 'Your account has been deactivated. Please contact the SuperAdmin at eptosicare@gmail.com to restore access.',
+      });
+    }
     if (!user.isVerified) {
       user.isVerified = true;
       await user.save();
@@ -335,9 +351,28 @@ const addAddress = async (req, res) => {
   const user = await User.findById(req.user._id);
   const { label, fullName, phone, addressLine1, addressLine2, city, state, pincode, isDefault } = req.body;
 
+  if (!addressLine1 || !city || !pincode) {
+    return res.status(400).json({ success: false, message: 'addressLine1, city and pincode are required' });
+  }
+
+  // Prevent duplicate entries (same street + pincode)
+  const duplicate = user.addresses.find(
+    a => a.addressLine1?.trim().toLowerCase() === addressLine1?.trim().toLowerCase()
+      && a.pincode === pincode
+  );
+  if (duplicate) {
+    return res.json({ success: true, addresses: user.addresses, duplicate: true });
+  }
+
   if (isDefault) user.addresses.forEach(a => { a.isDefault = false; });
 
-  user.addresses.push({ label: label || 'Home', fullName, phone, addressLine1, addressLine2, city, state, pincode, isDefault: !!isDefault });
+  user.addresses.push({
+    label: label || 'Home',
+    fullName, phone,
+    addressLine1, addressLine2: addressLine2 || '',
+    city, state: state || '', pincode,
+    isDefault: !!isDefault || user.addresses.length === 0,
+  });
   await user.save();
   res.json({ success: true, addresses: user.addresses });
 };

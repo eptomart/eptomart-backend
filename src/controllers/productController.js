@@ -27,7 +27,8 @@ const getProducts = async (req, res) => {
     inStock,
   } = req.query;
 
-  const filter = { isActive: true, approvalStatus: 'approved' };
+  // Show all approved products (including inactive/deactivated seller products — they appear greyed out on frontend)
+  const filter = { approvalStatus: 'approved' };
 
   if (category) filter.category = category;
   if (featured === 'true') filter.isFeatured = true;
@@ -74,9 +75,10 @@ const getProducts = async (req, res) => {
  */
 const getProduct = async (req, res) => {
   // Support ?byId=true for seller edit flow (param is an ObjectId, not slug)
+  // Allow viewing inactive products so buyers can see a "seller unavailable" banner
   const query = req.query.byId === 'true'
     ? { _id: req.params.slug }
-    : { slug: req.params.slug, isActive: true, approvalStatus: 'approved' };
+    : { slug: req.params.slug, approvalStatus: 'approved' };
 
   const product = await Product.findOne(query)
     .populate('category', 'name slug')

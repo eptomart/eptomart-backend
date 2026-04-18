@@ -62,6 +62,12 @@ const userSchema = new mongoose.Schema({
     default: 'user',
   },
   sellerProfile: { type: mongoose.Schema.Types.ObjectId, ref: 'Seller' },
+  // RBAC: which admin modules this user can access (superAdmin ignores this — has all)
+  permissions: {
+    type: [String],
+    enum: ['orders', 'products', 'approvals', 'sellers', 'users', 'analytics', 'categories', 'expenses', 'settlements', 'admins'],
+    default: ['orders'],
+  },
   isVerified: {
     type: Boolean,
     default: false,

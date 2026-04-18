@@ -3,14 +3,13 @@ const router = express.Router();
 const {
   getDashboard, getUsers, getUserLoginHistory,
   toggleUserStatus, getAllOrders, updateOrderStatus,
-  listAdmins, createAdmin, deleteAdmin,
+  listAdmins, createAdmin, deleteAdmin, updateAdminPermissions,
 } = require('../controllers/adminController');
-const { protectAdmin, protectSuperAdmin } = require('../middleware/adminAuth');
+const { protectAdmin, protectSuperAdmin, requirePermission } = require('../middleware/adminAuth');
 
-// ── Routes accessible to ALL admins (admin + superAdmin) ──
-// Orders: regular admin can view and confirm orders
-router.get('/orders',            ...protectAdmin, getAllOrders);
-router.put('/orders/:id/status', ...protectAdmin, updateOrderStatus);
+// ── Admin + SuperAdmin routes — gated by RBAC permission ──
+router.get('/orders',            ...protectAdmin, requirePermission('orders'), getAllOrders);
+router.put('/orders/:id/status', ...protectAdmin, requirePermission('orders'), updateOrderStatus);
 
 // ── Routes restricted to superAdmin ONLY ──────────────────
 // Dashboard with analytics
@@ -22,6 +21,7 @@ router.put('/users/:id/status',            ...protectSuperAdmin, toggleUserStatu
 // Admin account management (superAdmin only)
 router.get('/admins',                      ...protectSuperAdmin, listAdmins);
 router.post('/admins',                     ...protectSuperAdmin, createAdmin);
+router.patch('/admins/:id/permissions',    ...protectSuperAdmin, updateAdminPermissions);
 router.delete('/admins/:id',               ...protectSuperAdmin, deleteAdmin);
 
 module.exports = router;

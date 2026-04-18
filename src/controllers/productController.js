@@ -27,7 +27,7 @@ const getProducts = async (req, res) => {
     inStock,
   } = req.query;
 
-  const filter = { isActive: true };
+  const filter = { isActive: true, approvalStatus: 'approved' };
 
   if (category) filter.category = category;
   if (featured === 'true') filter.isFeatured = true;
@@ -76,7 +76,7 @@ const getProduct = async (req, res) => {
   // Support ?byId=true for seller edit flow (param is an ObjectId, not slug)
   const query = req.query.byId === 'true'
     ? { _id: req.params.slug }
-    : { slug: req.params.slug, isActive: true };
+    : { slug: req.params.slug, isActive: true, approvalStatus: 'approved' };
 
   const product = await Product.findOne(query)
     .populate('category', 'name slug')
@@ -172,6 +172,7 @@ const createProduct = async (req, res) => {
     if (!sellerDocId) return res.status(404).json({ success: false, message: 'Seller profile not found. Contact admin.' });
     productData.seller = sellerDocId;
     productData.approvalStatus = 'pending'; // seller products need admin approval
+    productData.isActive = false;           // hidden until approved
   } else if (seller) {
     productData.seller = seller; // admin assigns seller by Seller._id
   }
@@ -327,6 +328,7 @@ const searchProducts = async (req, res) => {
 
   const products = await Product.find({
     isActive: true,
+    approvalStatus: 'approved',
     $or: [
       { name: { $regex: q, $options: 'i' } },
       { tags: { $in: [new RegExp(q, 'i')] } },

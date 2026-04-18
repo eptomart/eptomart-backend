@@ -199,19 +199,26 @@ const updateOrderStatus = async (req, res) => {
 };
 
 // ── Admin Account Management (superAdmin only) ───────────
+const VALID_PERMISSIONS = ['orders', 'products', 'approvals', 'sellers', 'users', 'analytics', 'categories', 'expenses', 'settlements', 'admins'];
+
 const listAdmins = async (req, res) => {
   const admins = await User.find({ role: { $in: ['admin', 'superAdmin'] } })
-    .select('name email phone role isActive createdAt lastLogin')
+    .select('name email phone role isActive permissions createdAt lastLogin')
     .sort({ createdAt: -1 })
     .lean();
   res.json({ success: true, admins });
 };
 
 const createAdmin = async (req, res) => {
-  const { name, email, phone } = req.body;
+  const { name, email, phone, permissions } = req.body;
   if (!name || (!email && !phone)) {
     return res.status(400).json({ success: false, message: 'Name and email or phone required' });
   }
+
+  // Validate and sanitise permissions list; default to orders-only
+  const cleanPerms = Array.isArray(permissions)
+    ? permissions.filter(p => VALID_PERMISSIONS.includes(p))
+    : ['orders'];
 
   const query = email ? { email } : { phone };
   const existing = await User.findOne(query);
@@ -223,6 +230,7 @@ const createAdmin = async (req, res) => {
   const admin = await User.create({
     name, email: email || undefined, phone: phone || undefined,
     role: 'admin', isVerified: true, password: tempPassword,
+    permissions: cleanPerms,
   });
 
   // Send credentials by email if provided
@@ -255,4 +263,17 @@ const deleteAdmin = async (req, res) => {
   res.json({ success: true, message: 'Admin access revoked' });
 };
 
-module.exports = { getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, getAllOrders, updateOrderStatus, listAdmins, createAdmin, deleteAdmin };
+// SuperAdmin: update which modules an admin can access
+const updateAdminPermissions = async (req, res) => {
+  const admin = await User.findById(req.params.id);
+  if (!admin) return res.status(404).json({ success: false, message: 'Admin not found' });
+  if (admin.role === 'superAdmin') return res.status(400).json({ success: false, message: 'SuperAdmin always has full access' });
+  const cleanPerms = Array.isArray(req.body.permissions)
+    ? req.body.permissions.filter(p => VALID_PERMISSIONS.includes(p))
+    : admin.permissions;
+  admin.permissions = cleanPerms;
+  await admin.save();
+  res.json({ success: true, message: 'Permissions updated', permissions: admin.permissions });
+};
+
+module.exports = { getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, getAllOrders, updateOrderStatus, listAdmins, createAdmin, deleteAdmin, updateAdminPermissions };

@@ -36,9 +36,24 @@ const superAdminOnly = (req, res, next) => {
 };
 
 /**
+ * Per-module permission guard — place AFTER adminOnly/superAdminOnly
+ * SuperAdmin bypasses all permission checks (has everything)
+ */
+const requirePermission = (module) => (req, res, next) => {
+  if (req.user.role === 'superAdmin') return next();
+  if (!req.user.permissions || !req.user.permissions.includes(module)) {
+    return res.status(403).json({
+      success: false,
+      message: `Access denied: your account does not have permission for the '${module}' module`,
+    });
+  }
+  next();
+};
+
+/**
  * Combined shorthand: protect + adminOnly
  */
 const protectAdmin      = [protect, adminOnly];
 const protectSuperAdmin = [protect, superAdminOnly];
 
-module.exports = { adminOnly, superAdminOnly, protectAdmin, protectSuperAdmin };
+module.exports = { adminOnly, superAdminOnly, protectAdmin, protectSuperAdmin, requirePermission };

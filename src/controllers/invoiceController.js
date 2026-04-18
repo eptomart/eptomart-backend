@@ -57,24 +57,23 @@ const downloadPDF = async (req, res) => {
     });
   }
 
-  // If PDF already generated, redirect to Cloudinary
-  if (invoice.pdfUrl) {
-    return res.redirect(invoice.pdfUrl);
-  }
-
-  // PDF missing — regenerate on-the-fly and stream to client
+  // Always generate and stream PDF directly — never redirect to Cloudinary
+  // (Cloudinary URL is used only for window.open on the frontend, not for XHR downloads)
   try {
     const buffer = await generateInvoicePDF(invoice);
-    // Upload async so next request hits Cloudinary (don't await — serve immediately)
-    uploadInvoicePDF(buffer, invoice.invoiceNumber)
-      .then(({ url, publicId }) => Invoice.findByIdAndUpdate(invoice._id, { pdfUrl: url, pdfPublicId: publicId }))
-      .catch(e => console.error('[Invoice PDF] Background upload failed:', e.message));
+
+    // Upload to Cloudinary async in background so future window.open calls work
+    if (!invoice.pdfUrl) {
+      uploadInvoicePDF(buffer, invoice.invoiceNumber)
+        .then(({ url, publicId }) => Invoice.findByIdAndUpdate(invoice._id, { pdfUrl: url, pdfPublicId: publicId }))
+        .catch(e => console.error('[Invoice PDF] Background upload failed:', e.message));
+    }
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="invoice-${invoice.invoiceNumber}.pdf"`);
     return res.end(buffer);
   } catch (err) {
-    console.error('[Invoice PDF] Regeneration failed:', err.message);
+    console.error('[Invoice PDF] Generation failed:', err.message, err.stack);
     return res.status(500).json({ success: false, message: 'Failed to generate PDF. Please try again.' });
   }
 };

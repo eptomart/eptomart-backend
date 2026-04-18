@@ -3,7 +3,8 @@ const Product = require('../models/Product');
 const Seller  = require('../models/Seller');
 const Invoice = require('../models/Invoice');
 const Cart    = require('../models/Cart');
-const { sendOrderConfirmation, sendOtpEmail } = require('../utils/sendEmail');
+const { sendOrderConfirmation, sendSellerNewOrderEmail } = require('../utils/sendEmail');
+const { notifyUser } = require('../utils/pushNotification');
 const { sendOrderPlacedWhatsApp, sendAdminNewOrderAlert } = require('../utils/sendWhatsApp');
 const { calcOrderGst, extractBasePrice } = require('../utils/gstCalculator');
 const { generateInvoicePDF, uploadInvoicePDF } = require('../utils/generateInvoicePDF');
@@ -16,22 +17,38 @@ const notifySeller = async (order) => {
     // Group items by seller
     const sellerMap = {};
     for (const item of order.items) {
-      const product = await Product.findById(item.product).populate('seller', 'contact businessName').lean();
+      const product = await Product.findById(item.product)
+        .populate('seller', 'contact businessName user')
+        .lean();
       if (!product?.seller) continue;
       const sid = product.seller._id.toString();
       if (!sellerMap[sid]) sellerMap[sid] = { seller: product.seller, items: [] };
       sellerMap[sid].items.push({ name: item.name, qty: item.quantity, price: item.price });
     }
+
     for (const { seller, items } of Object.values(sellerMap)) {
-      if (!seller?.contact?.email) continue;
-      const subject = `New Order #${order.orderId} — Action Required`;
-      const text = `Hello ${seller.businessName},\n\nYou have received a new order:\n` +
-        items.map(i => `  • ${i.name} × ${i.qty} — ₹${i.price * i.qty}`).join('\n') +
-        `\n\nTotal Items: ${items.length}\nOrder ID: ${order.orderId}` +
-        `\n\nPlease log in to your seller dashboard to confirm the order.\n\nhttps://eptomart.com/seller\n\n— Eptomart Team`;
-      await sendOtpEmail(seller.contact.email, null, 'seller_order_notification', {
-        subject, text, sellerName: seller.businessName, orderId: order.orderId, items,
-      }).catch(() => {});
+      const total = items.reduce((s, i) => s + (i.price || 0) * i.qty, 0);
+
+      // Email notification (proper seller order email, not OTP template)
+      if (seller?.contact?.email) {
+        sendSellerNewOrderEmail(seller.contact.email, {
+          businessName: seller.businessName,
+          orderId:      order.orderId,
+          items,
+          total,
+        }).catch(() => {});
+      }
+
+      // In-app push notification to seller's browser
+      if (seller?.user) {
+        notifyUser(seller.user, {
+          title: `📦 New Order #${order.orderId}`,
+          body:  `${items.length} item(s) · ₹${total.toLocaleString('en-IN')} — Confirm in your dashboard.`,
+          icon:  '/icons/icon-192x192.png',
+          url:   '/seller/orders',
+          tag:   `order-${order.orderId}`,
+        }).catch(() => {});
+      }
     }
   } catch (err) {
     console.error('[Order Notify Seller] Error:', err.message);
@@ -117,20 +134,25 @@ const placeOrder = async (req, res) => {
   // Clear server-side cart
   await Cart.findOneAndUpdate({ user: req.user._id }, { items: [] });
 
-  // Generate invoice:
-  // COD orders → invoice created but PDF not generated until delivery (payment_pending)
-  // Online payment → generate full PDF immediately
+  // Generate invoice + PDF
   let invoice = null;
+  let pdfBuf  = null;
   try {
-    invoice = await createInvoice(order, req.user, gst, shipping);
+    const result = await createInvoice(order, req.user, gst, shipping);
+    invoice = result.invoice;
+    pdfBuf  = result.pdfBuf;
     await Order.findByIdAndUpdate(order._id, { invoice: invoice._id });
   } catch (err) {
     console.error('[Invoice] Failed to generate:', err.message);
   }
 
-  // Email confirmation to customer
+  // Rich confirmation email to customer (with PDF attached if generated)
   if (req.user.email) {
-    sendOrderConfirmation(req.user.email, order).catch(() => {});
+    sendOrderConfirmation(req.user.email, order, {
+      userName:      req.user.name || '',
+      invoicePdfBuf: pdfBuf,
+      invoiceNumber: invoice?.invoiceNumber || '',
+    }).catch(() => {});
   }
 
   // WhatsApp confirmation to customer
@@ -166,6 +188,7 @@ const placeOrder = async (req, res) => {
       pdfUrl:        invoice.pdfUrl,
       grandTotal:    invoice.grandTotal,
     } : null,
+    // pdfBuf not sent to client (internal use only)
   });
 };
 
@@ -244,17 +267,20 @@ const createInvoice = async (order, user, gst, shipping) => {
   });
 
   // Generate PDF and upload to Cloudinary
+  let pdfBuf = null;
   try {
-    const pdfBuf = await generateInvoicePDF({ ...invoice.toObject(), order });
+    pdfBuf = await generateInvoicePDF({ ...invoice.toObject(), order });
     const { url, publicId } = await uploadInvoicePDF(pdfBuf, invoiceNumber);
     invoice.pdfUrl      = url;
     invoice.pdfPublicId = publicId;
     await invoice.save();
   } catch (pdfErr) {
     console.error('[PDF] Upload failed:', pdfErr.message);
+    pdfBuf = null;
   }
 
-  return invoice;
+  // Return both invoice + PDF buffer (buffer used for email attachment)
+  return { invoice, pdfBuf };
 };
 
 // ── GET /api/orders ───────────────────────────────────────
@@ -301,4 +327,62 @@ const cancelOrder = async (req, res) => {
   res.json({ success: true, message: 'Order cancelled', order });
 };
 
-module.exports = { placeOrder, getMyOrders, getOrder, cancelOrder, createInvoice };
+// ── GET /api/orders/seller/mine ─────────────────────────
+const getSellerOrders = async (req, res) => {
+  const { page = 1, limit = 20 } = req.query;
+  const sellerDocId = req.user.sellerProfile || null;
+  if (!sellerDocId) return res.json({ success: true, orders: [], total: 0 });
+
+  // Find all product IDs belonging to this seller
+  const sellerProducts = await Product.find({ seller: sellerDocId }).select('_id').lean();
+  const productIds = sellerProducts.map(p => p._id);
+  if (productIds.length === 0) return res.json({ success: true, orders: [], total: 0 });
+
+  const filter = { 'items.product': { $in: productIds } };
+
+  const [orders, total] = await Promise.all([
+    Order.find(filter)
+      .populate('user', 'name email phone')
+      .sort('-createdAt')
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit))
+      .lean(),
+    Order.countDocuments(filter),
+  ]);
+
+  // Keep only this seller's items in each order (hide other sellers' items)
+  const productIdSet = new Set(productIds.map(p => p.toString()));
+  const result = orders.map(o => ({
+    ...o,
+    items: o.items.filter(item => productIdSet.has(item.product.toString())),
+  }));
+
+  res.json({ success: true, orders: result, total, totalPages: Math.ceil(total / Number(limit)) });
+};
+
+// ── PATCH /api/orders/:id/seller-confirm ─────────────────
+const sellerConfirmOrder = async (req, res) => {
+  const sellerDocId = req.user.sellerProfile || null;
+  if (!sellerDocId) return res.status(403).json({ success: false, message: 'Seller profile not found' });
+
+  const order = await Order.findById(req.params.id);
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  if (order.orderStatus !== 'placed') {
+    return res.status(400).json({ success: false, message: `Order is already ${order.orderStatus}` });
+  }
+
+  // Verify this seller has at least one product in this order
+  const sellerProducts = await Product.find({ seller: sellerDocId }).select('_id').lean();
+  const productIdSet   = new Set(sellerProducts.map(p => p._id.toString()));
+  const hasItems       = order.items.some(item => productIdSet.has(item.product.toString()));
+  if (!hasItems) return res.status(403).json({ success: false, message: 'Not authorized for this order' });
+
+  order.orderStatus = 'confirmed';
+  order.statusHistory.push({ status: 'confirmed', note: 'Confirmed by seller', updatedBy: 'seller' });
+  await order.save();
+
+  res.json({ success: true, message: 'Order confirmed successfully', order });
+};
+
+module.exports = { placeOrder, getMyOrders, getOrder, cancelOrder, createInvoice, getSellerOrders, sellerConfirmOrder };

@@ -4,14 +4,16 @@
 // ============================================
 const https = require('https');
 
-const sendViaResend = (to, subject, html) => {
+const sendViaResend = (to, subject, html, attachments = []) => {
   return new Promise((resolve) => {
-    const body = JSON.stringify({
+    const payload = {
       from: process.env.EMAIL_FROM || 'Eptomart <onboarding@resend.dev>',
       to,
       subject,
       html,
-    });
+    };
+    if (attachments.length) payload.attachments = attachments;
+    const body = JSON.stringify(payload);
 
     const options = {
       hostname: 'api.resend.com',
@@ -91,20 +93,138 @@ const sendOtpEmail = async (to, otp, purpose = 'login') => {
 };
 
 /**
- * Send order confirmation email
+ * Send order confirmation email (rich HTML + optional PDF attachment)
  */
-const sendOrderConfirmation = async (to, order) => {
+const sendOrderConfirmation = async (to, order, opts = {}) => {
+  const { userName = '', invoicePdfBuf = null, invoiceNumber = '' } = opts;
+
+  const itemRows = (order.items || []).map(item => `
+    <tr>
+      <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;color:#333;">${item.name}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;text-align:center;color:#555;">${item.quantity}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;text-align:right;color:#333;font-weight:600;">₹${((item.price || 0) * item.quantity).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+    </tr>
+  `).join('');
+
   const html = `
-    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
-      <h2 style="color:#ea580c;">✅ Order Confirmed!</h2>
-      <p>Your order <strong>#${order.orderId}</strong> has been placed successfully.</p>
-      <p><strong>Total:</strong> ₹${order.pricing.total.toLocaleString('en-IN')}</p>
-      <p><strong>Payment:</strong> ${order.paymentMethod.toUpperCase()}</p>
-      <p>We'll notify you when your order is shipped.</p>
-      <p style="color:#999;font-size:12px;">© Eptomart</p>
-    </div>
+    <!DOCTYPE html><html><head><meta charset="utf-8"></head>
+    <body style="font-family:Arial,sans-serif;background:#f4f4f4;margin:0;padding:20px;">
+      <div style="max-width:580px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,0.08);">
+        <div style="background:linear-gradient(135deg,#f97316,#ea580c);padding:32px 30px;text-align:center;">
+          <h1 style="color:white;margin:0 0 4px;font-size:26px;">🛒 Eptomart</h1>
+          <p style="color:rgba(255,255,255,0.85);margin:0;font-size:14px;">Your order is confirmed!</p>
+        </div>
+        <div style="padding:30px;">
+          <h2 style="color:#333;margin-top:0;">Hello${userName ? ', ' + userName : ''}! 🎉</h2>
+          <p style="color:#555;font-size:15px;line-height:1.6;">
+            Your order <strong style="color:#ea580c;">#${order.orderId}</strong> has been placed successfully.
+            We'll notify you once your order is confirmed and shipped.
+          </p>
+
+          <table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:14px;">
+            <thead>
+              <tr style="background:#f97316;">
+                <th style="padding:10px 12px;text-align:left;color:white;border-radius:4px 0 0 0;">Item</th>
+                <th style="padding:10px 12px;text-align:center;color:white;">Qty</th>
+                <th style="padding:10px 12px;text-align:right;color:white;border-radius:0 4px 0 0;">Amount</th>
+              </tr>
+            </thead>
+            <tbody>${itemRows}</tbody>
+          </table>
+
+          <div style="background:#fff7ed;border-radius:8px;padding:16px 20px;margin-bottom:20px;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:14px;color:#555;">
+              <span>Subtotal</span><span>₹${(order.pricing?.subtotal || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+            </div>
+            ${(order.pricing?.tax || 0) > 0 ? `<div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:14px;color:#555;"><span>GST</span><span>₹${(order.pricing.tax).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span></div>` : ''}
+            ${(order.pricing?.shipping || 0) > 0 ? `<div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:14px;color:#555;"><span>Shipping</span><span>₹${order.pricing.shipping.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span></div>` : '<div style="font-size:13px;color:#22c55e;margin-bottom:6px;">✅ Free Shipping</div>'}
+            <div style="display:flex;justify-content:space-between;font-size:16px;font-weight:bold;color:#333;border-top:1px solid #f97316;padding-top:8px;margin-top:4px;">
+              <span>Grand Total</span><span style="color:#ea580c;">₹${(order.pricing?.total || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+            </div>
+          </div>
+
+          <p style="font-size:14px;color:#555;">
+            <strong>Payment Method:</strong> ${(order.paymentMethod || '').toUpperCase()}<br>
+            <strong>Status:</strong> ${order.paymentMethod === 'cod' ? 'Pay on Delivery' : 'Paid'}
+          </p>
+
+          ${invoiceNumber ? `<p style="font-size:13px;color:#888;">Invoice <strong>${invoiceNumber}</strong> is attached to this email.</p>` : ''}
+
+          <a href="https://eptomart.com/orders" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;text-decoration:none;padding:12px 24px;border-radius:8px;font-weight:700;font-size:14px;margin-top:8px;">Track Your Order →</a>
+        </div>
+        <div style="background:#f9f9f9;padding:16px 30px;text-align:center;font-size:12px;color:#999;">
+          <p style="margin:0;">Questions? Email us at <a href="mailto:support@eptomart.com" style="color:#f97316;">support@eptomart.com</a></p>
+          <p style="margin:4px 0 0;">© ${new Date().getFullYear()} Eptomart. All rights reserved.</p>
+        </div>
+      </div>
+    </body></html>
   `;
-  return sendViaResend(to, `Order Confirmed — #${order.orderId} | Eptomart`, html);
+
+  const attachments = invoicePdfBuf
+    ? [{ filename: `invoice-${invoiceNumber || order.orderId}.pdf`, content: invoicePdfBuf.toString('base64') }]
+    : [];
+
+  return sendViaResend(to, `Order Confirmed — #${order.orderId} | Eptomart`, html, attachments);
+};
+
+/**
+ * Send seller new order notification email
+ */
+const sendSellerNewOrderEmail = async (to, { businessName, orderId, items = [], total = 0 }) => {
+  const itemRows = items.map(i => `
+    <tr>
+      <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;color:#333;">${i.name}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;text-align:center;color:#555;">${i.qty}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;text-align:right;color:#333;font-weight:600;">₹${((i.price || 0) * i.qty).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+    </tr>
+  `).join('');
+
+  const html = `
+    <!DOCTYPE html><html><head><meta charset="utf-8"></head>
+    <body style="font-family:Arial,sans-serif;background:#f4f4f4;margin:0;padding:20px;">
+      <div style="max-width:580px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,0.08);">
+        <div style="background:linear-gradient(135deg,#1e40af,#1d4ed8);padding:32px 30px;text-align:center;">
+          <h1 style="color:white;margin:0 0 4px;font-size:26px;">📦 New Order Received!</h1>
+          <p style="color:rgba(255,255,255,0.85);margin:0;font-size:14px;">Action required — please confirm this order</p>
+        </div>
+        <div style="padding:30px;">
+          <h2 style="color:#333;margin-top:0;">Hello, ${businessName}!</h2>
+          <p style="color:#555;font-size:15px;line-height:1.6;">
+            You have a new order <strong style="color:#1d4ed8;">#${orderId}</strong> waiting for your confirmation.
+            Please log in to your seller dashboard to review and confirm it.
+          </p>
+
+          <table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:14px;">
+            <thead>
+              <tr style="background:#1d4ed8;">
+                <th style="padding:10px 12px;text-align:left;color:white;">Product</th>
+                <th style="padding:10px 12px;text-align:center;color:white;">Qty</th>
+                <th style="padding:10px 12px;text-align:right;color:white;">Amount</th>
+              </tr>
+            </thead>
+            <tbody>${itemRows}</tbody>
+            <tfoot>
+              <tr style="background:#eff6ff;">
+                <td colspan="2" style="padding:10px 12px;font-weight:bold;color:#1d4ed8;">Order Total</td>
+                <td style="padding:10px 12px;text-align:right;font-weight:bold;color:#1d4ed8;">₹${total.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+              </tr>
+            </tfoot>
+          </table>
+
+          <div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:12px 16px;border-radius:4px;margin-bottom:20px;font-size:14px;color:#92400e;">
+            ⏰ Please confirm this order within 24 hours to avoid automatic cancellation.
+          </div>
+
+          <a href="https://eptomart.com/seller/orders" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;text-decoration:none;padding:13px 28px;border-radius:8px;font-weight:700;font-size:15px;">Confirm Order Now →</a>
+        </div>
+        <div style="background:#f9f9f9;padding:16px 30px;text-align:center;font-size:12px;color:#999;">
+          <p style="margin:0;">© ${new Date().getFullYear()} Eptomart. All rights reserved.</p>
+        </div>
+      </div>
+    </body></html>
+  `;
+
+  return sendViaResend(to, `New Order #${orderId} — Action Required | Eptomart`, html);
 };
 
 /**
@@ -228,4 +348,4 @@ const sendSellerActivatedEmail = async (to, { businessName }) => {
   return sendViaResend(to, `Your Eptomart Seller Account is Now Active! — ${businessName}`, html);
 };
 
-module.exports = { sendOtpEmail, sendOrderConfirmation, sendSellerWelcomeEmail, sendSellerActivatedEmail };
+module.exports = { sendOtpEmail, sendOrderConfirmation, sendSellerNewOrderEmail, sendSellerWelcomeEmail, sendSellerActivatedEmail };

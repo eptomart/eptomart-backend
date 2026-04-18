@@ -112,8 +112,11 @@ const generateInvoicePDF = async (invoice) => {
     doc.moveTo(ML, bsY + bsH).lineTo(MR, bsY + bsH).strokeColor(BORDER).lineWidth(1).stroke();
 
     // ── ITEMS TABLE ────────────────────────────────────────────
+    // valX/valW shared by both table TOTAL column and subtotals — keeps right edges identical
+    const totX = 310, labW = 130, valX = 450, valW = 95;
+
     const tblY = bsY + bsH + 4;
-    const col  = { item: ML, seller: 196, qty: 308, unit: 348, gst: 416, total: 470 };
+    const col  = { item: ML, seller: 196, qty: 308, unit: 348, gst: 416 };
 
     doc.rect(ML, tblY, CW, 22).fill(DARK);
     doc.fontSize(7.5).font('Helvetica-Bold').fillColor('white')
@@ -122,7 +125,7 @@ const generateInvoicePDF = async (invoice) => {
        .text('QTY',              col.qty,     tblY + 7)
        .text('UNIT (ex-GST)',    col.unit,    tblY + 7)
        .text('GST',              col.gst,     tblY + 7)
-       .text('TOTAL',            col.total,   tblY + 7);
+       .text('TOTAL',            valX,        tblY + 7, { width: valW, align: 'right' });
 
     let rowY = tblY + 22, alt = false;
     for (const item of (invoice.items || [])) {
@@ -140,15 +143,14 @@ const generateInvoicePDF = async (invoice) => {
       doc.fontSize(7.5).font('Helvetica').fillColor(GRAY)
          .text(`${item.gstRate}%`,             col.gst,    rowY + 6)
          .text(fmtINR(item.gstAmount),         col.gst,    rowY + 18);
+      // Right-align item total to same edge as subtotals
       doc.fontSize(9).font('Helvetica-Bold').fillColor(DARK)
-         .text(fmtINR(item.lineGrandTotal),    col.total,  rowY + 12);
+         .text(fmtINR(item.lineGrandTotal),    valX, rowY + 12, { width: valW, align: 'right' });
       rowY += RH;
     }
     doc.moveTo(ML, rowY).lineTo(MR, rowY).strokeColor(BORDER).lineWidth(1).stroke();
 
     // ── TOTALS ─────────────────────────────────────────────────
-    // Label col: x=310, w=130 → ends at 440. Value col: x=450, w=95 → ends at 545
-    const totX = 310, labW = 130, valX = 450, valW = 95;
     let totY = rowY + 16;
 
     const tRow = (label, val, bold = false) => {

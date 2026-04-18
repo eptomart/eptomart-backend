@@ -99,7 +99,8 @@ const getSellerProducts = async (req, res) => {
 
   // Product.seller is a Seller._id, not User._id — sellerProfile is pre-loaded by protect middleware
   const sellerDocId = getSellerDocId(req);
-  if (!sellerDocId) return res.status(404).json({ success: false, message: 'Seller profile not found. Contact admin.' });
+  // Admins/superAdmins have no sellerProfile — return empty list rather than erroring
+  if (!sellerDocId) return res.json({ success: true, products: [], total: 0 });
 
   const filter = { seller: sellerDocId };
   if (approvalStatus) filter.approvalStatus = approvalStatus;

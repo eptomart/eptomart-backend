@@ -106,9 +106,12 @@ const productSchema = new mongoose.Schema({
   seller:        { type: mongoose.Schema.Types.ObjectId, ref: 'Seller' },
   masterProduct: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
 
-  // Margin & Pricing
-  // platformMargin: Eptomart commission % (e.g., 10 means 10%)
-  // sellerMargin:   Seller's desired profit % on top of cost
+  // Mandatory seller pricing fields
+  costPrice:      { type: Number, min: 0 },           // seller's cost/purchase price
+  sellerPrice:    { type: Number, min: 0 },           // seller's listed price before Eptomart margin
+  eptomartMargin: { type: Number, min: 0, max: 100 }, // Eptomart's margin % (replaces platformMargin)
+
+  // Margin & Pricing (legacy aliases kept for compatibility)
   platformMargin: { type: Number, min: 0, max: 100 },
   sellerMargin:   { type: Number, min: 0, max: 100 },
 

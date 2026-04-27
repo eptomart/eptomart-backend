@@ -134,24 +134,13 @@ const placeOrder = async (req, res) => {
   // Clear server-side cart
   await Cart.findOneAndUpdate({ user: req.user._id }, { items: [] });
 
-  // Generate invoice + PDF
-  let invoice = null;
-  let pdfBuf  = null;
-  try {
-    const result = await createInvoice(order, req.user, gst, shipping);
-    invoice = result.invoice;
-    pdfBuf  = result.pdfBuf;
-    await Order.findByIdAndUpdate(order._id, { invoice: invoice._id });
-  } catch (err) {
-    console.error('[Invoice] Failed to generate:', err.message);
-  }
-
-  // Rich confirmation email to customer (with PDF attached if generated)
+  // Invoice is generated after successful Razorpay payment (in paymentController)
+  // For now just send order confirmation email without PDF
   if (req.user.email) {
     sendOrderConfirmation(req.user.email, order, {
       userName:      req.user.name || '',
-      invoicePdfBuf: pdfBuf,
-      invoiceNumber: invoice?.invoiceNumber || '',
+      invoicePdfBuf: null,
+      invoiceNumber: '',
     }).catch(() => {});
   }
 
@@ -184,13 +173,7 @@ const placeOrder = async (req, res) => {
     success: true,
     message: 'Order placed successfully!',
     order: populated,
-    invoice: invoice ? {
-      _id:           invoice._id,
-      invoiceNumber: invoice.invoiceNumber,
-      pdfUrl:        invoice.pdfUrl,
-      grandTotal:    invoice.grandTotal,
-    } : null,
-    // pdfBuf not sent to client (internal use only)
+    invoice: null, // Invoice generated after payment confirmation
   });
 };
 

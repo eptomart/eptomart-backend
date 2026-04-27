@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const {
   getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct,
-  deleteProduct, removeProductImage, addReview, searchProducts
+  deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct
 } = require('../controllers/productController');
 const { protect } = require('../middleware/auth');
 const { protectAdmin } = require('../middleware/adminAuth');
@@ -26,6 +26,10 @@ router.get('/:slug',      getProduct);
 // Seller + Admin: create and update products
 router.post('/', protectSeller, uploadProduct.array('images', 5), createProduct);
 router.put('/:id', protectSeller, uploadProduct.array('images', 5), updateProduct);
+
+// Clone and preview (seller or admin)
+router.post('/:id/clone',   protectSeller, cloneProduct);
+router.get('/:id/preview',  protectSeller, previewProduct);
 
 // Admin only: delete products, remove images
 router.delete('/:id', protectAdmin, deleteProduct);

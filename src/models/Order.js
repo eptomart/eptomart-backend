@@ -74,6 +74,17 @@ const orderSchema = new mongoose.Schema({
   // Invoice reference
   invoice: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
 
+  // Shiprocket shipment tracking
+  shiprocket: {
+    orderId:    String,   // Shiprocket's order ID
+    shipmentId: String,   // Shiprocket shipment ID
+    awb:        String,   // Airway Bill number
+    courier:    String,   // Courier name (e.g. "Delhivery")
+    trackingUrl:String,   // Customer tracking URL
+    status:     String,   // Latest Shiprocket status string
+    createdAt:  Date,
+  },
+
   // GST breakdown
   gstBreakdown: {
     subtotalExGst: Number,

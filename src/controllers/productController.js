@@ -397,4 +397,57 @@ const getAdminProducts = async (req, res) => {
   });
 };
 
-module.exports = { getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts };
+/**
+ * @route   POST /api/products/:id/clone
+ * @desc    Clone a product (creates a draft copy)
+ * @access  Seller / Admin
+ */
+const cloneProduct = async (req, res) => {
+  const source = await Product.findById(req.params.id).lean();
+  if (!source) return res.status(404).json({ success: false, message: 'Product not found' });
+
+  // Sellers can only clone their own products
+  if (req.user.role === 'seller') {
+    const sellerDocId = getSellerDocId(req);
+    if (!sellerDocId || source.seller?.toString() !== sellerDocId.toString()) {
+      return res.status(403).json({ success: false, message: 'You can only clone your own products' });
+    }
+  }
+
+  // Build clone — strip unique fields, reset approval
+  const { _id, slug, sku, createdAt, updatedAt, __v, soldCount, likeCount, repeatBuyerCount, reviews, ratings, ...rest } = source;
+  const clone = await Product.create({
+    ...rest,
+    name: `${source.name} (Copy)`,
+    approvalStatus: 'draft',
+    isActive: false,
+    images: source.images, // reuse same Cloudinary URLs (no re-upload needed)
+  });
+
+  res.status(201).json({ success: true, message: 'Product cloned as draft', product: clone });
+};
+
+/**
+ * @route   GET /api/products/:id/preview
+ * @desc    Preview any product by ID (seller/admin can preview drafts/pending)
+ * @access  Seller / Admin
+ */
+const previewProduct = async (req, res) => {
+  const product = await Product.findById(req.params.id)
+    .populate('category', 'name slug')
+    .populate('seller', 'businessName');
+
+  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+
+  // Sellers can only preview their own products
+  if (req.user.role === 'seller') {
+    const sellerDocId = getSellerDocId(req);
+    if (!sellerDocId || product.seller?._id?.toString() !== sellerDocId.toString()) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+  }
+
+  res.json({ success: true, product });
+};
+
+module.exports = { getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct };

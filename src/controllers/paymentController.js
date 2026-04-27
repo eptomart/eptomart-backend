@@ -1,11 +1,13 @@
 // ============================================
-// PAYMENT CONTROLLER — COD + UPI + Razorpay
+// PAYMENT CONTROLLER — Razorpay only
 // ============================================
-const Order = require('../models/Order');
+const Order   = require('../models/Order');
 const Razorpay = require('razorpay');
-const crypto = require('crypto');
-// notifySeller is imported lazily to avoid circular-dependency issues at startup
-const getNotifySeller = () => require('./orderController').notifySeller;
+const crypto  = require('crypto');
+// Import lazily to avoid circular-dependency issues at startup
+const getNotifySeller   = () => require('./orderController').notifySeller;
+const getCreateInvoice  = () => require('./orderController').createInvoice;
+const { createShipment } = require('../utils/shiprocket');
 
 const getRazorpay = () => {
   if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return null;
@@ -116,15 +118,23 @@ const verifyRazorpayPayment = async (req, res) => {
     return res.status(400).json({ success: false, message: 'Payment verification failed' });
   }
 
-  const order = await Order.findById(orderId);
+  const order = await Order.findById(orderId).populate('user');
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
   order.paymentStatus = 'paid';
   order.paymentDetails = { transactionId: razorpay_payment_id, gatewayOrderId: razorpay_order_id, paidAt: new Date() };
   await order.save();
 
-  // Payment verified — notify seller(s) now
+  // Payment verified — notify seller(s)
   getNotifySeller()(order).catch(() => {});
+
+  // Generate invoice now that payment is confirmed (if not already generated)
+  if (!order.invoice) {
+    _postPaymentTasks(order).catch(e => console.error('[PostPayment] Error:', e.message));
+  } else {
+    // Shiprocket only — invoice already exists
+    _createShiprocketOrder(order).catch(e => console.error('[Shiprocket] Error:', e.message));
+  }
 
   res.json({ success: true, message: 'Payment successful! Your order is placed and awaiting seller confirmation.', orderId: order.orderId });
 };
@@ -144,13 +154,68 @@ const razorpayWebhook = async (req, res) => {
       order.paymentDetails.transactionId = payment.id;
       order.paymentDetails.paidAt = new Date();
       await order.save();
-
-      // Webhook confirmed payment — notify seller(s)
-      // (guard against double-notify if verifyRazorpayPayment already ran)
       getNotifySeller()(order).catch(() => {});
+      if (!order.invoice) {
+        _postPaymentTasks(order).catch(e => console.error('[PostPayment Webhook] Error:', e.message));
+      } else {
+        _createShiprocketOrder(order).catch(() => {});
+      }
     }
   }
   res.status(200).json({ received: true });
 };
+
+// ── Post-payment async tasks: invoice + Shiprocket ────────
+async function _postPaymentTasks(order) {
+  try {
+    const User = require('../models/User');
+    const populatedOrder = await Order.findById(order._id).lean();
+    const user = await User.findById(populatedOrder.user).lean();
+    if (!user) return;
+
+    const gst = {
+      subtotal:  populatedOrder.pricing.subtotal,
+      cgstTotal: populatedOrder.gstBreakdown?.cgstTotal || 0,
+      sgstTotal: populatedOrder.gstBreakdown?.sgstTotal || 0,
+      igstTotal: populatedOrder.gstBreakdown?.igstTotal || 0,
+      gstTotal:  populatedOrder.pricing.tax || 0,
+      grandTotal:populatedOrder.pricing.total - (populatedOrder.pricing.shipping || 0),
+      gstType:   populatedOrder.gstBreakdown?.gstType || 'intra',
+    };
+
+    const { invoice } = await getCreateInvoice()(populatedOrder, user, gst, populatedOrder.pricing.shipping || 0);
+    await Order.findByIdAndUpdate(order._id, { invoice: invoice._id });
+    console.log('[Invoice] Generated after payment:', invoice.invoiceNumber);
+  } catch (err) {
+    console.error('[Invoice] Post-payment generation failed:', err.message);
+  }
+  // Attempt Shiprocket regardless of invoice result
+  await _createShiprocketOrder(order);
+}
+
+async function _createShiprocketOrder(order) {
+  if (!process.env.SHIPROCKET_EMAIL || !process.env.SHIPROCKET_PASSWORD) return;
+  try {
+    const populatedOrder = await Order.findById(order._id).lean();
+    if (!populatedOrder) return;
+    const result = await createShipment(populatedOrder, populatedOrder.shippingAddress);
+    // Extract Shiprocket data from response
+    const srOrderId  = result?.order_id  || result?.data?.order_id;
+    const srShipId   = result?.shipment_id || result?.data?.shipment_id;
+    const awb        = result?.awb_code  || result?.data?.awb_code || '';
+    const courier    = result?.courier_name || result?.data?.courier_name || '';
+    const trackingUrl= awb ? `https://shiprocket.co/tracking/${awb}` : '';
+    if (srOrderId) {
+      await Order.findByIdAndUpdate(order._id, {
+        shiprocket: { orderId: String(srOrderId), shipmentId: String(srShipId || ''), awb, courier, trackingUrl, status: 'created', createdAt: new Date() },
+        trackingNumber: awb,
+        deliveryPartner: courier,
+      });
+      console.log('[Shiprocket] Order created:', srOrderId, 'AWB:', awb);
+    }
+  } catch (err) {
+    console.error('[Shiprocket] Failed to create order:', err.message);
+  }
+}
 
 module.exports = { initiatePayment, confirmUpiPayment, adminVerifyUpi, createRazorpayOrder, verifyRazorpayPayment, razorpayWebhook };

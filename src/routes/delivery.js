@@ -12,6 +12,52 @@ router.get('/geocode/:pincode', geocodePincode);
 // ── Shiprocket routes (admin only) ───────────
 const shiprocket = require('../utils/shiprocket');
 
+// ── Public: COD availability + EDD for a buyer pincode ──
+// Used by checkout and product pages (no auth required)
+router.get('/cod-check', async (req, res) => {
+  try {
+    const { delivery, pickup, weight } = req.query;
+    if (!delivery) return res.status(400).json({ success: false, message: 'delivery pincode required' });
+
+    // Default pickup pincode — use env or fallback
+    const pickupPin = pickup || process.env.DEFAULT_PICKUP_PINCODE || '600001';
+
+    if (!process.env.SHIPROCKET_EMAIL || !process.env.SHIPROCKET_PASSWORD) {
+      // Shiprocket not configured — return optimistic estimate
+      return res.json({ success: true, codAvailable: true, edd: null, note: 'Estimate based on location' });
+    }
+
+    const data = await shiprocket.getServiceability({
+      pickupPincode:   pickupPin,
+      deliveryPincode: delivery,
+      weight:          Number(weight) || 0.5,
+      cod:             true,
+    });
+
+    const couriers = data?.data?.available_courier_companies || [];
+    const codCouriers = couriers.filter(c => c.cod === 1);
+
+    // Find best EDD from available couriers (non-COD and COD)
+    const allCouriers = couriers.filter(c => c.etd);
+    const bestCourier = allCouriers.sort((a, b) =>
+      new Date(a.etd) - new Date(b.etd)
+    )[0];
+
+    res.json({
+      success:      true,
+      codAvailable: codCouriers.length > 0,
+      codCouriers:  codCouriers.length,
+      edd:          bestCourier?.etd || null,          // "YYYY-MM-DD" or null
+      eddDays:      bestCourier?.estimated_delivery_days || null,
+      courierName:  bestCourier?.courier_name || null,
+    });
+  } catch (err) {
+    console.error('[COD Check] Shiprocket serviceability failed:', err.message);
+    // Don't block checkout — return graceful fallback
+    res.json({ success: true, codAvailable: true, edd: null, note: 'Could not verify serviceability' });
+  }
+});
+
 // Check courier serviceability for pincode pair
 router.get('/serviceability', ...protectAdmin, async (req, res) => {
   try {

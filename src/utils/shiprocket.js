@@ -113,25 +113,43 @@ const createShipment = async (order, shippingAddress, seller = null) => {
     billing_email:          order.user?.email || '',
     billing_phone:          shippingAddress.phone || order.user?.phone || '',
     shipping_is_billing:    true,
-    order_items: order.items.map(item => ({
-      name:          item.name,
-      sku:           item.product?.toString() || item.name.substring(0, 20),
-      units:         item.quantity,
-      selling_price: item.price,
-      discount:      '',
-      tax:           '',
-      hsn:           item.hsnCode || '',
-    })),
+    order_items: order.items.map(item => {
+      // GST per line item — use stored breakdown if available
+      const gstRate   = item.gstRate || 18;
+      const { extractBasePrice } = require('./gstCalculator');
+      const unitBase  = typeof extractBasePrice === 'function'
+        ? extractBasePrice(item.price, gstRate)
+        : item.price / (1 + gstRate / 100);
+      const taxAmount = parseFloat((unitBase * gstRate / 100 * item.quantity).toFixed(2));
+
+      return {
+        name:          item.name,
+        sku:           item.product?.toString() || item.name.substring(0, 20),
+        units:         item.quantity,
+        selling_price: item.price,
+        discount:      '',
+        tax:           taxAmount,
+        hsn:           item.hsnCode || item.product?.hsnCode || '',
+      };
+    }),
     payment_method:    order.paymentMethod === 'cod' ? 'COD' : 'Prepaid',
-    shipping_charges:  order.pricing?.shippingCharge || 0,
+    shipping_charges:  order.pricing?.shipping || order.pricing?.shippingCharge || 0,
     giftwrap_charges:  0,
     transaction_charges: 0,
     total_discount:    0,
-    sub_total:         order.pricing?.subtotal || 0,
-    length:            10, // cm — default, seller should update
+    sub_total:         order.pricing?.subtotal || order.gstBreakdown?.subtotalExGst || 0,
+    // GST breakdown — Shiprocket uses these for e-invoice
+    ioss_number:       '',
+    seller_gst_tin:    seller?.gstNumber || '',
+    taxable_value:     order.gstBreakdown?.subtotalExGst || order.pricing?.subtotal || 0,
+    cgst:              order.gstBreakdown?.cgstTotal || 0,
+    sgst:              order.gstBreakdown?.sgstTotal || 0,
+    igst:              order.gstBreakdown?.igstTotal || 0,
+    cess:              0,
+    length:            10, // cm — default
     breadth:           10,
     height:            10,
-    weight:            0.5, // kg — default
+    weight:            0.5  // kg — default
   };
 
   const { data } = await axios.post(`${BASE_URL}/orders/create/adhoc`, payload, { headers: h });

@@ -280,6 +280,8 @@ const placeOrder = async (req, res) => {
   // Notify seller(s) only for COD — online-payment orders notify after payment is confirmed
   if (order.paymentMethod === 'cod') {
     notifySeller(order).catch(() => {});
+    // Create Shiprocket shipment immediately for COD (no payment gateway step)
+    _createShiprocketCOD(order).catch(e => console.error('[Shiprocket COD] Error:', e.message));
   }
 
   const populated = await Order.findById(order._id).populate('items.product', 'name images');
@@ -543,6 +545,51 @@ const sellerConfirmOrder = async (req, res) => {
   await order.save();
 
   res.json({ success: true, message: 'Order confirmed. Admin will acknowledge the pickup location.', order });
+};
+
+// ── Shiprocket shipment for COD orders (fire-and-forget) ─
+const _createShiprocketCOD = async (order) => {
+  if (!process.env.SHIPROCKET_EMAIL || !process.env.SHIPROCKET_PASSWORD) return;
+  try {
+    const { createShipment } = require('../utils/shiprocket');
+    const populatedOrder = await Order.findById(order._id)
+      .populate({
+        path: 'items.product',
+        select: 'seller name hsnCode gstRate',
+        populate: { path: 'seller', model: 'Seller', select: 'businessName address contact gstNumber' },
+      })
+      .lean();
+    if (!populatedOrder) return;
+
+    const seller = populatedOrder.items?.[0]?.product?.seller || null;
+    if (seller) console.log('[Shiprocket COD] Using pickup from seller:', seller.businessName);
+
+    const result = await createShipment(populatedOrder, populatedOrder.shippingAddress, seller);
+    const srOrderId   = result?.order_id    || result?.data?.order_id;
+    const srShipId    = result?.shipment_id || result?.data?.shipment_id;
+    const awb         = result?.awb_code    || result?.data?.awb_code    || '';
+    const courier     = result?.courier_name|| result?.data?.courier_name || '';
+    const trackingUrl = awb ? `https://shiprocket.co/tracking/${awb}` : '';
+
+    if (srOrderId) {
+      await Order.findByIdAndUpdate(order._id, {
+        shiprocket: {
+          orderId:    String(srOrderId),
+          shipmentId: String(srShipId || ''),
+          awb,
+          courier,
+          trackingUrl,
+          status:     'created',
+          createdAt:  new Date(),
+        },
+        trackingNumber:  awb,
+        deliveryPartner: courier,
+      });
+      console.log('[Shiprocket COD] Order created:', srOrderId, 'AWB:', awb || '(pending)');
+    }
+  } catch (err) {
+    console.error('[Shiprocket COD] Failed to create order:', err.message);
+  }
 };
 
 // Export processRefund so adminController can reuse it

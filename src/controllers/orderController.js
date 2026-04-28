@@ -4,9 +4,8 @@ const Seller  = require('../models/Seller');
 const Invoice = require('../models/Invoice');
 const Cart    = require('../models/Cart');
 const { sendOrderConfirmation, sendSellerNewOrderEmail } = require('../utils/sendEmail');
-const { notifyUser } = require('../utils/pushNotification');
+const { notifyUser, notifications } = require('../utils/pushNotification');
 const { sendOrderPlacedWhatsApp, sendAdminNewOrderAlert } = require('../utils/sendWhatsApp');
-const { sendOrderSms } = require('../utils/sendSMS');
 const { calcOrderGst, extractBasePrice } = require('../utils/gstCalculator');
 const { generateInvoicePDF, uploadInvoicePDF } = require('../utils/generateInvoicePDF');
 const { generateInvoiceNumber } = require('../utils/invoiceNumber');
@@ -145,7 +144,10 @@ const placeOrder = async (req, res) => {
     }).catch(() => {});
   }
 
-  // WhatsApp + SMS confirmation to customer
+  // Push notification to customer (free, no 3rd party — VAPID web push)
+  notifyUser(req.user._id, notifications.orderPlaced(order.orderId)).catch(() => {});
+
+  // WhatsApp confirmation to customer (fires when META_WHATSAPP_TOKEN is set)
   const customerPhone = req.user.phone || order.shippingAddress?.phone;
   if (customerPhone) {
     sendOrderPlacedWhatsApp(customerPhone, {
@@ -154,9 +156,6 @@ const placeOrder = async (req, res) => {
       paymentMethod: order.paymentMethod,
       items:         order.items,
     }).catch(() => {});
-
-    // SMS backup notification (requires TWOFACTOR_API_KEY + DLT-registered template)
-    sendOrderSms(customerPhone, order.orderId, order.pricing.total).catch(() => {});
   }
 
   // WhatsApp alert to admin

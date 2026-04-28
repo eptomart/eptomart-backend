@@ -8,8 +8,8 @@ const crypto  = require('crypto');
 const getNotifySeller   = () => require('./orderController').notifySeller;
 const getCreateInvoice  = () => require('./orderController').createInvoice;
 const { createShipment } = require('../utils/shiprocket');
-const { sendOrderSms }   = require('../utils/sendSMS');
 const { sendOrderPaidWhatsApp } = require('../utils/sendWhatsApp');
+const { notifyUser } = require('../utils/pushNotification');
 
 const getRazorpay = () => {
   if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return null;
@@ -133,14 +133,18 @@ const verifyRazorpayPayment = async (req, res) => {
   if (buyer) {
     const total = order.pricing?.total;
 
-    // SMS
-    if (buyer.phone) {
-      sendOrderSms(buyer.phone, order.orderId, total).catch(() => {});
-    }
+    // Push notification — instant, free, no 3rd party
+    notifyUser(order.user, {
+      title: '✅ Payment Confirmed!',
+      body:  `₹${Number(total).toLocaleString('en-IN')} received for order #${order.orderId}. We're preparing your order.`,
+      icon:  '/icons/icon-192x192.png',
+      url:   '/orders',
+      tag:   `paid-${order.orderId}`,
+    }).catch(() => {});
 
-    // WhatsApp
+    // WhatsApp — fires when META_WHATSAPP_TOKEN is set on Render
     const customerPhone = buyer.phone || order.shippingAddress?.phone;
-    if (customerPhone && typeof sendOrderPaidWhatsApp === 'function') {
+    if (customerPhone) {
       sendOrderPaidWhatsApp(customerPhone, { orderId: order.orderId, total, name: buyer.name }).catch(() => {});
     }
   }

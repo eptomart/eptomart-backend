@@ -272,7 +272,7 @@ const getMyPickupAddresses = async (req, res) => {
   res.json({ success: true, addresses: seller.pickupAddresses || [] });
 };
 
-// ── Seller: add a pickup address ─────────────────────────
+// ── Seller: add a pickup address (goes to admin for approval) ────────────
 const addPickupAddress = async (req, res) => {
   const { label, street, city, state, pincode, phone, isDefault } = req.body;
   if (!street || !city || !state || !pincode) {
@@ -282,14 +282,20 @@ const addPickupAddress = async (req, res) => {
   const seller = await Seller.findOne({ user: req.user._id });
   if (!seller) return res.status(404).json({ success: false, message: 'Seller profile not found' });
 
-  // If new address is marked default, clear existing defaults
-  if (isDefault) {
-    seller.pickupAddresses.forEach(a => { a.isDefault = false; });
-  }
-
-  seller.pickupAddresses.push({ label: label || 'Warehouse', street, city, state, pincode, phone: phone || '', isDefault: !!isDefault });
+  // isDefault is only applied after admin approval, so set false now
+  seller.pickupAddresses.push({
+    label:     label || 'Warehouse',
+    street, city, state, pincode,
+    phone:     phone || '',
+    isDefault: false,
+    status:    'pending',  // awaits admin approval
+  });
   await seller.save();
-  res.status(201).json({ success: true, addresses: seller.pickupAddresses });
+  res.status(201).json({
+    success: true,
+    message: 'Address submitted for admin approval. You can use it once approved.',
+    addresses: seller.pickupAddresses,
+  });
 };
 
 // ── Seller: delete a pickup address ──────────────────────
@@ -337,8 +343,140 @@ const getSellerPickupAddresses = async (req, res) => {
   res.json({ success: true, addresses: [...mainAddr, ...(seller.pickupAddresses || [])] });
 };
 
+// ── Admin: list all pending pickup address approvals ─────
+const listPendingPickupAddresses = async (req, res) => {
+  const { status = 'pending' } = req.query;
+  const sellers = await Seller.find({ 'pickupAddresses.status': status })
+    .select('businessName pickupAddresses user')
+    .populate('user', 'name email')
+    .lean();
+
+  // Flatten to individual address items
+  const items = [];
+  for (const seller of sellers) {
+    for (const addr of seller.pickupAddresses) {
+      if (addr.status === status) {
+        items.push({
+          sellerId:      seller._id,
+          sellerName:    seller.businessName,
+          sellerEmail:   seller.user?.email,
+          addressId:     addr._id,
+          label:         addr.label,
+          street:        addr.street,
+          city:          addr.city,
+          state:         addr.state,
+          pincode:       addr.pincode,
+          phone:         addr.phone,
+          status:        addr.status,
+          adminNote:     addr.adminNote,
+          reviewedAt:    addr.reviewedAt,
+        });
+      }
+    }
+  }
+
+  // Count stats
+  const allSellers = await Seller.find({ 'pickupAddresses.0': { $exists: true } }).select('pickupAddresses').lean();
+  const stats = { pending: 0, approved: 0, rejected: 0 };
+  allSellers.forEach(s => s.pickupAddresses.forEach(a => { if (stats[a.status] !== undefined) stats[a.status]++; }));
+
+  res.json({ success: true, items, stats });
+};
+
+// ── Admin: approve a seller pickup address ───────────────
+const approvePickupAddress = async (req, res) => {
+  const { sellerId, addrId } = req.params;
+  const seller = await Seller.findById(sellerId);
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+  const addr = seller.pickupAddresses.id(addrId);
+  if (!addr) return res.status(404).json({ success: false, message: 'Address not found' });
+
+  addr.status     = 'approved';
+  addr.adminNote  = '';
+  addr.reviewedAt = new Date();
+  addr.reviewedBy = req.user._id;
+  await seller.save();
+
+  // Notify seller via push
+  const { notifyUser } = require('../utils/pushNotification');
+  notifyUser(seller.user, {
+    title: '✅ Pickup Address Approved',
+    body:  `Your address "${addr.label}" (${addr.city}) has been approved and can now be used for orders.`,
+    icon:  '/icons/icon-192x192.png',
+    url:   '/seller/profile',
+    tag:   `addr-approved-${addrId}`,
+  }).catch(() => {});
+
+  res.json({ success: true, message: 'Address approved', address: addr });
+};
+
+// ── Admin: reject a seller pickup address ────────────────
+const rejectPickupAddress = async (req, res) => {
+  const { sellerId, addrId } = req.params;
+  const { note } = req.body;
+  if (!note?.trim()) return res.status(400).json({ success: false, message: 'Rejection reason is required' });
+
+  const seller = await Seller.findById(sellerId);
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+  const addr = seller.pickupAddresses.id(addrId);
+  if (!addr) return res.status(404).json({ success: false, message: 'Address not found' });
+
+  addr.status     = 'rejected';
+  addr.adminNote  = note;
+  addr.reviewedAt = new Date();
+  addr.reviewedBy = req.user._id;
+  await seller.save();
+
+  // Notify seller
+  const { notifyUser } = require('../utils/pushNotification');
+  notifyUser(seller.user, {
+    title: '❌ Pickup Address Rejected',
+    body:  `"${addr.label}" was rejected: ${note}. Please update and re-submit.`,
+    icon:  '/icons/icon-192x192.png',
+    url:   '/seller/profile',
+    tag:   `addr-rejected-${addrId}`,
+  }).catch(() => {});
+
+  res.json({ success: true, message: 'Address rejected', address: addr });
+};
+
+// ── Admin: acknowledge seller's chosen pickup for an order ─
+const acknowledgePickup = async (req, res) => {
+  const Order = require('../models/Order');
+  const order = await Order.findById(req.params.orderId);
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+  if (!order.sellerPickup?.addressId) {
+    return res.status(400).json({ success: false, message: 'No seller pickup address set on this order' });
+  }
+
+  order.sellerPickup.adminAcknowledged = true;
+  order.sellerPickup.acknowledgedAt    = new Date();
+  order.sellerPickup.acknowledgedBy    = req.user._id;
+  order.statusHistory.push({
+    status:    order.orderStatus,
+    note:      `Pickup acknowledged by admin: ${order.sellerPickup.label}, ${order.sellerPickup.city}`,
+    updatedBy: 'admin',
+  });
+  await order.save();
+
+  // Push notify seller
+  const { notifyUser } = require('../utils/pushNotification');
+  notifyUser(order.sellerPickup.sellerId, {
+    title: '✅ Pickup Acknowledged',
+    body:  `Admin confirmed pickup from "${order.sellerPickup.label}" for order #${order.orderId}.`,
+    icon:  '/icons/icon-192x192.png',
+    url:   '/seller/orders',
+    tag:   `pickup-ack-${order._id}`,
+  }).catch(() => {});
+
+  res.json({ success: true, message: 'Pickup acknowledged', order });
+};
+
 module.exports = {
   listSellers, createSeller, getSeller, updateSeller, setSellerStatus, deleteSeller, restoreSeller,
   getMyProfile, updateMyProfile, getSellerStats,
   getMyPickupAddresses, addPickupAddress, deletePickupAddress, setDefaultPickupAddress, getSellerPickupAddresses,
+  listPendingPickupAddresses, approvePickupAddress, rejectPickupAddress, acknowledgePickup,
 };

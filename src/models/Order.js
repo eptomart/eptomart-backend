@@ -74,6 +74,23 @@ const orderSchema = new mongoose.Schema({
   // Invoice reference
   invoice: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
 
+  // Seller-chosen pickup address (set when seller confirms order)
+  sellerPickup: {
+    addressId:          String,   // subdoc _id or 'main'
+    label:              String,   // e.g. "Main Warehouse"
+    street:             String,
+    city:               String,
+    state:              String,
+    pincode:            String,
+    phone:              String,
+    sellerId:           { type: mongoose.Schema.Types.ObjectId, ref: 'Seller' },
+    sellerName:         String,
+    // Admin acknowledgment
+    adminAcknowledged:  { type: Boolean, default: false },
+    acknowledgedAt:     Date,
+    acknowledgedBy:     { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  },
+
   // Shiprocket shipment tracking
   shiprocket: {
     orderId:    String,   // Shiprocket's order ID

@@ -65,6 +65,11 @@ const sellerSchema = new mongoose.Schema({
       phone:                  String,
       isDefault:              { type: Boolean, default: false },
       shiprocketLocationName: String,  // cached Shiprocket pickup location name
+      // Admin approval flow
+      status:                 { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+      adminNote:              String,  // reason if rejected
+      reviewedAt:             Date,
+      reviewedBy:             { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     }
   ],
 

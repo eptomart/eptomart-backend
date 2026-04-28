@@ -353,6 +353,11 @@ const sellerConfirmOrder = async (req, res) => {
   const sellerDocId = req.user.sellerProfile || null;
   if (!sellerDocId) return res.status(403).json({ success: false, message: 'Seller profile not found' });
 
+  const { pickupAddressId } = req.body;
+  if (!pickupAddressId) {
+    return res.status(400).json({ success: false, message: 'Please select a pickup address before confirming' });
+  }
+
   const order = await Order.findById(req.params.id);
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
@@ -366,11 +371,53 @@ const sellerConfirmOrder = async (req, res) => {
   const hasItems       = order.items.some(item => productIdSet.has(item.product.toString()));
   if (!hasItems) return res.status(403).json({ success: false, message: 'Not authorized for this order' });
 
-  order.orderStatus = 'confirmed';
-  order.statusHistory.push({ status: 'confirmed', note: 'Confirmed by seller', updatedBy: 'seller' });
+  // Resolve the chosen pickup address
+  const sellerDoc = await Seller.findById(sellerDocId).lean();
+  let pickupSnapshot = null;
+
+  if (pickupAddressId === 'main') {
+    pickupSnapshot = {
+      addressId:  'main',
+      label:      'Main Address',
+      street:     sellerDoc.address?.street  || '',
+      city:       sellerDoc.address?.city    || '',
+      state:      sellerDoc.address?.state   || '',
+      pincode:    sellerDoc.address?.pincode || '',
+      sellerId:   sellerDocId,
+      sellerName: sellerDoc.businessName,
+      adminAcknowledged: false,
+    };
+  } else {
+    const addr = sellerDoc.pickupAddresses?.find(
+      a => a._id.toString() === pickupAddressId && a.status === 'approved'
+    );
+    if (!addr) {
+      return res.status(400).json({ success: false, message: 'Selected address not found or not yet approved by admin' });
+    }
+    pickupSnapshot = {
+      addressId:  pickupAddressId,
+      label:      addr.label,
+      street:     addr.street,
+      city:       addr.city,
+      state:      addr.state,
+      pincode:    addr.pincode,
+      phone:      addr.phone || '',
+      sellerId:   sellerDocId,
+      sellerName: sellerDoc.businessName,
+      adminAcknowledged: false,
+    };
+  }
+
+  order.sellerPickup = pickupSnapshot;
+  order.orderStatus  = 'confirmed';
+  order.statusHistory.push({
+    status:    'confirmed',
+    note:      `Confirmed by seller — pickup: ${pickupSnapshot.label}, ${pickupSnapshot.city}`,
+    updatedBy: 'seller',
+  });
   await order.save();
 
-  res.json({ success: true, message: 'Order confirmed successfully', order });
+  res.json({ success: true, message: 'Order confirmed. Admin will acknowledge the pickup location.', order });
 };
 
 module.exports = { placeOrder, getMyOrders, getOrder, cancelOrder, createInvoice, notifySeller, getSellerOrders, sellerConfirmOrder };

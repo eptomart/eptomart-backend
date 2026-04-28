@@ -74,6 +74,17 @@ const orderSchema = new mongoose.Schema({
   // Invoice reference
   invoice: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
 
+  // Refund tracking
+  refund: {
+    status:       { type: String, enum: ['not_applicable', 'pending', 'initiated', 'processed', 'failed', 'manual_required'], default: 'not_applicable' },
+    method:       String,   // 'razorpay' | 'upi_manual' | 'cod_none'
+    razorpayRefundId: String,
+    amount:       Number,
+    initiatedAt:  Date,
+    processedAt:  Date,
+    note:         String,
+  },
+
   // Seller-chosen pickup address (set when seller confirms order)
   sellerPickup: {
     addressId:          String,   // subdoc _id or 'main'

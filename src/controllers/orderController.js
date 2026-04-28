@@ -11,6 +11,117 @@ const { generateInvoicePDF, uploadInvoicePDF } = require('../utils/generateInvoi
 const { generateInvoiceNumber } = require('../utils/invoiceNumber');
 const business = require('../../config/business');
 
+// ── Refund helper ─────────────────────────────────────────
+const processRefund = async (order) => {
+  const { paymentMethod, paymentStatus, paymentDetails, pricing, _id, orderId, user } = order;
+
+  // COD — nothing to refund
+  if (paymentMethod === 'cod') {
+    order.refund = { status: 'not_applicable', method: 'cod_none', note: 'COD order — no payment collected online' };
+    return;
+  }
+
+  // Not yet paid — nothing to refund
+  if (paymentStatus !== 'paid') {
+    order.refund = { status: 'not_applicable', method: paymentMethod, note: 'Payment was not completed' };
+    return;
+  }
+
+  // ── Razorpay — automatic refund via API ──────────────
+  if (paymentMethod === 'razorpay') {
+    const rzpKeyId     = process.env.RAZORPAY_KEY_ID;
+    const rzpKeySecret = process.env.RAZORPAY_KEY_SECRET;
+
+    if (!rzpKeyId || !rzpKeySecret) {
+      order.refund = { status: 'manual_required', method: 'razorpay', note: 'Razorpay keys not configured — refund manually' };
+      return;
+    }
+
+    const paymentId = paymentDetails?.transactionId;
+    if (!paymentId) {
+      order.refund = { status: 'manual_required', method: 'razorpay', note: 'Transaction ID missing — refund manually via Razorpay dashboard' };
+      return;
+    }
+
+    try {
+      const https  = require('https');
+      const amount = Math.round(pricing.total * 100); // paise
+      const body   = JSON.stringify({ amount, speed: 'normal', notes: { orderId } });
+      const auth   = Buffer.from(`${rzpKeyId}:${rzpKeySecret}`).toString('base64');
+
+      const refundData = await new Promise((resolve, reject) => {
+        const req = https.request({
+          hostname: 'api.razorpay.com',
+          path:     `/v1/payments/${paymentId}/refund`,
+          method:   'POST',
+          headers:  { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}`, 'Content-Length': Buffer.byteLength(body) },
+        }, (res) => {
+          let data = '';
+          res.on('data', chunk => { data += chunk; });
+          res.on('end', () => {
+            try { resolve(JSON.parse(data)); }
+            catch { resolve({ error: { description: 'Invalid response' } }); }
+          });
+        });
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+      });
+
+      if (refundData.id) {
+        order.refund = {
+          status:           'initiated',
+          method:           'razorpay',
+          razorpayRefundId: refundData.id,
+          amount:           pricing.total,
+          initiatedAt:      new Date(),
+          note:             `Refund ID: ${refundData.id} — will credit in 5-7 business days`,
+        };
+        order.paymentStatus = 'refunded';
+        console.log(`[Refund] Razorpay refund initiated: ${refundData.id} for order ${orderId}`);
+
+        // Push notify customer
+        notifyUser(user, {
+          title: '💰 Refund Initiated',
+          body:  `₹${Number(pricing.total).toLocaleString('en-IN')} refund for order #${orderId} has been initiated. Expected in 5-7 business days.`,
+          icon:  '/icons/icon-192x192.png',
+          url:   '/orders',
+          tag:   `refund-${orderId}`,
+        }).catch(() => {});
+
+      } else {
+        const errMsg = refundData.error?.description || 'Unknown error';
+        order.refund = { status: 'failed', method: 'razorpay', note: `Auto-refund failed: ${errMsg}. Refund manually via Razorpay dashboard.`, initiatedAt: new Date() };
+        console.error(`[Refund] Razorpay refund failed for ${orderId}:`, errMsg);
+      }
+    } catch (err) {
+      order.refund = { status: 'failed', method: 'razorpay', note: `Auto-refund error: ${err.message}. Refund manually.`, initiatedAt: new Date() };
+      console.error(`[Refund] Exception for ${orderId}:`, err.message);
+    }
+    return;
+  }
+
+  // ── UPI — manual refund required ────────────────────
+  if (paymentMethod === 'upi') {
+    order.refund = {
+      status:      'manual_required',
+      method:      'upi_manual',
+      amount:      pricing.total,
+      initiatedAt: new Date(),
+      note:        `UPI payment of ₹${pricing.total}. Admin must manually transfer to customer's UPI. Ref: ${paymentDetails?.upiRef || '—'}`,
+    };
+
+    // Push notify customer
+    notifyUser(user, {
+      title: '🔄 Refund in Progress',
+      body:  `₹${Number(pricing.total).toLocaleString('en-IN')} will be refunded to your UPI within 2-3 business days for order #${orderId}.`,
+      icon:  '/icons/icon-192x192.png',
+      url:   '/orders',
+      tag:   `refund-${orderId}`,
+    }).catch(() => {});
+  }
+};
+
 // ── Notify seller of new order (async, fire-and-forget) ──
 const notifySeller = async (order) => {
   try {
@@ -306,13 +417,27 @@ const cancelOrder = async (req, res) => {
   if (!['placed', 'confirmed'].includes(order.orderStatus)) {
     return res.status(400).json({ success: false, message: 'Order cannot be cancelled at this stage' });
   }
+
+  const reason = req.body.reason || 'Cancelled by user';
   order.orderStatus = 'cancelled';
-  order.statusHistory.push({ status: 'cancelled', note: req.body.reason || 'Cancelled by user' });
-  await order.save();
+  order.statusHistory.push({ status: 'cancelled', note: reason, updatedBy: 'user' });
+
+  // Restore stock
   for (const item of order.items) {
     await Product.findByIdAndUpdate(item.product, { $inc: { stock: item.quantity, soldCount: -item.quantity } });
   }
-  res.json({ success: true, message: 'Order cancelled', order });
+
+  // Process refund based on payment method
+  await processRefund(order);
+  await order.save();
+
+  const refundMsg = order.refund?.status === 'initiated'
+    ? ' Refund has been initiated and will credit in 5-7 business days.'
+    : order.refund?.status === 'manual_required'
+    ? ' A manual refund will be processed by our team within 2-3 business days.'
+    : '';
+
+  res.json({ success: true, message: `Order cancelled.${refundMsg}`, order, refund: order.refund });
 };
 
 // ── GET /api/orders/seller/mine ─────────────────────────
@@ -420,4 +545,7 @@ const sellerConfirmOrder = async (req, res) => {
   res.json({ success: true, message: 'Order confirmed. Admin will acknowledge the pickup location.', order });
 };
 
-module.exports = { placeOrder, getMyOrders, getOrder, cancelOrder, createInvoice, notifySeller, getSellerOrders, sellerConfirmOrder };
+// Export processRefund so adminController can reuse it
+const processRefundForOrder = processRefund;
+
+module.exports = { placeOrder, getMyOrders, getOrder, cancelOrder, createInvoice, notifySeller, getSellerOrders, sellerConfirmOrder, processRefundForOrder };

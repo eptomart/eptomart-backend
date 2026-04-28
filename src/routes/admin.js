@@ -3,7 +3,7 @@ const router = express.Router();
 const {
   getDashboard, getUsers, getUserLoginHistory,
   toggleUserStatus, updateUser, deleteUser,
-  getAllOrders, updateOrderStatus,
+  getAllOrders, updateOrderStatus, adminCancelWithRefund,
   listAdmins, createAdmin, deleteAdmin, updateAdminPermissions,
   createManualShipment,
 } = require('../controllers/adminController');
@@ -11,9 +11,10 @@ const { acknowledgePickup } = require('../controllers/sellerController');
 const { protectAdmin, protectSuperAdmin, requirePermission } = require('../middleware/adminAuth');
 
 // ── Admin + SuperAdmin routes — gated by RBAC permission ──
-router.get('/orders',                          ...protectAdmin, requirePermission('orders'), getAllOrders);
-router.put('/orders/:id/status',               ...protectAdmin, requirePermission('orders'), updateOrderStatus);
-router.post('/orders/:id/ship',                ...protectAdmin, requirePermission('orders'), createManualShipment);
+router.get('/orders',                              ...protectAdmin, requirePermission('orders'), getAllOrders);
+router.put('/orders/:id/status',                   ...protectAdmin, requirePermission('orders'), updateOrderStatus);
+router.post('/orders/:id/ship',                    ...protectAdmin, requirePermission('orders'), createManualShipment);
+router.post('/orders/:id/cancel-refund',           ...protectAdmin, requirePermission('orders'), adminCancelWithRefund);
 router.post('/orders/:orderId/acknowledge-pickup', ...protectAdmin, requirePermission('orders'), acknowledgePickup);
 
 // ── Routes restricted to superAdmin ONLY ──────────────────

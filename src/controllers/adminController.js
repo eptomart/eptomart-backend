@@ -236,6 +236,41 @@ const updateOrderStatus = async (req, res) => {
   res.json({ success: true, message: 'Order updated', order });
 };
 
+/**
+ * @route   POST /api/admin/orders/:id/cancel-refund
+ * @desc    Admin cancels an order and triggers automatic refund
+ * @access  Admin
+ */
+const adminCancelWithRefund = async (req, res) => {
+  const { note } = req.body;
+  const order = await Order.findById(req.params.id);
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  if (order.orderStatus === 'cancelled') {
+    return res.status(400).json({ success: false, message: 'Order is already cancelled' });
+  }
+  if (['delivered', 'returned'].includes(order.orderStatus)) {
+    return res.status(400).json({ success: false, message: 'Cannot cancel a delivered or returned order from here' });
+  }
+
+  const reason = note || 'Cancelled by admin';
+  order.orderStatus = 'cancelled';
+  order.statusHistory.push({ status: 'cancelled', note: reason, updatedBy: 'admin' });
+
+  // Restore stock
+  const Product = require('../models/Product');
+  for (const item of order.items) {
+    await Product.findByIdAndUpdate(item.product, { $inc: { stock: item.quantity, soldCount: -item.quantity } });
+  }
+
+  // Process refund using shared helper from orderController
+  const { processRefundForOrder } = require('./orderController');
+  await processRefundForOrder(order);
+  await order.save();
+
+  res.json({ success: true, message: 'Order cancelled', order, refund: order.refund });
+};
+
 // ── Admin Account Management (superAdmin only) ───────────
 const VALID_PERMISSIONS = ['orders', 'products', 'approvals', 'sellers', 'users', 'analytics', 'categories', 'expenses', 'settlements', 'admins'];
 
@@ -378,4 +413,4 @@ const createManualShipment = async (req, res) => {
   }
 };
 
-module.exports = { getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, updateUser, deleteUser, getAllOrders, updateOrderStatus, listAdmins, createAdmin, deleteAdmin, updateAdminPermissions, createManualShipment };
+module.exports = { getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, updateUser, deleteUser, getAllOrders, updateOrderStatus, adminCancelWithRefund, listAdmins, createAdmin, deleteAdmin, updateAdminPermissions, createManualShipment };

@@ -1,22 +1,57 @@
 // ============================================
-// SMS UTILITY — 2Factor.in (Indian OTP API)
-// Sign up free at: https://2factor.in
+// SMS UTILITY — Fast2SMS (India, Free tier)
+// Sign up free at: https://www.fast2sms.com
+// Free credits on signup (~₹50 = ~300 SMS)
+// No DLT registration needed for OTP route
+//
+// Env var needed:  FAST2SMS_API_KEY
+// Get it from: fast2sms.com → Dev API → API Key
 // ============================================
 const https = require('https');
 
-/**
- * Send OTP via 2Factor.in (dedicated Indian OTP service)
- */
-const sendSmsVia2Factor = async (phone, otp) => {
-  const apiKey = process.env.TWOFACTOR_API_KEY || process.env.FAST2SMS_API_KEY;
+const getApiKey = () => process.env.FAST2SMS_API_KEY || process.env.TWOFACTOR_API_KEY;
+
+// ── Core sender via Fast2SMS ────────────────────────────────────────────
+const sendViaSMS = (phone, message, isOtp = false, otpValue = null) => {
+  const apiKey = getApiKey();
 
   if (!apiKey) {
-    console.warn('⚠️ SMS API key not set (TWOFACTOR_API_KEY). SMS not sent.');
-    return { success: false, error: 'SMS API key not configured' };
+    console.warn('⚠️  FAST2SMS_API_KEY not set — SMS skipped');
+    return Promise.resolve({ success: false, error: 'SMS API key not configured' });
   }
 
-  // 2Factor OTP API — sends via their default OTP template
-  const url = `https://2factor.in/API/V1/${apiKey}/SMS/${phone}/${otp}/AUTOGEN`;
+  // Clean phone — 10-digit Indian number only
+  const cleanPhone = String(phone).replace(/^(\+91|91)/, '').trim();
+  if (!/^[6-9]\d{9}$/.test(cleanPhone)) {
+    console.warn('⚠️  Invalid phone for SMS:', cleanPhone);
+    return Promise.resolve({ success: false, error: 'Invalid phone number' });
+  }
+
+  // Fast2SMS API endpoint
+  // route=otp  → for numeric OTP codes (uses their OTP template, no DLT needed)
+  // route=q    → Quick SMS for custom messages (works on most numbers)
+  let params;
+  if (isOtp && otpValue) {
+    // OTP route — fast2sms sends a preformatted OTP message
+    params = new URLSearchParams({
+      authorization:    apiKey,
+      route:            'otp',
+      numbers:          cleanPhone,
+      variables_values: String(otpValue),
+      flash:            '0',
+    });
+  } else {
+    // Quick SMS route — custom message text
+    params = new URLSearchParams({
+      authorization: apiKey,
+      route:         'q',
+      message:       String(message).substring(0, 160), // keep under 1 SMS length
+      numbers:       cleanPhone,
+      flash:         '0',
+    });
+  }
+
+  const url = `https://www.fast2sms.com/dev/bulkV2?${params.toString()}`;
 
   return new Promise((resolve) => {
     https.get(url, (res) => {
@@ -25,41 +60,39 @@ const sendSmsVia2Factor = async (phone, otp) => {
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
-          console.log('2Factor SMS response:', parsed);
-          resolve({ success: parsed.Status === 'Success', data: parsed });
+          if (parsed.return === true) {
+            console.log('[SMS] Fast2SMS sent to', cleanPhone, '| request_id:', parsed.request_id);
+            resolve({ success: true, data: parsed });
+          } else {
+            console.warn('[SMS] Fast2SMS failed:', parsed.message || JSON.stringify(parsed));
+            resolve({ success: false, error: parsed.message || 'Unknown error' });
+          }
         } catch {
           resolve({ success: false, error: 'Parse error' });
         }
       });
     }).on('error', (err) => {
-      console.error('SMS send error:', err.message);
+      console.error('[SMS] Request error:', err.message);
       resolve({ success: false, error: err.message });
     });
   });
 };
 
-/**
- * Send OTP via SMS
- */
+// ── Send OTP ────────────────────────────────────────────────────────────
 const sendOtpSms = async (phone, otp) => {
-  // Strip country code if present, use 10-digit number
-  const cleanPhone = phone.replace(/^(\+91|91)/, '').trim();
-  return sendSmsVia2Factor(cleanPhone, otp);
+  return sendViaSMS(phone, null, true, otp);
 };
 
-/**
- * Send order confirmation SMS
- */
+// ── Order placed confirmation ───────────────────────────────────────────
 const sendOrderSms = async (phone, orderId, total) => {
-  const otp = `Order #${orderId} confirmed Rs.${total}`;
-  return sendSmsVia2Factor(phone, otp);
+  const message = `Eptomart: Order #${orderId} confirmed! Total Rs.${total}. Track at eptomart.in/orders`;
+  return sendViaSMS(phone, message, false);
 };
 
-/**
- * Send order status update SMS
- */
+// ── Order status update ─────────────────────────────────────────────────
 const sendOrderStatusSms = async (phone, orderId, status) => {
-  return sendSmsVia2Factor(phone, `${orderId} ${status}`);
+  const message = `Eptomart: Order #${orderId} is now ${status}. Track at eptomart.in/orders`;
+  return sendViaSMS(phone, message, false);
 };
 
 module.exports = { sendOtpSms, sendOrderSms, sendOrderStatusSms };

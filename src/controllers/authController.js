@@ -6,7 +6,7 @@ const Otp = require('../models/Otp');
 const { generateOtp, parseUserAgent, getClientIp } = require('../utils/generateOtp');
 const { sendTokenResponse } = require('../utils/generateToken');
 const { sendOtpEmail } = require('../utils/sendEmail');
-const { sendOtpSms } = require('../utils/sendSMS');
+// SMS is used only for order confirmations — OTP uses email (or Firebase for phone)
 
 /**
  * @route   POST /api/auth/send-otp
@@ -77,10 +77,9 @@ const sendOtp = async (req, res) => {
     }
   }
   if (type === 'phone') {
-    const result = await sendOtpSms(contact, code);
-    if (!result.success) {
-      return res.status(500).json({ success: false, message: 'Failed to send OTP SMS. Try again.' });
-    }
+    // Phone OTP is handled by Firebase on the frontend (RecaptchaVerifier + signInWithPhoneNumber)
+    // This backend path is a fallback only — no SMS sent here to avoid double-charging
+    console.log('[Auth] Phone OTP generated (Firebase handles delivery):', contact);
   }
 
   // In development, return OTP in response for testing

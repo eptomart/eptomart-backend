@@ -13,35 +13,35 @@ async function cleanup() {
   await mongoose.connect(process.env.MONGODB_URI);
   console.log('✅ Connected to MongoDB');
 
-  // Find Tamarind
-  const tamarind = await Product.findOne({ name: /tamarind/i });
+  // Find the ACTIVE Tamarind (keep this one)
+  const tamarind = await Product.findOne({ name: /tamarind/i, isActive: true });
   if (!tamarind) {
-    console.log('❌ Tamarind product not found — aborting to be safe');
+    console.log('❌ Active Tamarind product not found — aborting to be safe');
     process.exit(1);
   }
-  console.log(`🟢 Tamarind found: "${tamarind.name}" [${tamarind._id}]`);
+  console.log(`🟢 Keeping: "${tamarind.name}" [${tamarind._id}]`);
 
-  // Ensure Tamarind is active + approved
+  // Ensure it is active + approved
   await Product.findByIdAndUpdate(tamarind._id, {
     isActive: true,
     approvalStatus: 'approved',
   });
-  console.log('✅ Tamarind set to active + approved');
 
-  // Deactivate all OTHER products
-  const result = await Product.updateMany(
-    { _id: { $ne: tamarind._id } },
-    { $set: { isActive: false } }
-  );
-  console.log(`✅ Deactivated ${result.modifiedCount} other products`);
+  // Delete everything else (including the duplicate inactive Tamarind)
+  const toDelete = await Product.find({ _id: { $ne: tamarind._id } }).select('name _id').lean();
+  console.log(`\n🗑️  Deleting ${toDelete.length} products:`);
+  toDelete.forEach(p => console.log(`   - ${p.name}`));
+
+  const result = await Product.deleteMany({ _id: { $ne: tamarind._id } });
+  console.log(`\n✅ Deleted ${result.deletedCount} products`);
 
   // Summary
-  const all = await Product.find({}).select('name isActive approvalStatus').lean();
-  console.log('\nFinal product list:');
-  all.forEach(p => console.log(` - ${p.name} | active: ${p.isActive} | status: ${p.approvalStatus}`));
+  const remaining = await Product.find({}).select('name isActive approvalStatus').lean();
+  console.log('\nRemaining products:');
+  remaining.forEach(p => console.log(` ✅ ${p.name} | active: ${p.isActive} | status: ${p.approvalStatus}`));
 
   await mongoose.disconnect();
-  console.log('\n✅ Done. Tamarind is live. All other products are hidden from store.');
+  console.log('\n✅ Done. Only Tamarind remains in production.');
 }
 
 cleanup().catch(err => {

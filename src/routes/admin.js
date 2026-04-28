@@ -5,12 +5,14 @@ const {
   toggleUserStatus, updateUser, deleteUser,
   getAllOrders, updateOrderStatus,
   listAdmins, createAdmin, deleteAdmin, updateAdminPermissions,
+  createManualShipment,
 } = require('../controllers/adminController');
 const { protectAdmin, protectSuperAdmin, requirePermission } = require('../middleware/adminAuth');
 
 // ── Admin + SuperAdmin routes — gated by RBAC permission ──
-router.get('/orders',            ...protectAdmin, requirePermission('orders'), getAllOrders);
-router.put('/orders/:id/status', ...protectAdmin, requirePermission('orders'), updateOrderStatus);
+router.get('/orders',               ...protectAdmin, requirePermission('orders'), getAllOrders);
+router.put('/orders/:id/status',    ...protectAdmin, requirePermission('orders'), updateOrderStatus);
+router.post('/orders/:id/ship',     ...protectAdmin, requirePermission('orders'), createManualShipment);
 
 // ── Routes restricted to superAdmin ONLY ──────────────────
 // Dashboard with analytics

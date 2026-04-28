@@ -53,6 +53,21 @@ const sellerSchema = new mongoose.Schema({
   activatedAt: Date,
   suspendedAt: Date,
 
+  // Multiple pickup / warehouse addresses
+  pickupAddresses: [
+    {
+      label:                  { type: String, default: 'Warehouse' }, // e.g. "Main Warehouse", "Outlet 2"
+      street:                 { type: String, required: true },
+      city:                   { type: String, required: true },
+      state:                  { type: String, required: true },
+      pincode:                { type: String, required: true },
+      country:                { type: String, default: 'India' },
+      phone:                  String,
+      isDefault:              { type: Boolean, default: false },
+      shiprocketLocationName: String,  // cached Shiprocket pickup location name
+    }
+  ],
+
   // Shipping configuration
   shipping: {
     freeAbove:      { type: Number, default: 499 },  // free shipping when order ≥ this (₹)

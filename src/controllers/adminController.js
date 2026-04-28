@@ -204,7 +204,8 @@ const getAllOrders = async (req, res) => {
       .sort('-createdAt')
       .skip(skip)
       .limit(Number(limit))
-      .populate('user', 'name email phone'),
+      .populate('user', 'name email phone')
+      .populate({ path: 'items.product', select: 'seller name images', populate: { path: 'seller', model: 'Seller', select: 'businessName _id' } }),
     Order.countDocuments(filter),
   ]);
 
@@ -313,4 +314,68 @@ const updateAdminPermissions = async (req, res) => {
   res.json({ success: true, message: 'Permissions updated', permissions: admin.permissions });
 };
 
-module.exports = { getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, updateUser, deleteUser, getAllOrders, updateOrderStatus, listAdmins, createAdmin, deleteAdmin, updateAdminPermissions };
+/**
+ * @route   POST /api/admin/orders/:id/ship
+ * @desc    Manually create a Shiprocket shipment for an order with a chosen pickup address
+ * @access  Admin
+ */
+const createManualShipment = async (req, res) => {
+  const { pickupAddressId } = req.body; // 'main' or a pickupAddresses subdoc _id
+  const order = await Order.findById(req.params.id)
+    .populate({ path: 'items.product', select: 'seller name hsnCode', populate: { path: 'seller', model: 'Seller', select: 'businessName address pickupAddresses contact' } })
+    .lean();
+
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  const { createShipment } = require('../utils/shiprocket');
+  const Seller = require('../models/Seller');
+
+  // Determine seller from first item
+  const sellerDoc = order.items?.[0]?.product?.seller || null;
+  let pickupAddress = null;
+
+  if (sellerDoc && pickupAddressId && pickupAddressId !== 'main') {
+    // Use the chosen pickup address
+    const fullSeller = await Seller.findById(sellerDoc._id).lean();
+    pickupAddress = fullSeller?.pickupAddresses?.find(a => a._id.toString() === pickupAddressId);
+    if (!pickupAddress) {
+      return res.status(400).json({ success: false, message: 'Pickup address not found on seller' });
+    }
+    // Build a seller-like object with the chosen address
+    pickupAddress = {
+      ...sellerDoc,
+      address: { street: pickupAddress.street, city: pickupAddress.city, state: pickupAddress.state, pincode: pickupAddress.pincode, country: 'India' },
+      businessName: sellerDoc.businessName,
+      _pickupLabel: pickupAddress.label,
+      shiprocketLocationName: pickupAddress.shiprocketLocationName,
+    };
+  } else {
+    // Use the seller's main address
+    pickupAddress = sellerDoc;
+  }
+
+  try {
+    const result = await createShipment(order, order.shippingAddress, pickupAddress);
+    const srOrderId   = result?.order_id   || result?.data?.order_id;
+    const srShipId    = result?.shipment_id || result?.data?.shipment_id;
+    const awb         = result?.awb_code    || result?.data?.awb_code   || '';
+    const courier     = result?.courier_name|| result?.data?.courier_name|| '';
+    const trackingUrl = awb ? `https://shiprocket.co/tracking/${awb}` : '';
+
+    if (srOrderId) {
+      await Order.findByIdAndUpdate(req.params.id, {
+        shiprocket:       { orderId: String(srOrderId), shipmentId: String(srShipId || ''), awb, courier, trackingUrl, status: 'created', createdAt: new Date() },
+        trackingNumber:   awb,
+        deliveryPartner:  courier,
+        orderStatus:      'shipped',
+      });
+    }
+
+    res.json({ success: true, shiprocket: { orderId: srOrderId, shipmentId: srShipId, awb, courier, trackingUrl } });
+  } catch (err) {
+    console.error('[Admin Ship] Shiprocket error:', err.message);
+    res.status(500).json({ success: false, message: err.message || 'Failed to create Shiprocket shipment' });
+  }
+};
+
+module.exports = { getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, updateUser, deleteUser, getAllOrders, updateOrderStatus, listAdmins, createAdmin, deleteAdmin, updateAdminPermissions, createManualShipment };

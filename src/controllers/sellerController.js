@@ -265,4 +265,80 @@ const getSellerStats = async (req, res) => {
   res.json({ success: true, stats: { products, orders } });
 };
 
-module.exports = { listSellers, createSeller, getSeller, updateSeller, setSellerStatus, deleteSeller, restoreSeller, getMyProfile, updateMyProfile, getSellerStats };
+// ── Seller: list own pickup addresses ────────────────────
+const getMyPickupAddresses = async (req, res) => {
+  const seller = await Seller.findOne({ user: req.user._id }).select('pickupAddresses').lean();
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller profile not found' });
+  res.json({ success: true, addresses: seller.pickupAddresses || [] });
+};
+
+// ── Seller: add a pickup address ─────────────────────────
+const addPickupAddress = async (req, res) => {
+  const { label, street, city, state, pincode, phone, isDefault } = req.body;
+  if (!street || !city || !state || !pincode) {
+    return res.status(400).json({ success: false, message: 'street, city, state, pincode are required' });
+  }
+
+  const seller = await Seller.findOne({ user: req.user._id });
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller profile not found' });
+
+  // If new address is marked default, clear existing defaults
+  if (isDefault) {
+    seller.pickupAddresses.forEach(a => { a.isDefault = false; });
+  }
+
+  seller.pickupAddresses.push({ label: label || 'Warehouse', street, city, state, pincode, phone: phone || '', isDefault: !!isDefault });
+  await seller.save();
+  res.status(201).json({ success: true, addresses: seller.pickupAddresses });
+};
+
+// ── Seller: delete a pickup address ──────────────────────
+const deletePickupAddress = async (req, res) => {
+  const seller = await Seller.findOne({ user: req.user._id });
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller profile not found' });
+
+  const idx = seller.pickupAddresses.findIndex(a => a._id.toString() === req.params.addrId);
+  if (idx === -1) return res.status(404).json({ success: false, message: 'Address not found' });
+
+  seller.pickupAddresses.splice(idx, 1);
+  await seller.save();
+  res.json({ success: true, addresses: seller.pickupAddresses });
+};
+
+// ── Seller: set default pickup address ───────────────────
+const setDefaultPickupAddress = async (req, res) => {
+  const seller = await Seller.findOne({ user: req.user._id });
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller profile not found' });
+
+  seller.pickupAddresses.forEach(a => { a.isDefault = a._id.toString() === req.params.addrId; });
+  await seller.save();
+  res.json({ success: true, addresses: seller.pickupAddresses });
+};
+
+// ── Admin: get pickup addresses for a specific seller ────
+const getSellerPickupAddresses = async (req, res) => {
+  const seller = await Seller.findById(req.params.id).select('pickupAddresses businessName address').lean();
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+  // Always include the main address as a fallback option
+  const mainAddr = seller.address
+    ? [{
+        _id: 'main',
+        label: 'Main Address',
+        street: seller.address.street,
+        city: seller.address.city,
+        state: seller.address.state,
+        pincode: seller.address.pincode,
+        isDefault: seller.pickupAddresses?.length === 0,
+        isMain: true,
+      }]
+    : [];
+
+  res.json({ success: true, addresses: [...mainAddr, ...(seller.pickupAddresses || [])] });
+};
+
+module.exports = {
+  listSellers, createSeller, getSeller, updateSeller, setSellerStatus, deleteSeller, restoreSeller,
+  getMyProfile, updateMyProfile, getSellerStats,
+  getMyPickupAddresses, addPickupAddress, deletePickupAddress, setDefaultPickupAddress, getSellerPickupAddresses,
+};

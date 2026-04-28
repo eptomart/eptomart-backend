@@ -51,6 +51,10 @@ const sendOtp = async (req, res) => {
     return res.status(400).json({ success: false, message: 'Invalid mobile number' });
   }
 
+  // Check if an account already exists with this contact (in either email or phone field)
+  const existingUser = await User.findOne({ $or: [{ email: contact }, { phone: contact }] })
+    .select('email phone name').lean();
+
   // Delete existing OTPs for this contact
   await Otp.deleteMany({ contact, type });
 
@@ -82,11 +86,21 @@ const sendOtp = async (req, res) => {
   // In development, return OTP in response for testing
   const devData = process.env.NODE_ENV === 'development' ? { otp: code } : {};
 
+  // Build account-exists hint for frontend (shows "Welcome back" vs "Sign up")
+  const accountHint = existingUser ? {
+    accountExists: true,
+    linkedMethods: [
+      ...(existingUser.email ? ['email'] : []),
+      ...(existingUser.phone ? ['phone'] : []),
+    ],
+  } : { accountExists: false };
+
   res.json({
     success: true,
     message: `OTP sent to ${type === 'email' ? contact : `XXXXX${contact.slice(-5)}`}`,
     detectedType: type,
     expiresIn: `${process.env.OTP_EXPIRY_MINUTES || 10} minutes`,
+    ...accountHint,
     ...devData,
   });
 };
@@ -133,9 +147,9 @@ const verifyOtp = async (req, res) => {
   otpDoc.used = true;
   await otpDoc.save();
 
-  // Find or create user
-  const query = type === 'email' ? { email: contact } : { phone: contact };
-  let user = await User.findOne(query);
+  // Find user — check BOTH email and phone fields to prevent duplicate accounts
+  // e.g. user registered via email, now logging in via phone saved in their profile
+  let user = await User.findOne({ $or: [{ email: contact }, { phone: contact }] });
   let isNewUser = false;
 
   if (!user) {
@@ -238,8 +252,30 @@ const updateProfile = async (req, res) => {
   const { name, email, phone, address } = req.body;
   const updates = {};
   if (name) updates.name = name;
-  if (email) updates.email = email;
-  if (phone) updates.phone = phone;
+
+  // Check email uniqueness before updating
+  if (email) {
+    const emailTaken = await User.findOne({ email, _id: { $ne: req.user._id } }).lean();
+    if (emailTaken) {
+      return res.status(400).json({
+        success: false,
+        message: 'This email is already linked to another Eptomart account. Please use a different email or log in with that account.',
+      });
+    }
+    updates.email = email;
+  }
+
+  // Check phone uniqueness before updating
+  if (phone) {
+    const phoneTaken = await User.findOne({ phone, _id: { $ne: req.user._id } }).lean();
+    if (phoneTaken) {
+      return res.status(400).json({
+        success: false,
+        message: 'This mobile number is already linked to another Eptomart account. Please use a different number or log in with that account.',
+      });
+    }
+    updates.phone = phone;
+  }
 
   const user = await User.findByIdAndUpdate(req.user._id, updates, { new: true, runValidators: true });
 
@@ -305,8 +341,8 @@ const verifyFirebasePhone = async (req, res) => {
   // Extract 10-digit Indian number from +91XXXXXXXXXX
   const phone = decoded.phone_number.replace(/^\+91/, '');
 
-  // Find or create user
-  let user = await User.findOne({ phone });
+  // Find or create user — check both phone and email fields to avoid duplicates
+  let user = await User.findOne({ $or: [{ phone }, { email: phone }] });
   let isNewUser = false;
 
   if (!user) {
@@ -318,6 +354,11 @@ const verifyFirebasePhone = async (req, res) => {
     });
     isNewUser = true;
   } else {
+    // If existing user found but phone field not set, link the phone to their account
+    if (!user.phone) {
+      user.phone = phone;
+      await user.save();
+    }
     // Block deactivated accounts
     if (user.isActive === false) {
       return res.status(403).json({

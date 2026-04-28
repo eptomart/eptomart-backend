@@ -8,6 +8,8 @@ const crypto  = require('crypto');
 const getNotifySeller   = () => require('./orderController').notifySeller;
 const getCreateInvoice  = () => require('./orderController').createInvoice;
 const { createShipment } = require('../utils/shiprocket');
+const { sendOrderSms }   = require('../utils/sendSMS');
+const { sendOrderPaidWhatsApp } = require('../utils/sendWhatsApp');
 
 const getRazorpay = () => {
   if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return null;
@@ -124,6 +126,24 @@ const verifyRazorpayPayment = async (req, res) => {
   order.paymentStatus = 'paid';
   order.paymentDetails = { transactionId: razorpay_payment_id, gatewayOrderId: razorpay_order_id, paidAt: new Date() };
   await order.save();
+
+  // ── Notify customer of payment confirmation ──────────────────────────
+  const User = require('../models/User');
+  const buyer = await User.findById(order.user).select('name email phone').lean();
+  if (buyer) {
+    const total = order.pricing?.total;
+
+    // SMS
+    if (buyer.phone) {
+      sendOrderSms(buyer.phone, order.orderId, total).catch(() => {});
+    }
+
+    // WhatsApp
+    const customerPhone = buyer.phone || order.shippingAddress?.phone;
+    if (customerPhone && typeof sendOrderPaidWhatsApp === 'function') {
+      sendOrderPaidWhatsApp(customerPhone, { orderId: order.orderId, total, name: buyer.name }).catch(() => {});
+    }
+  }
 
   // Payment verified — notify seller(s)
   getNotifySeller()(order).catch(() => {});

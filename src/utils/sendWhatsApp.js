@@ -159,6 +159,24 @@ Welcome to the Eptomart family! 💪
   return sendMetaWhatsApp(phone, message);
 };
 
+// ── Customer: payment confirmed ─────────────────────────
+const sendOrderPaidWhatsApp = (phone, { orderId, total, name }) => {
+  const message =
+`✅ *Payment Confirmed — Eptomart!*
+
+Hi ${name || 'there'} 👋
+
+Your payment of *₹${Number(total).toLocaleString('en-IN')}* for order *#${orderId}* has been received successfully.
+
+📦 Your order is now being prepared.
+🔍 Track your order: eptomart.com/orders
+
+Thank you for shopping with Eptomart 🙏
+— *Team Eptomart*`;
+
+  return sendMetaWhatsApp(phone, message);
+};
+
 // ── Customer: order shipped ─────────────────────────────
 const sendOrderShippedWhatsApp = (phone, orderId, trackingNumber) => {
   const message =
@@ -177,6 +195,7 @@ Track: eptomart.com/orders
 
 module.exports = {
   sendOrderPlacedWhatsApp,
+  sendOrderPaidWhatsApp,
   sendAdminNewOrderAlert,
   sendSellerWelcomeWhatsApp,
   sendSellerActivatedWhatsApp,

@@ -413,4 +413,47 @@ const createManualShipment = async (req, res) => {
   }
 };
 
-module.exports = { getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, updateUser, deleteUser, getAllOrders, updateOrderStatus, adminCancelWithRefund, listAdmins, createAdmin, deleteAdmin, updateAdminPermissions, createManualShipment };
+// ── Refresh AWB for an existing shipment ─────
+// Called from admin panel when AWB shows as blank after shipment creation.
+// Shiprocket assigns couriers asynchronously — this polls and saves the AWB.
+const refreshShiprocketAWB = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id)
+      .populate('user', 'email phone name');
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    const sr = order.shiprocket;
+    if (!sr?.shipmentId) {
+      return res.status(400).json({ success: false, message: 'No Shiprocket shipment linked to this order' });
+    }
+
+    if (sr.awb) {
+      return res.json({ success: true, awb: sr.awb, courier: sr.courier, message: 'AWB already assigned' });
+    }
+
+    const { assignAWB } = require('../utils/shiprocket');
+    const result = await assignAWB(sr.shipmentId);
+
+    if (!result.awb) {
+      return res.status(400).json({
+        success: false,
+        message: 'Courier not assigned yet by Shiprocket. Please try again in a few seconds, or assign manually from the Shiprocket dashboard.',
+      });
+    }
+
+    const trackingUrl = `https://shiprocket.co/tracking/${result.awb}`;
+    await Order.findByIdAndUpdate(order._id, {
+      'shiprocket.awb':        result.awb,
+      'shiprocket.courier':    result.courier,
+      'shiprocket.trackingUrl': trackingUrl,
+      trackingNumber:          result.awb,
+    });
+
+    res.json({ success: true, awb: result.awb, courier: result.courier, trackingUrl });
+  } catch (err) {
+    console.error('[Admin refreshAWB]', err.message);
+    res.status(500).json({ success: false, message: err.message || 'Failed to refresh AWB' });
+  }
+};
+
+module.exports = { getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, updateUser, deleteUser, getAllOrders, updateOrderStatus, adminCancelWithRefund, listAdmins, createAdmin, deleteAdmin, updateAdminPermissions, createManualShipment, refreshShiprocketAWB };

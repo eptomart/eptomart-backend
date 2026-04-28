@@ -135,7 +135,46 @@ const createShipment = async (order, shippingAddress, seller = null) => {
   };
 
   const { data } = await axios.post(`${BASE_URL}/orders/create/adhoc`, payload, { headers: h });
+
+  // `create/adhoc` returns order_id + shipment_id but NOT AWB yet.
+  // We must call the courier auto-assign endpoint to get the AWB code.
+  const shipmentId = data?.payload?.shipment_id || data?.shipment_id;
+  if (shipmentId) {
+    try {
+      const { data: awbData } = await axios.post(
+        `${BASE_URL}/courier/assign/awb`,
+        { shipment_id: [String(shipmentId)] },
+        { headers: h }
+      );
+      // Merge AWB into the response so the caller can read it from result.awb_code
+      const awb     = awbData?.response?.data?.awb_code    || awbData?.awb_code    || '';
+      const courier = awbData?.response?.data?.courier_name || awbData?.courier_name || '';
+      return { ...data, awb_code: awb, courier_name: courier, awb_shipment_response: awbData };
+    } catch (awbErr) {
+      // AWB assignment can fail if courier serviceability isn't set up yet.
+      // Return what we have — admin can refresh later.
+      console.warn('[Shiprocket] AWB assignment failed (will need manual refresh):', awbErr?.response?.data?.message || awbErr.message);
+      return data;
+    }
+  }
+
   return data;
+};
+
+// ── Assign AWB to an already-created shipment ─
+// Call this if the shipment was created but AWB is still blank.
+const assignAWB = async (shipmentId) => {
+  const h = await headers();
+  const { data } = await axios.post(
+    `${BASE_URL}/courier/assign/awb`,
+    { shipment_id: [String(shipmentId)] },
+    { headers: h }
+  );
+  return {
+    awb:     data?.response?.data?.awb_code    || data?.awb_code    || '',
+    courier: data?.response?.data?.courier_name || data?.courier_name || '',
+    raw:     data,
+  };
 };
 
 // ── Track a shipment ─────────────────────────
@@ -174,4 +213,4 @@ const getServiceability = async ({ pickupPincode, deliveryPincode, weight = 0.5,
   return data;
 };
 
-module.exports = { createShipment, trackShipment, trackByAWB, cancelShipment, getServiceability };
+module.exports = { createShipment, assignAWB, trackShipment, trackByAWB, cancelShipment, getServiceability };

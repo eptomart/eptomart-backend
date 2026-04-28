@@ -5,7 +5,7 @@ const {
   toggleUserStatus, updateUser, deleteUser,
   getAllOrders, updateOrderStatus, adminCancelWithRefund,
   listAdmins, createAdmin, deleteAdmin, updateAdminPermissions,
-  createManualShipment,
+  createManualShipment, refreshShiprocketAWB,
 } = require('../controllers/adminController');
 const { acknowledgePickup } = require('../controllers/sellerController');
 const { protectAdmin, protectSuperAdmin, requirePermission } = require('../middleware/adminAuth');
@@ -14,6 +14,7 @@ const { protectAdmin, protectSuperAdmin, requirePermission } = require('../middl
 router.get('/orders',                              ...protectAdmin, requirePermission('orders'), getAllOrders);
 router.put('/orders/:id/status',                   ...protectAdmin, requirePermission('orders'), updateOrderStatus);
 router.post('/orders/:id/ship',                    ...protectAdmin, requirePermission('orders'), createManualShipment);
+router.post('/orders/:id/refresh-awb',             ...protectAdmin, requirePermission('orders'), refreshShiprocketAWB);
 router.post('/orders/:id/cancel-refund',           ...protectAdmin, requirePermission('orders'), adminCancelWithRefund);
 router.post('/orders/:orderId/acknowledge-pickup', ...protectAdmin, requirePermission('orders'), acknowledgePickup);
 

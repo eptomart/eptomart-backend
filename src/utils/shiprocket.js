@@ -37,15 +37,69 @@ const headers = async () => ({
   'Content-Type': 'application/json',
 });
 
-// ── Create a Shiprocket order + shipment ────
-const createShipment = async (order, shippingAddress) => {
+// ── Get or create a pickup location for a seller ────────────────────────
+// Shiprocket requires pickup addresses to be pre-registered by name.
+// We use seller.businessName as the unique pickup location name.
+const getOrCreatePickupLocation = async (seller) => {
+  // No seller info → fall back to env default
+  if (!seller?.address?.pincode) {
+    return process.env.SHIPROCKET_PICKUP_LOCATION || 'Primary';
+  }
+
   const h = await headers();
+
+  // Sanitise name: Shiprocket location names must be alphanumeric + spaces
+  const locationName = (seller.businessName || `Seller_${seller._id}`)
+    .replace(/[^a-zA-Z0-9 ]/g, '')
+    .trim()
+    .substring(0, 30);
+
+  try {
+    // Fetch existing pickup locations
+    const { data: existing } = await axios.get(`${BASE_URL}/settings/company/pickup`, { headers: h });
+    const locations = existing?.data?.shipping_address || [];
+
+    // Check if this seller's location is already registered
+    const found = locations.find(
+      loc => loc.pickup_location?.toLowerCase() === locationName.toLowerCase()
+    );
+    if (found) return found.pickup_location;
+
+    // Create a new pickup location for this seller
+    const payload = {
+      pickup_location: locationName,
+      name:            seller.businessName || locationName,
+      email:           seller.contact?.email || process.env.CONTACT_EMAIL || 'eptosicare@gmail.com',
+      phone:           seller.contact?.phone || '',
+      address:         seller.address.street || seller.address.city,
+      address_2:       '',
+      city:            seller.address.city,
+      state:           seller.address.state,
+      country:         'India',
+      pin_code:        seller.address.pincode,
+    };
+
+    await axios.post(`${BASE_URL}/settings/company/addpickup`, payload, { headers: h });
+    console.log('[Shiprocket] Created pickup location:', locationName, 'for seller:', seller.businessName);
+    return locationName;
+  } catch (err) {
+    console.error('[Shiprocket] getOrCreatePickupLocation failed:', err.message);
+    return process.env.SHIPROCKET_PICKUP_LOCATION || 'Primary';
+  }
+};
+
+// ── Create a Shiprocket order + shipment ────
+const createShipment = async (order, shippingAddress, seller = null) => {
+  const h = await headers();
+
+  // Resolve pickup location — seller's registered address takes priority
+  const pickupLocation = await getOrCreatePickupLocation(seller);
 
   // Map Eptomart order to Shiprocket format
   const payload = {
     order_id:           order.orderId || order._id.toString(),
     order_date:         new Date(order.createdAt).toISOString().split('T')[0],
-    pickup_location:    process.env.SHIPROCKET_PICKUP_LOCATION || 'Primary',
+    pickup_location:    pickupLocation,
     channel_id:         '',
     comment:            '',
     billing_customer_name:  shippingAddress.fullName,

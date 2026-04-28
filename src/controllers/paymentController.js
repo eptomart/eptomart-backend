@@ -196,14 +196,26 @@ async function _postPaymentTasks(order) {
 async function _createShiprocketOrder(order) {
   if (!process.env.SHIPROCKET_EMAIL || !process.env.SHIPROCKET_PASSWORD) return;
   try {
-    const populatedOrder = await Order.findById(order._id).lean();
+    // Populate seller data so we can use their address as the pickup location
+    const Seller = require('../models/Seller');
+    const populatedOrder = await Order.findById(order._id)
+      .populate({ path: 'items.product', select: 'seller name hsnCode', populate: { path: 'seller', model: 'Seller', select: 'businessName address contact' } })
+      .lean();
     if (!populatedOrder) return;
-    const result = await createShipment(populatedOrder, populatedOrder.shippingAddress);
+
+    // Determine seller: use the first item's seller (assumes single-seller orders;
+    // for multi-seller, each seller's items would ideally get separate shipments)
+    const seller = populatedOrder.items?.[0]?.product?.seller || null;
+    if (seller) {
+      console.log('[Shiprocket] Using pickup from seller:', seller.businessName, '→', seller.address?.city, seller.address?.pincode);
+    }
+
+    const result = await createShipment(populatedOrder, populatedOrder.shippingAddress, seller);
     // Extract Shiprocket data from response
-    const srOrderId  = result?.order_id  || result?.data?.order_id;
+    const srOrderId  = result?.order_id   || result?.data?.order_id;
     const srShipId   = result?.shipment_id || result?.data?.shipment_id;
-    const awb        = result?.awb_code  || result?.data?.awb_code || '';
-    const courier    = result?.courier_name || result?.data?.courier_name || '';
+    const awb        = result?.awb_code    || result?.data?.awb_code   || '';
+    const courier    = result?.courier_name|| result?.data?.courier_name|| '';
     const trackingUrl= awb ? `https://shiprocket.co/tracking/${awb}` : '';
     if (srOrderId) {
       await Order.findByIdAndUpdate(order._id, {
@@ -211,7 +223,7 @@ async function _createShiprocketOrder(order) {
         trackingNumber: awb,
         deliveryPartner: courier,
       });
-      console.log('[Shiprocket] Order created:', srOrderId, 'AWB:', awb);
+      console.log('[Shiprocket] Order created:', srOrderId, 'AWB:', awb, 'Seller pickup:', seller?.businessName || 'default');
     }
   } catch (err) {
     console.error('[Shiprocket] Failed to create order:', err.message);

@@ -1,8 +1,9 @@
 // ============================================
 // PRODUCT CONTROLLER
 // ============================================
-const Product = require('../models/Product');
-const Seller  = require('../models/Seller');
+const Product  = require('../models/Product');
+const Seller   = require('../models/Seller');
+const Category = require('../models/Category');
 const { deleteImage } = require('../config/cloudinary');
 
 // Helper: get Seller._id from req.user
@@ -192,6 +193,26 @@ const createProduct = async (req, res) => {
   // Platform / seller margins (stored for pricing reference)
   if (platformMargin !== undefined) productData.platformMargin = Number(platformMargin);
   if (sellerMargin   !== undefined) productData.sellerMargin   = Number(sellerMargin);
+
+  // FSSAI check: if category requires FSSAI, seller must have it on file
+  if (category) {
+    const cat = await Category.findById(category).lean();
+    if (cat?.requiresFSSAI) {
+      let sellerDoc = null;
+      if (req.user.role === 'seller') {
+        sellerDoc = await Seller.findById(getSellerDocId(req)).lean();
+      } else if (productData.seller) {
+        sellerDoc = await Seller.findById(productData.seller).lean();
+      }
+      if (!sellerDoc?.fssaiLicenseNumber) {
+        return res.status(400).json({
+          success: false,
+          message: 'FSSAI license number is mandatory for food/beverage products. Please update your seller profile with your FSSAI license before listing this product.',
+          requiresFSSAI: true,
+        });
+      }
+    }
+  }
 
   const product = await Product.create(productData);
 

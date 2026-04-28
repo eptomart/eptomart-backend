@@ -34,6 +34,10 @@ const categorySchema = new mongoose.Schema({
     type: Boolean,
     default: true,
   },
+  requiresFSSAI: {
+    type: Boolean,
+    default: false,  // set true for food, beverage, dairy, bakery, etc.
+  },
   sortOrder: {
     type: Number,
     default: 0,

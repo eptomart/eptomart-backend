@@ -25,8 +25,9 @@ const sellerSchema = new mongoose.Schema({
     geocodedAt: Date,
   },
 
-  gstNumber: { type: String, uppercase: true, trim: true },
-  panNumber: { type: String, uppercase: true, trim: true },
+  gstNumber:           { type: String, required: [true, 'GST number is required'], uppercase: true, trim: true },
+  panNumber:           { type: String, uppercase: true, trim: true },
+  fssaiLicenseNumber:  { type: String, trim: true },  // mandatory for food/beverage sellers
 
   bankDetails: {
     accountNumber: String,

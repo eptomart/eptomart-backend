@@ -56,10 +56,15 @@ const listSellers = async (req, res) => {
 
 // ── Admin: create seller + user account ─────────────────
 const createSeller = async (req, res) => {
-  const { businessName, email, phone, address, gstNumber, panNumber, notes } = req.body;
+  const { businessName, email, phone, address, gstNumber, panNumber, fssaiLicenseNumber, notes } = req.body;
 
   if (!businessName || !address?.pincode || (!email && !phone)) {
     return res.status(400).json({ success: false, message: 'businessName, address.pincode, and email or phone required' });
+  }
+
+  // GST is mandatory for all sellers
+  if (!gstNumber || gstNumber.trim().length < 15) {
+    return res.status(400).json({ success: false, message: 'A valid 15-character GST number is required for seller registration' });
   }
 
   // Create user account with seller role
@@ -86,8 +91,9 @@ const createSeller = async (req, res) => {
       lng: coords?.lng,
       geocodedAt: coords ? new Date() : undefined,
     },
-    gstNumber:    gstNumber || undefined,
-    panNumber:    panNumber || undefined,
+    gstNumber:           gstNumber.trim().toUpperCase(),
+    panNumber:           panNumber || undefined,
+    fssaiLicenseNumber:  fssaiLicenseNumber || undefined,
     notes:        notes || undefined,
     status:       'inactive',
     createdBy:    req.user._id,
@@ -129,7 +135,7 @@ const updateSeller = async (req, res) => {
   const seller = await Seller.findById(req.params.id);
   if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
 
-  const allowed = ['businessName','displayName','description','contact','address','gstNumber','panNumber','bankDetails','notes'];
+  const allowed = ['businessName','displayName','description','contact','address','gstNumber','panNumber','fssaiLicenseNumber','bankDetails','notes'];
   allowed.forEach(k => { if (req.body[k] !== undefined) seller[k] = req.body[k]; });
 
   // Re-geocode if pincode changed

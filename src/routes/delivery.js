@@ -34,22 +34,32 @@ router.get('/cod-check', async (req, res) => {
       cod:             true,
     });
 
-    const couriers = data?.data?.available_courier_companies || [];
+    const couriers    = data?.data?.available_courier_companies || [];
     const codCouriers = couriers.filter(c => c.cod === 1);
 
-    // Find best EDD from available couriers (non-COD and COD)
-    const allCouriers = couriers.filter(c => c.etd);
-    const bestCourier = allCouriers.sort((a, b) =>
-      new Date(a.etd) - new Date(b.etd)
-    )[0];
+    // Best COD courier by rate (cheapest with ETD)
+    const codWithEtd     = codCouriers.filter(c => c.etd).sort((a, b) => (a.rate || 9999) - (b.rate || 9999));
+    const bestCodCourier = codWithEtd[0];
+
+    // Best overall courier (fastest EDD)
+    const allWithEtd  = couriers.filter(c => c.etd).sort((a, b) => new Date(a.etd) - new Date(b.etd));
+    const bestCourier = allWithEtd[0];
+
+    // Use COD courier for display; fallback to overall best
+    const display = bestCodCourier || bestCourier;
+
+    const allRates = couriers.map(c => c.rate).filter(r => r > 0);
+    const minRate  = allRates.length ? Math.min(...allRates) : null;
 
     res.json({
-      success:      true,
-      codAvailable: codCouriers.length > 0,
-      codCouriers:  codCouriers.length,
-      edd:          bestCourier?.etd || null,          // "YYYY-MM-DD" or null
-      eddDays:      bestCourier?.estimated_delivery_days || null,
-      courierName:  bestCourier?.courier_name || null,
+      success:         true,
+      codAvailable:    codCouriers.length > 0,
+      codCouriers:     codCouriers.length,
+      edd:             display?.etd || null,
+      eddDays:         display?.estimated_delivery_days || null,
+      courierName:     display?.courier_name || null,
+      shippingRate:    display?.rate          || null,   // ₹ — actual courier charge
+      minShippingRate: minRate,                          // cheapest available courier
     });
   } catch (err) {
     console.error('[COD Check] Shiprocket serviceability failed:', err.message);

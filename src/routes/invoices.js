@@ -1,14 +1,24 @@
 const express = require('express');
 const router  = express.Router();
-const { protect }    = require('../middleware/auth');
-const protectAdmin   = require('../middleware/adminAuth').protectAdmin;
-const { myInvoices, getInvoice, downloadPDF, allInvoices, regeneratePDF } = require('../controllers/invoiceController');
+const { protect }                          = require('../middleware/auth');
+const { protectAdmin, protectSuperAdmin }  = require('../middleware/adminAuth');
+const {
+  myInvoices, getInvoice, downloadPDF, allInvoices, regeneratePDF,
+  downloadSellerInvoice, downloadAdminInvoice,
+} = require('../controllers/invoiceController');
 
-router.get('/',              protect, myInvoices);
-router.get('/admin/all',     protect, protectAdmin, allInvoices);
-router.get('/:id',           protect, getInvoice);
-router.get('/:id/pdf',       protect, downloadPDF);
-router.get('/:id/download',  protect, downloadPDF); // alias — frontend calls /download
-router.post('/:id/regenerate', protect, protectAdmin, regeneratePDF);
+// Customer
+router.get('/',                protect,                    myInvoices);
+router.get('/:id',             protect,                    getInvoice);
+router.get('/:id/pdf',         protect,                    downloadPDF);
+router.get('/:id/download',    protect,                    downloadPDF);
+
+// Seller — payout statement for an order
+router.get('/seller/order/:orderId/download', protect, downloadSellerInvoice);
+
+// Admin
+router.get('/admin/all',                         ...protectAdmin,      allInvoices);
+router.post('/:id/regenerate',                   ...protectAdmin,      regeneratePDF);
+router.get('/admin/order/:orderId/download',     ...protectSuperAdmin, downloadAdminInvoice);
 
 module.exports = router;

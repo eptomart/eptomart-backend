@@ -1,8 +1,59 @@
 const GST_SLABS = [0, 5, 12, 18, 28];
 
+// Normalize Indian state names to handle common variations
+// (abbreviations, typos, spacing, casing) from India Post API and manual entry
+const STATE_NORM = {
+  'andhra pradesh': 'andhra pradesh', 'ap': 'andhra pradesh',
+  'arunachal pradesh': 'arunachal pradesh', 'ar': 'arunachal pradesh',
+  'assam': 'assam', 'as': 'assam',
+  'bihar': 'bihar', 'br': 'bihar',
+  'chhattisgarh': 'chhattisgarh', 'cg': 'chhattisgarh', 'chattisgarh': 'chhattisgarh',
+  'goa': 'goa', 'ga': 'goa',
+  'gujarat': 'gujarat', 'gj': 'gujarat',
+  'haryana': 'haryana', 'hr': 'haryana',
+  'himachal pradesh': 'himachal pradesh', 'hp': 'himachal pradesh',
+  'jharkhand': 'jharkhand', 'jh': 'jharkhand',
+  'karnataka': 'karnataka', 'ka': 'karnataka',
+  'kerala': 'kerala', 'kl': 'kerala',
+  'madhya pradesh': 'madhya pradesh', 'mp': 'madhya pradesh',
+  'maharashtra': 'maharashtra', 'mh': 'maharashtra',
+  'manipur': 'manipur', 'mn': 'manipur',
+  'meghalaya': 'meghalaya', 'ml': 'meghalaya',
+  'mizoram': 'mizoram', 'mz': 'mizoram',
+  'nagaland': 'nagaland', 'nl': 'nagaland',
+  'odisha': 'odisha', 'or': 'odisha', 'orissa': 'odisha',
+  'punjab': 'punjab', 'pb': 'punjab',
+  'rajasthan': 'rajasthan', 'rj': 'rajasthan',
+  'sikkim': 'sikkim', 'sk': 'sikkim',
+  'tamil nadu': 'tamil nadu', 'tn': 'tamil nadu', 'tamilnadu': 'tamil nadu',
+  'telangana': 'telangana', 'ts': 'telangana', 'tg': 'telangana',
+  'tripura': 'tripura', 'tr': 'tripura',
+  'uttar pradesh': 'uttar pradesh', 'up': 'uttar pradesh',
+  'uttarakhand': 'uttarakhand', 'uk': 'uttarakhand', 'uttaranchal': 'uttarakhand',
+  'west bengal': 'west bengal', 'wb': 'west bengal',
+  'delhi': 'delhi', 'dl': 'delhi', 'new delhi': 'delhi',
+  'jammu and kashmir': 'jammu and kashmir', 'jk': 'jammu and kashmir', 'j&k': 'jammu and kashmir',
+  'ladakh': 'ladakh', 'la': 'ladakh',
+  'chandigarh': 'chandigarh', 'ch': 'chandigarh',
+  'puducherry': 'puducherry', 'py': 'puducherry', 'pondicherry': 'puducherry',
+  'lakshadweep': 'lakshadweep', 'ld': 'lakshadweep',
+  'andaman and nicobar islands': 'andaman and nicobar islands', 'an': 'andaman and nicobar islands',
+  'dadra and nagar haveli': 'dadra and nagar haveli', 'dn': 'dadra and nagar haveli',
+  'daman and diu': 'daman and diu', 'dd': 'daman and diu',
+};
+
+const normalizeState = (s) => {
+  if (!s) return '';
+  // Remove extra whitespace, lowercase, collapse multiple spaces
+  const key = s.trim().toLowerCase().replace(/\s+/g, ' ');
+  // Also try without spaces (handles "tamilnadu" → "tamil nadu")
+  const keyNoSpace = key.replace(/\s/g, '');
+  return STATE_NORM[key] || STATE_NORM[keyNoSpace] || key;
+};
+
 const isIntraState = (sellerState, buyerState) => {
-  if (!sellerState || !buyerState) return true; // default to intra
-  return sellerState.trim().toLowerCase() === buyerState.trim().toLowerCase();
+  if (!sellerState || !buyerState) return true; // default to intra (safe)
+  return normalizeState(sellerState) === normalizeState(buyerState);
 };
 
 /**

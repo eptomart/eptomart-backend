@@ -558,28 +558,39 @@ const downloadAdminInvoice = async (req, res) => {
   }
 };
 
+// ── Admin/Seller: download customer invoice by orderId ───
+// Shared helper — find invoice by orderId and stream customer PDF
+const _streamCustomerInvoiceByOrderId = async (orderId, res, label = 'Invoice') => {
+  const invoice = await Invoice.findOne({ order: orderId })
+    .populate('order',    'orderId orderStatus paymentMethod paymentStatus')
+    .populate('customer', 'name email phone')
+    .lean();
+  if (!invoice) {
+    return res.status(404).json({ success: false, message: 'Invoice not yet generated for this order. It is created automatically after payment.' });
+  }
+  const { generateInvoicePDF } = require('../utils/generateInvoicePDF');
+  const buffer = await generateInvoicePDF(invoice);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="invoice-${invoice.invoiceNumber}.pdf"`);
+  res.setHeader('Content-Length', buffer.length);
+  return res.end(buffer);
+};
+
+// Admin: customer invoice by orderId
+const downloadCustomerInvoiceByOrderIdAdmin = async (req, res) => {
+  try {
+    return await _streamCustomerInvoiceByOrderId(req.params.orderId, res, 'Customer Invoice');
+  } catch (err) {
+    console.error('[Admin Customer Invoice] Error:', err.message);
+    return res.status(500).json({ success: false, message: 'Failed to generate invoice' });
+  }
+};
+
 // ── Seller: download customer invoice by orderId ─────────
 const downloadCustomerInvoiceBySeller = async (req, res) => {
   try {
-    const { orderId } = req.params;
-    const sellerDocId = req.user.sellerProfile;
-    if (!sellerDocId) return res.status(403).json({ success: false, message: 'Seller access required' });
-
-    // Verify seller has products in this order
-    const order = await Order.findById(orderId).lean();
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-    const { generateInvoicePDF } = require('../utils/generateInvoicePDF');
-    const invoice = await Invoice.findOne({ order: orderId })
-      .populate('customer', 'name email phone')
-      .lean();
-    if (!invoice) return res.status(404).json({ success: false, message: 'Invoice not yet generated for this order' });
-
-    const buffer = await generateInvoicePDF(invoice);
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="invoice-${invoice.invoiceNumber}.pdf"`);
-    res.setHeader('Content-Length', buffer.length);
-    return res.end(buffer);
+    if (!req.user.sellerProfile) return res.status(403).json({ success: false, message: 'Seller access required' });
+    return await _streamCustomerInvoiceByOrderId(req.params.orderId, res, 'Customer Invoice');
   } catch (err) {
     console.error('[Seller Customer Invoice] Error:', err.message);
     return res.status(500).json({ success: false, message: 'Failed to generate invoice' });
@@ -589,5 +600,7 @@ const downloadCustomerInvoiceBySeller = async (req, res) => {
 module.exports = {
   myInvoices, getInvoice, downloadPDF, allInvoices, regeneratePDF,
   downloadSellerInvoice, downloadAdminInvoice,
-  downloadShippingLabel, downloadCustomerInvoiceBySeller,
+  downloadShippingLabel,
+  downloadCustomerInvoiceBySeller,
+  downloadCustomerInvoiceByOrderIdAdmin,
 };

@@ -161,11 +161,13 @@ const generateInvoicePDF = async (invoice) => {
     };
 
     tRow('Subtotal (excl. GST)', fmtINR(invoice.subtotal));
-    if (invoice.gstType === 'intra') {
+    // Determine GST type from actual stored amounts (more reliable than gstType string)
+    const hasIntraGst = (Number(invoice.cgstTotal) > 0 || Number(invoice.sgstTotal) > 0);
+    if (hasIntraGst) {
       tRow('CGST', fmtINR(invoice.cgstTotal));
       tRow('SGST', fmtINR(invoice.sgstTotal));
     } else {
-      tRow('IGST', fmtINR(invoice.igstTotal));
+      tRow('IGST', fmtINR(invoice.igstTotal || invoice.gstTotal));
     }
     if (invoice.shipping > 0) tRow('Shipping', fmtINR(invoice.shipping));
     if (invoice.discount > 0) tRow('Discount', `- ${fmtINR(invoice.discount)}`);
@@ -181,16 +183,28 @@ const generateInvoicePDF = async (invoice) => {
     totY += 38;
 
     // ── PAYMENT & SHIPMENT STATUS ──────────────────────────────
-    const payMethod   = (invoice.order?.paymentMethod || invoice.paymentMethod || '—').toUpperCase();
-    const rawStatus   = invoice.order?.paymentStatus  || invoice.paymentStatus  || 'pending';
-    const isCod       = (invoice.order?.paymentMethod || invoice.paymentMethod) === 'cod';
-    const orderStatus = invoice.order?.orderStatus    || 'placed';
+    const rawMethod   = (invoice.order?.paymentMethod || '').toLowerCase();
+    const payMethod   = rawMethod ? rawMethod.toUpperCase() : '—';
+    const rawStatus   = (invoice.order?.paymentStatus || 'pending').toLowerCase();
+    const isCod       = rawMethod === 'cod';
+    const orderStatus = invoice.order?.orderStatus || 'placed';
     const isDelivered = orderStatus === 'delivered';
 
-    const payLabel = isCod && !isDelivered ? 'Pay on Delivery'
-                   : rawStatus === 'paid'   ? 'PAID'
-                   : rawStatus.toUpperCase();
-    const payColor = rawStatus === 'paid' ? '#16a34a' : GRAY;
+    let payLabel, payColor;
+    if (isCod && isDelivered) {
+      payLabel = 'COLLECTED (COD)'; payColor = '#16a34a';
+    } else if (isCod) {
+      payLabel = 'Collect on Delivery'; payColor = '#f97316';
+    } else if (rawStatus === 'paid') {
+      payLabel = 'PAID'; payColor = '#16a34a';
+    } else if (rawStatus === 'refunded') {
+      payLabel = 'REFUNDED'; payColor = '#3b82f6';
+    } else if (rawStatus === 'failed') {
+      payLabel = 'FAILED'; payColor = '#ef4444';
+    } else {
+      payLabel = rawMethod === 'upi' ? 'Awaiting Verification' : 'PENDING';
+      payColor = GRAY;
+    }
     const shipLabel = ORDER_STATUS_LABELS[orderStatus] || orderStatus;
 
     const spY = totY + 10, spH = 52, hw = (CW - 10) / 2;

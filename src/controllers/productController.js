@@ -471,4 +471,23 @@ const previewProduct = async (req, res) => {
   res.json({ success: true, product });
 };
 
-module.exports = { getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct };
+// ── Toggle product active / inactive (admin only) ────────────────────────────
+const toggleProductActive = async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+
+    product.isActive = !product.isActive;
+    await product.save();
+
+    res.json({
+      success: true,
+      isActive: product.isActive,
+      message: product.isActive ? 'Product activated' : 'Product deactivated',
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+module.exports = { getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct, toggleProductActive };

@@ -2,7 +2,8 @@ const express = require('express');
 const router = express.Router();
 const {
   getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct,
-  deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct
+  deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct,
+  toggleProductActive,
 } = require('../controllers/productController');
 const { protect } = require('../middleware/auth');
 const { protectAdmin } = require('../middleware/adminAuth');
@@ -31,7 +32,8 @@ router.put('/:id', protectSeller, uploadProduct.array('images', 5), updateProduc
 router.post('/:id/clone',   protectSeller, cloneProduct);
 router.get('/:id/preview',  protectSeller, previewProduct);
 
-// Admin only: delete products, remove images
+// Admin only: toggle active, delete products, remove images
+router.patch('/:id/toggle-active', protectAdmin, toggleProductActive);
 router.delete('/:id', protectAdmin, deleteProduct);
 router.delete('/:id/image/:imageId', protectAdmin, removeProductImage);
 

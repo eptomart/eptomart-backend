@@ -35,7 +35,7 @@ router.get('/:id/preview',  protectSeller, previewProduct);
 // Admin only: toggle active, delete products, remove images
 router.patch('/:id/toggle-active', protectAdmin, toggleProductActive);
 router.delete('/:id', protectAdmin, deleteProduct);
-router.delete('/:id/image/:imageId', protectAdmin, removeProductImage);
+router.delete('/:id/image/:imageId', protectSeller, removeProductImage);
 
 // User routes
 router.post('/:id/review', protect, addReview);

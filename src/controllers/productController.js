@@ -306,20 +306,34 @@ const deleteProduct = async (req, res) => {
 
 /**
  * @route   DELETE /api/products/:id/image/:imageId
- * @desc    Remove a specific product image (Admin)
- * @access  Admin
+ * @desc    Remove a specific product image (admin or owning seller)
+ * @access  Seller (own product) | Admin
  */
 const removeProductImage = async (req, res) => {
   const product = await Product.findById(req.params.id);
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
+  // Sellers can only remove images from their own products
+  if (!['admin', 'superAdmin'].includes(req.user?.role)) {
+    const sellerDocId = getSellerDocId(req);
+    if (!sellerDocId || product.seller?.toString() !== sellerDocId.toString()) {
+      return res.status(403).json({ success: false, message: 'You can only edit your own products' });
+    }
+  }
+
   const image = product.images.find(img => img._id.toString() === req.params.imageId);
-  if (image?.publicId) await deleteImage(image.publicId);
+  if (!image) return res.status(404).json({ success: false, message: 'Image not found' });
+
+  if (image.publicId) await deleteImage(image.publicId);
 
   product.images = product.images.filter(img => img._id.toString() !== req.params.imageId);
-  await product.save();
 
-  res.json({ success: true, message: 'Image removed', product });
+  // If the removed image was the default, promote first remaining as default
+  const hasDefault = product.images.some(img => img.isDefault);
+  if (!hasDefault && product.images.length > 0) product.images[0].isDefault = true;
+
+  await product.save();
+  res.json({ success: true, message: 'Image removed', images: product.images });
 };
 
 /**

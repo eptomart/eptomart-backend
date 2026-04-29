@@ -357,6 +357,148 @@ const regeneratePDF = async (req, res) => {
   res.json({ success: true, pdfUrl: url });
 };
 
+// ── Shipping Label PDF (courier from/to) ────
+const generateShippingLabelPDF = (order, seller) => {
+  return new Promise((resolve, reject) => {
+    const doc    = new PDFDocument({ size: [283, 425], margin: 0 }); // 10cm × 15cm label
+    const chunks = [];
+    doc.on('data', c => chunks.push(c));
+    doc.on('end',  () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+
+    const ORANGE = '#f97316';
+    const DARK   = '#0f172a';
+    const GRAY   = '#64748b';
+    const W      = 283;
+
+    const sa  = order.shippingAddress || {};
+    const sp  = order.sellerPickup   || {};
+    const isCOD = order.paymentMethod === 'cod';
+
+    // ── Header band ──────────────────────────────────────
+    doc.rect(0, 0, W, 36).fill(DARK);
+    doc.fontSize(14).font('Helvetica-Bold').fillColor(ORANGE).text('eptomart', 10, 10);
+    doc.fontSize(7).font('Helvetica').fillColor('#94a3b8').text('www.eptomart.com', 10, 26);
+
+    if (isCOD) {
+      doc.rect(160, 4, 115, 28).fill(ORANGE);
+      doc.fontSize(9).font('Helvetica-Bold').fillColor('white')
+         .text('💵 CASH ON DELIVERY', 163, 10)
+         .text(`₹ ${Number(order.pricing?.total || 0).toLocaleString('en-IN')}`, 163, 22);
+    }
+
+    // ── Divider ───────────────────────────────────────────
+    doc.moveTo(0, 36).lineTo(W, 36).strokeColor(ORANGE).lineWidth(2).stroke();
+
+    // ── AWB / Tracking ────────────────────────────────────
+    const awb = order.shiprocket?.awb || order.trackingNumber || '';
+    let y = 44;
+
+    doc.fontSize(7).font('Helvetica').fillColor(GRAY).text('AWB / TRACKING', 10, y);
+    y += 10;
+    doc.fontSize(awb ? 15 : 10).font('Helvetica-Bold').fillColor(DARK)
+       .text(awb || 'Pending AWB Assignment', 10, y, { width: W - 20 });
+    y += awb ? 20 : 14;
+
+    doc.fontSize(7).font('Helvetica').fillColor(GRAY)
+       .text(`Order: #${order.orderId}  ·  Date: ${new Date(order.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`, 10, y);
+    y += 10;
+
+    // ── Divider line ──────────────────────────────────────
+    doc.moveTo(10, y + 4).lineTo(W - 10, y + 4).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
+    y += 14;
+
+    // ── TO address (large — customer) ─────────────────────
+    doc.rect(0, y, W, 6).fill(DARK);
+    doc.fontSize(6).font('Helvetica-Bold').fillColor('white').text('▼ DELIVER TO', 10, y + 1);
+    y += 10;
+
+    doc.fontSize(12).font('Helvetica-Bold').fillColor(DARK)
+       .text(sa.fullName || 'Customer', 10, y, { width: W - 20 });
+    y += 16;
+
+    doc.fontSize(8.5).font('Helvetica').fillColor('#334155');
+    const addrLine1 = [sa.addressLine1, sa.addressLine2].filter(Boolean).join(', ');
+    const addrLine2 = [sa.city, sa.state].filter(Boolean).join(', ');
+    const addrLine3 = `PIN: ${sa.pincode || ''}${sa.phone ? '  Ph: ' + sa.phone : ''}`;
+    if (addrLine1) { doc.text(addrLine1, 10, y, { width: W - 20 }); y += 12; }
+    if (addrLine2) { doc.text(addrLine2, 10, y); y += 12; }
+    doc.text(addrLine3, 10, y);
+    y += 14;
+
+    // ── Divider ───────────────────────────────────────────
+    doc.moveTo(10, y).lineTo(W - 10, y).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
+    y += 8;
+
+    // ── FROM address (seller / warehouse) ─────────────────
+    doc.rect(0, y, W, 6).fill('#e2e8f0');
+    doc.fontSize(6).font('Helvetica-Bold').fillColor(GRAY).text('▲ SHIPPED FROM', 10, y + 1);
+    y += 10;
+
+    const pickupName = sp.sellerName || seller?.businessName || 'Eptomart';
+    const pickupAddr = [
+      sp.street  || seller?.address?.street,
+      sp.city    || seller?.address?.city,
+      sp.state   || seller?.address?.state,
+    ].filter(Boolean).join(', ');
+    const pickupPin  = sp.pincode || seller?.address?.pincode || '';
+
+    doc.fontSize(9).font('Helvetica-Bold').fillColor(DARK).text(pickupName, 10, y, { width: W - 20 });
+    y += 12;
+    if (pickupAddr) {
+      doc.fontSize(7.5).font('Helvetica').fillColor(GRAY).text(pickupAddr, 10, y);
+      y += 10;
+    }
+    doc.fontSize(7.5).font('Helvetica').fillColor(GRAY).text(`PIN: ${pickupPin}`, 10, y);
+    y += 14;
+
+    // ── Divider ───────────────────────────────────────────
+    doc.moveTo(10, y).lineTo(W - 10, y).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
+    y += 8;
+
+    // ── Items summary ────────────────────────────────────
+    doc.fontSize(6.5).font('Helvetica-Bold').fillColor(GRAY).text('ITEMS', 10, y);
+    y += 9;
+    for (const item of (order.items || []).slice(0, 4)) {
+      doc.fontSize(7.5).font('Helvetica').fillColor(DARK)
+         .text(`${item.name} × ${item.quantity}`, 10, y, { width: W - 20, ellipsis: true });
+      y += 10;
+    }
+    if (order.items?.length > 4) {
+      doc.fontSize(7).font('Helvetica').fillColor(GRAY)
+         .text(`+${order.items.length - 4} more item(s)`, 10, y);
+      y += 10;
+    }
+
+    // ── Footer ────────────────────────────────────────────
+    doc.rect(0, 400, W, 25).fill(DARK);
+    doc.fontSize(6.5).font('Helvetica').fillColor('#94a3b8')
+       .text(`${order.paymentMethod?.toUpperCase()} · ${order.orderStatus?.toUpperCase()} · eptomart.com`, 10, 409, { align: 'center', width: W - 20 });
+
+    doc.end();
+  });
+};
+
+// ── Download shipping label (admin only) ─────
+const downloadShippingLabel = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.orderId)
+      .populate({ path: 'items.product', select: 'name seller', populate: { path: 'seller', select: 'businessName address' } })
+      .lean();
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    const seller = order.items?.[0]?.product?.seller || null;
+    const buffer = await generateShippingLabelPDF(order, seller);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="shipping-label-${order.orderId}.pdf"`);
+    return res.end(buffer);
+  } catch (err) {
+    console.error('[Shipping Label] Failed:', err.message);
+    return res.status(500).json({ success: false, message: 'Failed to generate shipping label' });
+  }
+};
+
 // ── Seller: download payout statement PDF ────
 const downloadSellerInvoice = async (req, res) => {
   try {
@@ -416,4 +558,36 @@ const downloadAdminInvoice = async (req, res) => {
   }
 };
 
-module.exports = { myInvoices, getInvoice, downloadPDF, allInvoices, regeneratePDF, downloadSellerInvoice, downloadAdminInvoice };
+// ── Seller: download customer invoice by orderId ─────────
+const downloadCustomerInvoiceBySeller = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const sellerDocId = req.user.sellerProfile;
+    if (!sellerDocId) return res.status(403).json({ success: false, message: 'Seller access required' });
+
+    // Verify seller has products in this order
+    const order = await Order.findById(orderId).lean();
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    const { generateInvoicePDF } = require('../utils/generateInvoicePDF');
+    const invoice = await Invoice.findOne({ order: orderId })
+      .populate('customer', 'name email phone')
+      .lean();
+    if (!invoice) return res.status(404).json({ success: false, message: 'Invoice not yet generated for this order' });
+
+    const buffer = await generateInvoicePDF(invoice);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="invoice-${invoice.invoiceNumber}.pdf"`);
+    res.setHeader('Content-Length', buffer.length);
+    return res.end(buffer);
+  } catch (err) {
+    console.error('[Seller Customer Invoice] Error:', err.message);
+    return res.status(500).json({ success: false, message: 'Failed to generate invoice' });
+  }
+};
+
+module.exports = {
+  myInvoices, getInvoice, downloadPDF, allInvoices, regeneratePDF,
+  downloadSellerInvoice, downloadAdminInvoice,
+  downloadShippingLabel, downloadCustomerInvoiceBySeller,
+};

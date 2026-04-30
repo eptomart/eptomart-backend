@@ -36,6 +36,15 @@ const sellerSchema = new mongoose.Schema({
     accountHolder: String,
   },
 
+  // KYC documents
+  cancelledCheque: { url: String, publicId: String, uploadedAt: Date },
+  agreementFile:   { url: String, publicId: String, uploadedAt: Date },   // signed onboarding agreement
+  kycStatus: {
+    bankDetailsComplete: { type: Boolean, default: false },
+    chequeUploaded:      { type: Boolean, default: false },
+    agreementUploaded:   { type: Boolean, default: false },
+  },
+
   status: {
     type: String,
     enum: ['active', 'inactive', 'suspended'],
@@ -48,6 +57,10 @@ const sellerSchema = new mongoose.Schema({
   },
   totalSales:  { type: Number, default: 0 },
   totalOrders: { type: Number, default: 0 },
+
+  // Human-readable seller code — auto-assigned on creation
+  // Format: EPT-S-0001, EPT-S-0002, …
+  sellerId:    { type: String, unique: true, sparse: true },
 
   notes:       String,
   createdBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

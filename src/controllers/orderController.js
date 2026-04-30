@@ -592,7 +592,66 @@ const _createShiprocketCOD = async (order) => {
   }
 };
 
+// ── POST /api/orders/:id/package-images — seller uploads packaging photos ─
+const uploadPackageImages = async (req, res) => {
+  const sellerDocId = req.user.sellerProfile || null;
+  if (!sellerDocId) return res.status(403).json({ success: false, message: 'Seller profile not found' });
+
+  const order = await Order.findById(req.params.id);
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  // Verify this seller owns items in this order
+  const sellerProducts = await Product.find({ seller: sellerDocId }).select('_id').lean();
+  const productIdSet   = new Set(sellerProducts.map(p => p._id.toString()));
+  if (!order.items.some(i => productIdSet.has(i.product.toString()))) {
+    return res.status(403).json({ success: false, message: 'Not authorized for this order' });
+  }
+
+  if (!['confirmed', 'processing'].includes(order.orderStatus)) {
+    return res.status(400).json({ success: false, message: 'Packaging images can only be uploaded after order is confirmed' });
+  }
+
+  const files = req.files || [];
+  if (files.length < 1) return res.status(400).json({ success: false, message: 'Please upload at least 1 packaging image' });
+
+  const newImages = files.map(f => ({ url: f.path, publicId: f.filename, uploadedAt: new Date() }));
+  const existing  = order.packaging?.images || [];
+  const allImages = [...existing, ...newImages];
+
+  const statusNow = allImages.length >= 4 ? 'pending_review' : 'not_submitted';
+
+  order.packaging = {
+    ...order.packaging,
+    images:      allImages,
+    status:      statusNow,
+    submittedAt: statusNow === 'pending_review' ? new Date() : order.packaging?.submittedAt,
+  };
+  await order.save();
+
+  // Notify admin if newly submitted
+  if (statusNow === 'pending_review') {
+    const { notifyUser: notify } = require('../utils/pushNotification');
+    notify('admin', {
+      title: `📦 Packaging ready for review — #${order.orderId}`,
+      body:  `Seller uploaded ${allImages.length} packaging photos. Review to release AWB.`,
+      url:   '/admin/orders',
+    }).catch(() => {});
+  }
+
+  res.json({
+    success: true,
+    message: allImages.length >= 4
+      ? 'Packaging submitted for admin review!'
+      : `${allImages.length}/4 images uploaded. Upload at least 4 to submit for review.`,
+    packaging: order.packaging,
+  });
+};
+
 // Export processRefund so adminController can reuse it
 const processRefundForOrder = processRefund;
 
-module.exports = { placeOrder, getMyOrders, getOrder, cancelOrder, createInvoice, notifySeller, getSellerOrders, sellerConfirmOrder, processRefundForOrder };
+module.exports = {
+  placeOrder, getMyOrders, getOrder, cancelOrder, createInvoice,
+  notifySeller, getSellerOrders, sellerConfirmOrder, processRefundForOrder,
+  uploadPackageImages,
+};

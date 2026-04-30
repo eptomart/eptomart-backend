@@ -504,4 +504,70 @@ const toggleProductActive = async (req, res) => {
   }
 };
 
-module.exports = { getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct, toggleProductActive };
+/**
+ * @route   POST /api/products/bulk-stock
+ * @desc    Bulk update product stock from CSV data
+ * @access  Seller / Admin
+ */
+const bulkUpdateStock = async (req, res) => {
+  try {
+    const { updates } = req.body;
+
+    if (!Array.isArray(updates)) {
+      return res.status(400).json({ success: false, message: 'updates must be an array' });
+    }
+
+    let updated = 0;
+    let skipped = 0;
+    const errors = [];
+
+    for (let i = 0; i < updates.length; i++) {
+      const item = updates[i];
+      const { sku, stock } = item;
+
+      if (!sku || stock === undefined) {
+        errors.push(`Row ${i + 1}: Missing sku or stock`);
+        skipped++;
+        continue;
+      }
+
+      try {
+        const product = await Product.findOne({ sku: sku.trim() });
+        if (!product) {
+          errors.push(`Row ${i + 1}: Product with SKU "${sku}" not found`);
+          skipped++;
+          continue;
+        }
+
+        // Seller can only update their own products
+        if (req.user.role === 'seller') {
+          const sellerDocId = getSellerDocId(req);
+          if (!sellerDocId || product.seller?.toString() !== sellerDocId.toString()) {
+            errors.push(`Row ${i + 1}: Access denied for product "${sku}"`);
+            skipped++;
+            continue;
+          }
+        }
+
+        product.stock = Math.max(0, Number(stock));
+        await product.save();
+        updated++;
+      } catch (err) {
+        errors.push(`Row ${i + 1}: Error updating "${sku}" - ${err.message}`);
+        skipped++;
+      }
+    }
+
+    res.json({
+      success: true,
+      updated,
+      skipped,
+      errors,
+      message: `${updated} products updated, ${skipped} skipped`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+module.exports = { getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct, toggleProductActive, bulkUpdateStock };

@@ -158,6 +158,10 @@ const productSchema = new mongoose.Schema({
   },
   metaTitle: String,
   metaDescription: String,
+
+  // Human-readable product code — auto-assigned on first approval
+  // Format: EPT-P-0001, EPT-P-0002, …
+  productCode: { type: String, unique: true, sparse: true },
 }, {
   timestamps: true,
   toJSON: { virtuals: true },

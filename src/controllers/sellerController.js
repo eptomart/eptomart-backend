@@ -5,6 +5,7 @@ const { geocode } = require('../utils/deliveryEstimator');
 const { sendSellerWelcomeEmail, sendSellerActivatedEmail } = require('../utils/sendEmail');
 const { sendOtpSms }   = require('../utils/sendSMS');
 const { sendSellerWelcomeWhatsApp, sendSellerActivatedWhatsApp } = require('../utils/sendWhatsApp');
+const { logActivity } = require('../utils/activityLogger');
 
 // Send plain welcome SMS (not OTP)
 const sendWelcomeSms = async (phone, message) => {
@@ -81,6 +82,10 @@ const createSeller = async (req, res) => {
   // Geocode seller location
   const coords = await geocode(address.pincode);
 
+  // Auto-generate sellerId: EPT-S-0001, 0002, …
+  const sellerCount = await Seller.countDocuments({ sellerId: { $exists: true, $ne: null } });
+  const sellerIdCode = `EPT-S-${String(sellerCount + 1).padStart(4, '0')}`;
+
   const seller = await Seller.create({
     user:         user._id,
     businessName,
@@ -97,6 +102,7 @@ const createSeller = async (req, res) => {
     notes:        notes || undefined,
     status:       'inactive',
     createdBy:    req.user._id,
+    sellerId:     sellerIdCode,
   });
 
   // Link seller profile to user
@@ -158,11 +164,22 @@ const setSellerStatus = async (req, res) => {
   const seller = await Seller.findById(req.params.id);
   if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
 
+  const prevStatus = seller.status;
   const wasAlreadyActive = seller.status === 'active';
   seller.status = status;
   if (status === 'active' && !seller.activatedAt) seller.activatedAt = new Date();
   if (status === 'suspended') seller.suspendedAt = new Date();
   await seller.save();
+
+  // ── Activity logging ────────────────────────
+  logActivity(
+    req,
+    'seller.status_changed',
+    'seller',
+    seller._id.toString(),
+    seller.businessName,
+    { from: prevStatus, to: status }
+  );
 
   // Activate/deactivate user account
   await User.findByIdAndUpdate(seller.user, { isActive: status === 'active' });
@@ -480,6 +497,59 @@ const acknowledgePickup = async (req, res) => {
   res.json({ success: true, message: 'Pickup acknowledged', order });
 };
 
+// ── Seller: upload KYC documents ─────────────────────────
+const uploadKycDocument = async (req, res) => {
+  const { docType } = req.params; // 'cheque' | 'agreement'
+  if (!['cheque', 'agreement'].includes(docType)) {
+    return res.status(400).json({ success: false, message: 'docType must be cheque or agreement' });
+  }
+  if (!req.file) return res.status(400).json({ success: false, message: 'File is required' });
+
+  const seller = await Seller.findOne({ user: req.user._id });
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller profile not found' });
+
+  const fileData = { url: req.file.path, publicId: req.file.filename, uploadedAt: new Date() };
+
+  if (docType === 'cheque') {
+    seller.cancelledCheque              = fileData;
+    seller.kycStatus.chequeUploaded     = true;
+  } else {
+    seller.agreementFile                = fileData;
+    seller.kycStatus.agreementUploaded  = true;
+  }
+
+  // Check if bank details are complete
+  const bd = seller.bankDetails || {};
+  seller.kycStatus.bankDetailsComplete = !!(bd.accountNumber && bd.ifscCode && bd.bankName && bd.accountHolder);
+
+  await seller.save();
+  res.json({ success: true, message: `${docType === 'cheque' ? 'Cancelled cheque' : 'Agreement'} uploaded`, kycStatus: seller.kycStatus });
+};
+
+// ── Public: get seller store info + products ──────────────
+const getSellerStore = async (req, res) => {
+  const { id } = req.params;
+  const seller = await Seller.findById(id)
+    .select('businessName displayName description logo contact rating totalSales address')
+    .lean();
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+  const { page = 1, limit = 20, sort = '-createdAt' } = req.query;
+  const Product = require('../models/Product');
+
+  const [products, total] = await Promise.all([
+    Product.find({ seller: seller._id, isActive: true })
+      .select('name slug price discountPrice images rating stock gstRate')
+      .sort(sort)
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit))
+      .lean(),
+    Product.countDocuments({ seller: seller._id, isActive: true }),
+  ]);
+
+  res.json({ success: true, seller, products, total, totalPages: Math.ceil(total / Number(limit)) });
+};
+
 // ── Admin: get payout history for a seller ───────────────
 const getSellerPayoutHistory = async (req, res) => {
   const { page = 1, limit = 20 } = req.query;
@@ -524,5 +594,5 @@ module.exports = {
   getMyProfile, updateMyProfile, getSellerStats,
   getMyPickupAddresses, addPickupAddress, deletePickupAddress, setDefaultPickupAddress, getSellerPickupAddresses,
   listPendingPickupAddresses, approvePickupAddress, rejectPickupAddress, acknowledgePickup,
-  getSellerPayoutHistory,
+  getSellerPayoutHistory, uploadKycDocument, getSellerStore,
 };

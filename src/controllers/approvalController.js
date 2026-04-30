@@ -2,6 +2,15 @@ const Product        = require('../models/Product');
 const ProductApproval= require('../models/ProductApproval');
 const Seller         = require('../models/Seller');
 
+// ── Auto-generate human-readable product code ─────────────
+const assignProductCode = async (product) => {
+  if (product.productCode) return; // already assigned
+  try {
+    const count = await Product.countDocuments({ productCode: { $exists: true, $ne: null } });
+    product.productCode = `EPT-P-${String(count + 1).padStart(4, '0')}`;
+  } catch (_) {}
+};
+
 // ── Admin: list approval queue ───────────────────────────
 const listApprovals = async (req, res) => {
   const { status = 'pending', page = 1, limit = 20 } = req.query;
@@ -11,7 +20,7 @@ const listApprovals = async (req, res) => {
 
   const [products, total] = await Promise.all([
     Product.find(filter)
-      .populate('seller', 'businessName contact address')
+      .populate('seller', 'businessName contact address sellerId')
       .populate('category', 'name')
       .sort({ submittedAt: -1 })
       .skip((page - 1) * limit)
@@ -65,6 +74,7 @@ const performAction = async (req, res, action) => {
     product.approvedBy = req.user._id;
     product.approvedAt = new Date();
     product.isActive   = true;
+    await assignProductCode(product); // assign EPT-P-XXXX on first approval
   } else if (action === 'reject') {
     product.approvalNote = note;
     product.isActive     = false;

@@ -5,6 +5,7 @@ const User = require('../models/User');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const Analytics = require('../models/Analytics');
+const { logActivity } = require('../utils/activityLogger');
 
 /**
  * @route   GET /api/admin/dashboard
@@ -144,8 +145,19 @@ const toggleUserStatus = async (req, res) => {
   if (!user) return res.status(404).json({ success: false, message: 'User not found' });
   if (user.role === 'admin') return res.status(400).json({ success: false, message: 'Cannot modify admin account' });
 
+  const prevStatus = user.isActive;
   user.isActive = !user.isActive;
   await user.save();
+
+  // ── Activity logging ────────────────────────
+  logActivity(
+    req,
+    'user.status_toggled',
+    'user',
+    user._id.toString(),
+    user.name || user.email,
+    { from: prevStatus ? 'active' : 'suspended', to: user.isActive ? 'active' : 'suspended' }
+  );
 
   res.json({ success: true, message: `User ${user.isActive ? 'activated' : 'suspended'}`, user });
 };
@@ -235,6 +247,18 @@ const updateOrderStatus = async (req, res) => {
   });
 
   await order.save();
+
+  // ── Activity logging ────────────────────────
+  if (status && status !== prevStatus) {
+    logActivity(
+      req,
+      'order.status_updated',
+      'order',
+      order._id.toString(),
+      `Order #${order.orderId}`,
+      { from: prevStatus, to: status, note: note || 'Updated by admin' }
+    );
+  }
 
   // ── Payout: triggered when order transitions to 'delivered' ──
   if (status === 'delivered' && prevStatus !== 'delivered') {
@@ -386,6 +410,18 @@ const createManualShipment = async (req, res) => {
 
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
+  // 🔒 Packaging gate: require approved packaging photos before AWB
+  const pkgStatus = order.packaging?.status;
+  if (pkgStatus && pkgStatus !== 'approved' && pkgStatus !== 'not_submitted') {
+    // If seller has submitted (pending_review or rejected) but not yet approved, block
+    if (pkgStatus === 'pending_review') {
+      return res.status(400).json({ success: false, message: 'Packaging images are pending review. Approve them first before generating AWB.' });
+    }
+    if (pkgStatus === 'rejected') {
+      return res.status(400).json({ success: false, message: 'Packaging was rejected. Seller must re-upload photos before AWB can be generated.' });
+    }
+  }
+
   const { createShipment } = require('../utils/shiprocket');
   const Seller = require('../models/Seller');
 
@@ -438,6 +474,16 @@ const createManualShipment = async (req, res) => {
         deliveryPartner: courier,
         orderStatus:     'shipped',
       });
+
+      // ── Activity logging ────────────────────────
+      logActivity(
+        req,
+        'order.shipment_created',
+        'order',
+        order._id.toString(),
+        `Order #${order.orderId}`,
+        { awb, courier, shippingCharge: result?.shippingCharge || 0 }
+      );
     }
 
     res.json({ success: true, shiprocket: { orderId: srOrderId, shipmentId: srShipId, awb, courier, trackingUrl, shippingCharge: result?.shippingCharge || 0 } });
@@ -494,4 +540,65 @@ const refreshShiprocketAWB = async (req, res) => {
   }
 };
 
-module.exports = { getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, updateUser, deleteUser, getAllOrders, updateOrderStatus, adminCancelWithRefund, listAdmins, createAdmin, deleteAdmin, updateAdminPermissions, createManualShipment, refreshShiprocketAWB };
+// ── PATCH /api/admin/orders/:id/packaging-review ──────────
+// Admin approves or rejects seller packaging images
+const reviewPackaging = async (req, res) => {
+  const { action, reason } = req.body; // action: 'approve' | 'reject'
+  if (!['approve', 'reject'].includes(action)) {
+    return res.status(400).json({ success: false, message: 'action must be approve or reject' });
+  }
+
+  const order = await Order.findById(req.params.id);
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  if (order.packaging?.status !== 'pending_review') {
+    return res.status(400).json({ success: false, message: 'No packaging submission pending review' });
+  }
+
+  order.packaging.status      = action === 'approve' ? 'approved' : 'rejected';
+  order.packaging.reviewedAt  = new Date();
+  order.packaging.reviewedBy  = req.user._id;
+  if (action === 'reject') order.packaging.rejectedReason = reason || 'Please re-upload clearer photos';
+
+  order.statusHistory.push({
+    status:    order.orderStatus,
+    note:      `Packaging ${action}d by admin${reason ? ': ' + reason : ''}`,
+    updatedBy: 'admin',
+  });
+
+  await order.save();
+
+  // ── Activity logging ────────────────────────
+  logActivity(
+    req,
+    'order.packaging_reviewed',
+    'order',
+    order._id.toString(),
+    `Order #${order.orderId}`,
+    { action, reason: reason || 'No reason provided' }
+  );
+
+  // Notify seller
+  const { notifyUser } = require('../utils/pushNotification');
+  if (order.sellerPickup?.sellerId) {
+    notifyUser(order.sellerPickup.sellerId, {
+      title: action === 'approve' ? '✅ Packaging Approved!' : '❌ Packaging Rejected',
+      body:  action === 'approve'
+        ? `Order #${order.orderId} packaging approved. AWB will now be generated.`
+        : `Order #${order.orderId} packaging rejected: ${reason || 'Please re-upload'}`,
+      url: '/seller/orders',
+    }).catch(() => {});
+  }
+
+  res.json({ success: true, message: `Packaging ${action}d`, order });
+};
+
+// ── Gate AWB: createManualShipment already written above;
+//    we add a packaging status check inside it ─────────────
+
+module.exports = {
+  getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, updateUser, deleteUser,
+  getAllOrders, updateOrderStatus, adminCancelWithRefund,
+  listAdmins, createAdmin, deleteAdmin, updateAdminPermissions,
+  createManualShipment, refreshShiprocketAWB, reviewPackaging,
+};

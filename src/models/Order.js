@@ -127,6 +127,24 @@ const orderSchema = new mongoose.Schema({
     customerState: String,
   },
 
+  // ── Packaging verification (seller uploads 4 photos before AWB) ────
+  packaging: {
+    status: {
+      type:    String,
+      enum:    ['not_submitted', 'pending_review', 'approved', 'rejected'],
+      default: 'not_submitted',
+    },
+    images: [{
+      url:        { type: String, required: true },
+      publicId:   String,
+      uploadedAt: { type: Date, default: Date.now },
+    }],
+    submittedAt:    Date,
+    reviewedAt:     Date,
+    reviewedBy:     { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    rejectedReason: String,
+  },
+
   // Payout tracking for this order (set when status → delivered)
   payout: {
     status:        { type: String, enum: ['pending', 'calculated', 'processing', 'paid', 'on_hold'], default: 'pending' },

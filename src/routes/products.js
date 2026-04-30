@@ -3,7 +3,7 @@ const router = express.Router();
 const {
   getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct,
   deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct,
-  toggleProductActive,
+  toggleProductActive, bulkUpdateStock,
 } = require('../controllers/productController');
 const { protect } = require('../middleware/auth');
 const { protectAdmin } = require('../middleware/adminAuth');
@@ -23,6 +23,9 @@ router.get('/admin/all',  protectAdmin, getAdminProducts);   // must be before /
 router.get('/seller/mine', protectSeller, getSellerProducts); // must be before /:slug
 router.get('/',           getProducts);
 router.get('/:slug',      getProduct);
+
+// Bulk stock update
+router.post('/bulk-stock', protectSeller, bulkUpdateStock);
 
 // Seller + Admin: create and update products
 router.post('/', protectSeller, uploadProduct.array('images', 5), createProduct);

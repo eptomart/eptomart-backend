@@ -50,6 +50,38 @@ const uploadCategory = multer({
   limits: { fileSize: 2 * 1024 * 1024 },
 });
 
+// Packaging image storage (seller uploads before AWB)
+const packagingStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'eptomart/packaging',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+    transformation: [{ width: 1200, quality: 'auto' }],
+  },
+});
+const uploadPackaging = multer({
+  storage: packagingStorage,
+  limits: { fileSize: 8 * 1024 * 1024 }, // 8MB
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Images only'), false);
+  },
+});
+
+// Document storage (cancelled cheque, agreement PDF)
+const documentStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'eptomart/kyc',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'pdf'],
+    resource_type: 'auto',
+  },
+});
+const uploadDocument = multer({
+  storage: documentStorage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+});
+
 // Helper to delete image from Cloudinary
 const deleteImage = async (publicId) => {
   try {
@@ -59,4 +91,4 @@ const deleteImage = async (publicId) => {
   }
 };
 
-module.exports = { cloudinary, uploadProduct, uploadCategory, deleteImage };
+module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, deleteImage };

@@ -6,10 +6,15 @@ const { uploadCategory } = require('../config/cloudinary');
 
 // Get all active categories
 router.get('/', async (req, res) => {
-  const { parent } = req.query;
+  const { parent, all } = req.query;
   const filter = { isActive: true };
-  if (parent === 'null' || parent === undefined) filter.parentCategory = null;
-  else if (parent) filter.parentCategory = parent;
+
+  // If all=true, return all categories (including sub-categories)
+  // Otherwise, filter by parent
+  if (all !== 'true') {
+    if (parent === 'null' || parent === undefined) filter.parentCategory = null;
+    else if (parent) filter.parentCategory = parent;
+  }
 
   const categories = await Category.find(filter).sort('sortOrder name');
   res.json({ success: true, categories });
@@ -40,6 +45,11 @@ router.post('/', protectAdmin, uploadCategory.single('image'), async (req, res) 
 router.put('/:id', protectAdmin, uploadCategory.single('image'), async (req, res) => {
   const updates = { ...req.body };
   if (req.file) updates.image = { url: req.file.path, publicId: req.file.filename };
+
+  // Explicitly handle parentCategory: allow null or an ID
+  if (req.body.parentCategory !== undefined) {
+    updates.parentCategory = req.body.parentCategory || null;
+  }
 
   const category = await Category.findByIdAndUpdate(req.params.id, updates, { new: true });
   if (!category) return res.status(404).json({ success: false, message: 'Category not found' });

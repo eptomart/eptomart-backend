@@ -35,6 +35,7 @@ const expenseRoutes  = require('./src/routes/expenses');
 const cartRoutes     = require('./src/routes/cart');
 const sitemapRoutes  = require('./src/routes/sitemap');
 const settingsRoutes = require('./src/routes/settings');
+const activityRoutes = require('./src/routes/activity');
 
 const app = express();
 
@@ -125,6 +126,7 @@ app.use('/api/invoices',  invoiceRoutes);
 app.use('/api/expenses',  expenseRoutes);
 app.use('/api/cart',      cartRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/activity',  activityRoutes);
 app.use('/',             sitemapRoutes);  // /sitemap.xml and /robots.txt
 
 // ─── Health Check ────────────────────────────

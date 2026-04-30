@@ -8,12 +8,20 @@ const {
   setSellerStatus, deleteSeller, restoreSeller, getMyProfile, updateMyProfile, getSellerStats,
   getMyPickupAddresses, addPickupAddress, deletePickupAddress, setDefaultPickupAddress, getSellerPickupAddresses,
   listPendingPickupAddresses, approvePickupAddress, rejectPickupAddress, getSellerPayoutHistory,
+  uploadKycDocument, getSellerStore,
 } = require('../controllers/sellerController');
+const { uploadDocument } = require('../config/cloudinary');
+
+// Public: seller store page
+router.get('/:id/store',    getSellerStore);   // must be before /:id admin guard
 
 // Seller self-service must come BEFORE /:id so /me/profile is not treated as an ID
 router.get('/me/profile',   sellerAuth, getMyProfile);
 router.put('/me/profile',   sellerAuth, updateMyProfile);
 router.get('/me/stats',     sellerAuth, getSellerStats);
+
+// Seller: KYC document uploads
+router.post('/me/kyc/:docType', sellerAuth, uploadDocument.single('file'), uploadKycDocument);
 
 // Seller pickup addresses (self-service)
 router.get('/me/pickup-addresses',                      sellerAuth, getMyPickupAddresses);

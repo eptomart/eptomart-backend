@@ -214,7 +214,7 @@ const getAllOrders = async (req, res) => {
 
 /**
  * @route   PUT /api/admin/orders/:id/status
- * @desc    Update order status
+ * @desc    Update order status — triggers payout calculation when status → delivered
  * @access  Admin
  */
 const updateOrderStatus = async (req, res) => {
@@ -222,17 +222,41 @@ const updateOrderStatus = async (req, res) => {
   const order = await Order.findById(req.params.id);
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
+  const prevStatus = order.orderStatus;
+
   if (status) order.orderStatus = status;
   if (paymentStatus) order.paymentStatus = paymentStatus;
   if (trackingNumber) order.trackingNumber = trackingNumber;
 
   order.statusHistory.push({
     status: status || order.orderStatus,
-    note: note || `Updated by admin`,
+    note:   note || 'Updated by admin',
     updatedBy: 'admin',
   });
 
   await order.save();
+
+  // ── Payout: triggered when order transitions to 'delivered' ──
+  if (status === 'delivered' && prevStatus !== 'delivered') {
+    try {
+      const { calculateOrderPayout, creditSellerSettlement } = require('../utils/payoutCalculator');
+      const payoutData = await calculateOrderPayout(order);
+
+      // Only credit if payout hasn't been calculated yet (avoid double-credit)
+      if (order.payout?.status !== 'calculated' && order.payout?.status !== 'paid') {
+        await Order.findByIdAndUpdate(order._id, { payout: payoutData });
+
+        if (payoutData.netPayout > 0 && payoutData.sellerId) {
+          await creditSellerSettlement(payoutData.sellerId, payoutData.netPayout);
+        }
+        console.log(`[Payout] Order ${order.orderId} — net payout ₹${payoutData.netPayout} → seller ${payoutData.sellerName}`);
+      }
+    } catch (payoutErr) {
+      // Payout failure must NOT block the status update response
+      console.error('[Payout] Failed to calculate payout for order', order.orderId, ':', payoutErr.message);
+    }
+  }
+
   res.json({ success: true, message: 'Order updated', order });
 };
 
@@ -398,15 +422,25 @@ const createManualShipment = async (req, res) => {
     const trackingUrl = awb ? `https://shiprocket.co/tracking/${awb}` : '';
 
     if (srOrderId) {
+      const shippingCharge = result?.shippingCharge || 0;
       await Order.findByIdAndUpdate(req.params.id, {
-        shiprocket:       { orderId: String(srOrderId), shipmentId: String(srShipId || ''), awb, courier, trackingUrl, status: 'created', createdAt: new Date() },
-        trackingNumber:   awb,
-        deliveryPartner:  courier,
-        orderStatus:      'shipped',
+        shiprocket: {
+          orderId: String(srOrderId),
+          shipmentId: String(srShipId || ''),
+          awb,
+          courier,
+          trackingUrl,
+          shippingCharge,
+          status: 'created',
+          createdAt: new Date(),
+        },
+        trackingNumber:  awb,
+        deliveryPartner: courier,
+        orderStatus:     'shipped',
       });
     }
 
-    res.json({ success: true, shiprocket: { orderId: srOrderId, shipmentId: srShipId, awb, courier, trackingUrl } });
+    res.json({ success: true, shiprocket: { orderId: srOrderId, shipmentId: srShipId, awb, courier, trackingUrl, shippingCharge: result?.shippingCharge || 0 } });
   } catch (err) {
     console.error('[Admin Ship] Shiprocket error:', err.message);
     res.status(500).json({ success: false, message: err.message || 'Failed to create Shiprocket shipment' });
@@ -442,14 +476,18 @@ const refreshShiprocketAWB = async (req, res) => {
     }
 
     const trackingUrl = `https://shiprocket.co/tracking/${result.awb}`;
-    await Order.findByIdAndUpdate(order._id, {
-      'shiprocket.awb':        result.awb,
-      'shiprocket.courier':    result.courier,
+    const updateFields = {
+      'shiprocket.awb':         result.awb,
+      'shiprocket.courier':     result.courier,
       'shiprocket.trackingUrl': trackingUrl,
-      trackingNumber:          result.awb,
-    });
+      trackingNumber:           result.awb,
+    };
+    if (result.shippingCharge) {
+      updateFields['shiprocket.shippingCharge'] = result.shippingCharge;
+    }
+    await Order.findByIdAndUpdate(order._id, updateFields);
 
-    res.json({ success: true, awb: result.awb, courier: result.courier, trackingUrl });
+    res.json({ success: true, awb: result.awb, courier: result.courier, trackingUrl, shippingCharge: result.shippingCharge || 0 });
   } catch (err) {
     console.error('[Admin refreshAWB]', err.message);
     res.status(500).json({ success: false, message: err.message || 'Failed to refresh AWB' });

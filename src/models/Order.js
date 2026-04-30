@@ -104,13 +104,15 @@ const orderSchema = new mongoose.Schema({
 
   // Shiprocket shipment tracking
   shiprocket: {
-    orderId:    String,   // Shiprocket's order ID
-    shipmentId: String,   // Shiprocket shipment ID
-    awb:        String,   // Airway Bill number
-    courier:    String,   // Courier name (e.g. "Delhivery")
-    trackingUrl:String,   // Customer tracking URL
-    status:     String,   // Latest Shiprocket status string
-    createdAt:  Date,
+    orderId:        String,   // Shiprocket's order ID
+    shipmentId:     String,   // Shiprocket shipment ID
+    awb:            String,   // Airway Bill number
+    courier:        String,   // Courier name (e.g. "Delhivery")
+    trackingUrl:    String,   // Customer tracking URL
+    labelUrl:       String,   // Shipping label PDF URL
+    status:         String,   // Latest Shiprocket status string
+    shippingCharge: { type: Number, default: 0 },  // Actual charge billed by Shiprocket
+    createdAt:      Date,
   },
 
   // GST breakdown
@@ -123,6 +125,21 @@ const orderSchema = new mongoose.Schema({
     gstType:       { type: String, enum: ['intra', 'inter'] },
     sellerState:   String,
     customerState: String,
+  },
+
+  // Payout tracking for this order (set when status → delivered)
+  payout: {
+    status:        { type: String, enum: ['pending', 'calculated', 'processing', 'paid', 'on_hold'], default: 'pending' },
+    grossAmount:   Number,   // seller item total (GST-inclusive)
+    gstAmount:     Number,   // GST portion (goes to govt, NOT seller)
+    baseAmount:    Number,   // grossAmount - gstAmount (seller's actual revenue base)
+    platformFee:   Number,   // Eptomart commission (% of baseAmount)
+    shippingCost:  Number,   // Actual Shiprocket charge for this shipment
+    netPayout:     Number,   // = baseAmount - platformFee - shippingCost
+    platformFeeRate: Number, // % rate used
+    calculatedAt:  Date,
+    paidAt:        Date,
+    note:          String,
   },
 
   // Seller breakdown for multi-vendor

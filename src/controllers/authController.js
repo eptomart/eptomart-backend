@@ -239,7 +239,23 @@ const register = async (req, res) => {
  */
 const getMe = async (req, res) => {
   const user = await User.findById(req.user._id);
-  res.json({ success: true, user });
+
+  // Silent token refresh: if the current token expires within 7 days, issue a new 30-day token
+  // so the user never gets logged out mid-session
+  let refreshedToken = null;
+  try {
+    const jwt = require('jsonwebtoken');
+    const decoded = jwt.decode(req.headers.authorization?.replace('Bearer ', '') || '');
+    if (decoded?.exp) {
+      const secsLeft = decoded.exp - Math.floor(Date.now() / 1000);
+      if (secsLeft < 7 * 24 * 3600) { // < 7 days remaining
+        const { generateToken } = require('../utils/generateToken');
+        refreshedToken = generateToken(user._id, user.role);
+      }
+    }
+  } catch (_) {}
+
+  res.json({ success: true, user, ...(refreshedToken ? { token: refreshedToken } : {}) });
 };
 
 /**

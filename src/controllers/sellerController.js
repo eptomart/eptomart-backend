@@ -480,9 +480,49 @@ const acknowledgePickup = async (req, res) => {
   res.json({ success: true, message: 'Pickup acknowledged', order });
 };
 
+// ── Admin: get payout history for a seller ───────────────
+const getSellerPayoutHistory = async (req, res) => {
+  const { page = 1, limit = 20 } = req.query;
+  const seller = await Seller.findById(req.params.id).lean();
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+  const Order = require('../models/Order');
+  const Product = require('../models/Product');
+
+  // Get all product IDs for this seller
+  const products = await Product.find({ seller: seller._id }).select('_id').lean();
+  const productIds = products.map(p => p._id);
+
+  // Orders with payout data for this seller, delivered
+  const [orders, total] = await Promise.all([
+    Order.find({
+      'items.product': { $in: productIds },
+      orderStatus: 'delivered',
+    })
+      .select('orderId createdAt pricing payout shiprocket orderStatus')
+      .sort('-createdAt')
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit))
+      .lean(),
+    Order.countDocuments({
+      'items.product': { $in: productIds },
+      orderStatus: 'delivered',
+    }),
+  ]);
+
+  res.json({
+    success:     true,
+    seller:      { _id: seller._id, businessName: seller.businessName, settlement: seller.settlement },
+    orders,
+    total,
+    totalPages:  Math.ceil(total / Number(limit)),
+  });
+};
+
 module.exports = {
   listSellers, createSeller, getSeller, updateSeller, setSellerStatus, deleteSeller, restoreSeller,
   getMyProfile, updateMyProfile, getSellerStats,
   getMyPickupAddresses, addPickupAddress, deletePickupAddress, setDefaultPickupAddress, getSellerPickupAddresses,
   listPendingPickupAddresses, approvePickupAddress, rejectPickupAddress, acknowledgePickup,
+  getSellerPayoutHistory,
 };

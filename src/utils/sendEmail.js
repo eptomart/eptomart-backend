@@ -335,10 +335,18 @@ const sendSellerActivatedEmail = async (to, { businessName }) => {
   return sendMail(to, `Your Eptomart Seller Account is Now Active! — ${businessName}`, html);
 };
 
+/**
+ * Generic email sender — use for any transactional email not covered by a specific helper.
+ * @param {{ to, subject, html, attachments? }} opts
+ */
+const sendEmail = ({ to, subject, html, attachments = [] }) =>
+  sendViaResend(to, subject, html, attachments);
+
 module.exports = {
   sendOtpEmail,
   sendOrderConfirmation,
   sendSellerNewOrderEmail,
   sendSellerWelcomeEmail,
   sendSellerActivatedEmail,
+  sendEmail,
 };

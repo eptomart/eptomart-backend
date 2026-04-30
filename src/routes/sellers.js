@@ -7,7 +7,7 @@ const {
   listSellers, createSeller, getSeller, updateSeller,
   setSellerStatus, deleteSeller, restoreSeller, getMyProfile, updateMyProfile, getSellerStats,
   getMyPickupAddresses, addPickupAddress, deletePickupAddress, setDefaultPickupAddress, getSellerPickupAddresses,
-  listPendingPickupAddresses, approvePickupAddress, rejectPickupAddress,
+  listPendingPickupAddresses, approvePickupAddress, rejectPickupAddress, getSellerPayoutHistory,
 } = require('../controllers/sellerController');
 
 // Seller self-service must come BEFORE /:id so /me/profile is not treated as an ID
@@ -35,8 +35,10 @@ router.post('/:sellerId/pickup-addresses/:addrId/reject',  ...protectAdmin, requ
 router.get('/',                         ...protectAdmin, listSellers);
 router.get('/:id',                      ...protectAdmin, getSeller);
 router.put('/:id',                      ...protectAdmin, updateSeller);
+router.patch('/:id',                    ...protectSuperAdmin, updateSeller);  // for settlement patch
 router.patch('/:id/status',             ...protectAdmin, setSellerStatus);
 router.get('/:id/stats',                ...protectAdmin, getSellerStats);
 router.get('/:id/pickup-addresses',     ...protectAdmin, getSellerPickupAddresses);
+router.get('/:id/payouts',              ...protectSuperAdmin, getSellerPayoutHistory);
 
 module.exports = router;

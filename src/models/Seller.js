@@ -39,10 +39,20 @@ const sellerSchema = new mongoose.Schema({
   // KYC documents
   cancelledCheque: { url: String, publicId: String, uploadedAt: Date },
   agreementFile:   { url: String, publicId: String, uploadedAt: Date },   // signed onboarding agreement
+  idProof: {
+    url: String, publicId: String, uploadedAt: Date,
+    docType: { type: String, enum: ['aadhaar', 'pan', 'passport', 'driving_license'], default: 'aadhaar' },
+  },
+  addressProof: {
+    url: String, publicId: String, uploadedAt: Date,
+    docType: { type: String, enum: ['utility_bill', 'rental_agreement', 'bank_statement', 'aadhaar', 'passport'], default: 'utility_bill' },
+  },
   kycStatus: {
-    bankDetailsComplete: { type: Boolean, default: false },
-    chequeUploaded:      { type: Boolean, default: false },
-    agreementUploaded:   { type: Boolean, default: false },
+    bankDetailsComplete:  { type: Boolean, default: false },
+    chequeUploaded:       { type: Boolean, default: false },
+    agreementUploaded:    { type: Boolean, default: false },
+    idProofUploaded:      { type: Boolean, default: false },
+    addressProofUploaded: { type: Boolean, default: false },
   },
 
   status: {

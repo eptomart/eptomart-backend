@@ -59,13 +59,32 @@ const listSellers = async (req, res) => {
 const createSeller = async (req, res) => {
   const { businessName, email, phone, address, gstNumber, panNumber, fssaiLicenseNumber, notes } = req.body;
 
-  if (!businessName || !address?.pincode || (!email && !phone)) {
-    return res.status(400).json({ success: false, message: 'businessName, address.pincode, and email or phone required' });
+  // ── Full form validation — nothing is saved unless ALL required fields are present ──
+  const missing = [];
+  if (!businessName?.trim())          missing.push('Business Name');
+  if (!email?.trim() && !phone?.trim()) missing.push('Email or Phone');
+  if (!address?.street?.trim())       missing.push('Street Address');
+  if (!address?.city?.trim())         missing.push('City');
+  if (!address?.state?.trim())        missing.push('State');
+  if (!address?.pincode?.trim())      missing.push('Pincode');
+  if (!gstNumber?.trim())             missing.push('GST Number');
+  if (!panNumber?.trim())             missing.push('PAN Number');
+
+  if (missing.length > 0) {
+    return res.status(400).json({
+      success: false,
+      message: `Please fill all required fields: ${missing.join(', ')}`,
+    });
   }
 
-  // GST is mandatory for all sellers
-  if (!gstNumber || gstNumber.trim().length < 15) {
-    return res.status(400).json({ success: false, message: 'A valid 15-character GST number is required for seller registration' });
+  // GST format validation
+  if (gstNumber.trim().length !== 15) {
+    return res.status(400).json({ success: false, message: 'GST number must be exactly 15 characters' });
+  }
+
+  // PAN format validation (basic: 10 chars alphanumeric)
+  if (panNumber.trim().length !== 10) {
+    return res.status(400).json({ success: false, message: 'PAN number must be exactly 10 characters' });
   }
 
   // Create user account with seller role
@@ -497,11 +516,12 @@ const acknowledgePickup = async (req, res) => {
   res.json({ success: true, message: 'Pickup acknowledged', order });
 };
 
-// ── Seller: upload KYC documents ─────────────────────────
+/// ── Seller: upload KYC documents ─────────────────────────
 const uploadKycDocument = async (req, res) => {
-  const { docType } = req.params; // 'cheque' | 'agreement'
-  if (!['cheque', 'agreement'].includes(docType)) {
-    return res.status(400).json({ success: false, message: 'docType must be cheque or agreement' });
+  const { docType } = req.params; // 'cheque' | 'agreement' | 'idProof' | 'addressProof'
+  const ALLOWED = ['cheque', 'agreement', 'idProof', 'addressProof'];
+  if (!ALLOWED.includes(docType)) {
+    return res.status(400).json({ success: false, message: `docType must be one of: ${ALLOWED.join(', ')}` });
   }
   if (!req.file) return res.status(400).json({ success: false, message: 'File is required' });
 
@@ -513,9 +533,15 @@ const uploadKycDocument = async (req, res) => {
   if (docType === 'cheque') {
     seller.cancelledCheque              = fileData;
     seller.kycStatus.chequeUploaded     = true;
-  } else {
+  } else if (docType === 'agreement') {
     seller.agreementFile                = fileData;
     seller.kycStatus.agreementUploaded  = true;
+  } else if (docType === 'idProof') {
+    seller.idProof                      = { ...fileData, docType: req.body.idDocType || 'aadhaar' };
+    seller.kycStatus.idProofUploaded    = true;
+  } else if (docType === 'addressProof') {
+    seller.addressProof                 = { ...fileData, docType: req.body.addressDocType || 'utility_bill' };
+    seller.kycStatus.addressProofUploaded = true;
   }
 
   // Check if bank details are complete
@@ -523,7 +549,7 @@ const uploadKycDocument = async (req, res) => {
   seller.kycStatus.bankDetailsComplete = !!(bd.accountNumber && bd.ifscCode && bd.bankName && bd.accountHolder);
 
   await seller.save();
-  res.json({ success: true, message: `${docType === 'cheque' ? 'Cancelled cheque' : 'Agreement'} uploaded`, kycStatus: seller.kycStatus });
+  res.json({ success: true, message: 'Document uploaded successfully', seller, kycStatus: seller.kycStatus });
 };
 
 // ── Public: get seller store info + products ──────────────

@@ -154,8 +154,15 @@ const orderSchema = new mongoose.Schema({
     baseAmount:    Number,   // grossAmount - gstAmount (seller's actual revenue base)
     platformFee:   Number,   // Eptomart commission (% of baseAmount)
     shippingCost:  Number,   // Actual Shiprocket charge for this shipment
-    netPayout:     Number,   // = baseAmount - platformFee - shippingCost
+    packingCharge: Number,   // Deduction for packing materials (₹)
+    customDeduction: Number, // Any other deduction (₹)
+    customDeductionNote: String, // Reason for custom deduction
+    netPayout:     Number,   // = baseAmount - platformFee - shippingCost - packingCharge - customDeduction
     platformFeeRate: Number, // % rate used
+    isNewSellerBonus: { type: Boolean, default: false }, // True if first 20 orders, platform fee waived
+    applyPlatformFee: { type: Boolean, default: true }, // Admin override flag
+    finalizedBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Admin who finalized payout
+    finalizedAt:   Date,
     calculatedAt:  Date,
     paidAt:        Date,
     note:          String,

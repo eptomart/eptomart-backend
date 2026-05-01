@@ -28,7 +28,7 @@ const DEFAULT_PLATFORM_FEE_RATE = 10; // 10%
  * Returns a payout breakdown object ready to store on order.payout.
  *
  * @param {Object} order   - Mongoose Order doc (or lean object)
- * @returns {Object}       - { status, grossAmount, gstAmount, baseAmount, platformFee, shippingCost, netPayout, platformFeeRate }
+ * @returns {Object}       - { status, grossAmount, gstAmount, baseAmount, platformFee, shippingCost, netPayout, platformFeeRate, isNewSellerBonus, ... }
  */
 const calculateOrderPayout = async (order) => {
   try {
@@ -59,21 +59,45 @@ const calculateOrderPayout = async (order) => {
     // Base amount = what seller actually earns before deductions (ex-GST)
     const baseAmount = subtotalExGst;
 
-    // ── 3. Platform fee on base (ex-GST) amount ──────────────────────
-    const platformFee = parseFloat((baseAmount * platformFeeRate / 100).toFixed(2));
+    // ── 3. Check if seller qualifies for first 20 orders bonus (no platform fee) ──
+    let isNewSellerBonus = false;
+    if (sellerDoc?._id) {
+      // Get all product IDs for this seller
+      const sellerProducts = await Product.find({ seller: sellerDoc._id }).select('_id').lean();
+      const productIds = sellerProducts.map(p => p._id);
 
-    // ── 4. Shipping cost = actual Shiprocket charge ──────────────────
+      // Count delivered orders for this seller (before this order)
+      const deliveredCount = await Order.countDocuments({
+        'items.product': { $in: productIds },
+        orderStatus: 'delivered',
+        _id: { $ne: order._id }, // Exclude current order
+      });
+
+      // If less than 20 delivered orders, apply bonus
+      if (deliveredCount < 20) {
+        isNewSellerBonus = true;
+      }
+    }
+
+    // ── 4. Platform fee on base (ex-GST) amount ──────────────────────
+    // If new seller bonus applies, skip platform fee; otherwise calculate normally
+    let platformFee = 0;
+    if (!isNewSellerBonus) {
+      platformFee = parseFloat((baseAmount * platformFeeRate / 100).toFixed(2));
+    }
+
+    // ── 5. Shipping cost = actual Shiprocket charge ──────────────────
     // Falls back to the order's stored shipping charge if Shiprocket charge not yet known
     const shippingCost = parseFloat(
       (order.shiprocket?.shippingCharge || order.pricing?.shipping || 0).toFixed(2)
     );
 
-    // ── 5. Net payout ───────────────────────────────────────────────
+    // ── 6. Net payout ───────────────────────────────────────────────
     const netPayout = parseFloat((baseAmount - platformFee - shippingCost).toFixed(2));
 
     console.log(
       `[Payout] Order ${order.orderId} | Gross: ₹${grossAmount} | GST: ₹${gstAmount}` +
-      ` | Base: ₹${baseAmount} | Platform fee (${platformFeeRate}%): ₹${platformFee}` +
+      ` | Base: ₹${baseAmount} | Platform fee (${platformFeeRate}%): ₹${platformFee}${isNewSellerBonus ? ' [WAIVED - NEW SELLER]' : ''}` +
       ` | Shipping: ₹${shippingCost} | Net: ₹${netPayout}`
     );
 
@@ -86,9 +110,13 @@ const calculateOrderPayout = async (order) => {
       shippingCost,
       netPayout:       Math.max(0, netPayout), // never negative
       platformFeeRate,
+      isNewSellerBonus,
+      applyPlatformFee: !isNewSellerBonus, // If new seller bonus, don't apply fee
       calculatedAt:    new Date(),
       note:            netPayout < 0
         ? `Net payout was negative (₹${netPayout}) — shipping + platform fee exceeded base amount. Held for review.`
+        : isNewSellerBonus
+        ? 'First 20 orders bonus — platform fee waived'
         : null,
       sellerId:        sellerDoc?._id || null,
       sellerName:      sellerDoc?.businessName || null,

@@ -651,6 +651,124 @@ const reviewPackaging = async (req, res) => {
   res.json({ success: true, message: `Packaging ${action}d`, order });
 };
 
+/**
+ * @route   GET /api/admin/orders/:id/shiprocket-charge
+ * @desc    Fetch actual Shiprocket freight charge for an order's shipment
+ * @access  Admin
+ */
+const getShiprocketCharge = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id).lean();
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    const shipmentId = order.shiprocket?.shipmentId;
+    if (!shipmentId) {
+      return res.status(400).json({ success: false, message: 'No Shiprocket shipment linked to this order' });
+    }
+
+    const { getShipmentCharge } = require('../utils/shiprocket');
+    const result = await getShipmentCharge(shipmentId);
+
+    res.json({
+      success: true,
+      shipmentId,
+      freightCharge: result.freightCharge,
+      current: order.shiprocket?.shippingCharge || 0,
+    });
+  } catch (err) {
+    console.error('[Admin getShiprocketCharge]', err.message);
+    res.status(500).json({ success: false, message: err.message || 'Failed to fetch Shiprocket charge' });
+  }
+};
+
+/**
+ * @route   POST /api/admin/orders/:id/recalculate-payout
+ * @desc    Admin manually recalculates and finalizes payout with overrides
+ * @access  Admin
+ *
+ * Body:
+ *   applyPlatformFee: boolean (default: true) — set false to skip platform fee
+ *   packingCharge: number (₹) — deduction for packing
+ *   customDeduction: number (₹) — any other deduction
+ *   customDeductionNote: string — reason for custom deduction
+ */
+const recalculatePayout = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id)
+      .populate({ path: 'items.product', select: 'seller name price gstRate', populate: { path: 'seller', model: 'Seller', select: 'defaultPlatformMargin businessName' } })
+      .lean();
+
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    const { applyPlatformFee, packingCharge = 0, customDeduction = 0, customDeductionNote } = req.body;
+
+    // ── Base calculation using existing payout calculator ─────────────
+    const { calculateOrderPayout } = require('../utils/payoutCalculator');
+    let payoutData = await calculateOrderPayout(order);
+
+    // ── Apply admin overrides ─────────────────────────────────────────
+    // Override platform fee if explicitly set
+    if (applyPlatformFee === false) {
+      payoutData.platformFee = 0;
+      payoutData.applyPlatformFee = false;
+    } else if (applyPlatformFee === true) {
+      payoutData.applyPlatformFee = true;
+    }
+
+    // Add packing charge (deduction)
+    const packingChargeVal = Math.max(0, parseFloat((packingCharge || 0).toFixed(2)));
+    payoutData.packingCharge = packingChargeVal;
+
+    // Add custom deduction (deduction)
+    const customDeductionVal = Math.max(0, parseFloat((customDeduction || 0).toFixed(2)));
+    payoutData.customDeduction = customDeductionVal;
+    if (customDeductionNote) {
+      payoutData.customDeductionNote = customDeductionNote;
+    }
+
+    // ── Recalculate net payout with all deductions ───────────────────
+    const netPayout = parseFloat(
+      (payoutData.baseAmount - payoutData.platformFee - payoutData.shippingCost - packingChargeVal - customDeductionVal).toFixed(2)
+    );
+    payoutData.netPayout = Math.max(0, netPayout);
+
+    // ── Mark as finalized ────────────────────────────────────────────
+    payoutData.finalizedBy = req.user._id;
+    payoutData.finalizedAt = new Date();
+    payoutData.status = 'calculated'; // Mark as manually calculated
+
+    // ── Update the order ────────────────────────────────────────────
+    await Order.findByIdAndUpdate(req.params.id, { payout: payoutData });
+
+    // ── Activity logging ────────────────────────────────────────────
+    logActivity(
+      req,
+      'payout.recalculated',
+      'order',
+      order._id.toString(),
+      `Order #${order.orderId}`,
+      {
+        netPayout: payoutData.netPayout,
+        platformFee: payoutData.platformFee,
+        packingCharge: packingChargeVal,
+        customDeduction: customDeductionVal,
+        applyPlatformFee,
+      }
+    );
+
+    console.log(`[Payout] Order ${order.orderId} — admin finalized payout ₹${payoutData.netPayout}`);
+
+    res.json({
+      success: true,
+      message: 'Payout recalculated and finalized',
+      payout: payoutData,
+    });
+  } catch (err) {
+    console.error('[Admin recalculatePayout]', err.message);
+    res.status(500).json({ success: false, message: err.message || 'Failed to recalculate payout' });
+  }
+};
+
 // ── Gate AWB: createManualShipment already written above;
 //    we add a packaging status check inside it ─────────────
 
@@ -659,4 +777,5 @@ module.exports = {
   getAllOrders, updateOrderStatus, adminCancelWithRefund,
   listAdmins, createAdmin, deleteAdmin, updateAdminPermissions,
   createManualShipment, refreshShiprocketAWB, reviewPackaging,
+  getShiprocketCharge, recalculatePayout,
 };

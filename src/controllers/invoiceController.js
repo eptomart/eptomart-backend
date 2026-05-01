@@ -20,6 +20,8 @@ const generateSellerPayoutPDF = (order, seller, items) => {
     const ORANGE = '#f97316';
     const DARK   = '#1e293b';
     const GRAY   = '#64748b';
+    const GREEN  = '#16a34a';
+    const RED    = '#dc2626';
     const fmt    = n => `Rs. ${(Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
 
     // Header
@@ -68,11 +70,31 @@ const generateSellerPayoutPDF = (order, seller, items) => {
     doc.moveTo(45, y).lineTo(550, y).strokeColor('#e2e8f0').lineWidth(1).stroke();
     y += 16;
 
-    // Payout calculation
-    const commission    = parseFloat((itemsTotal * PLATFORM_COMMISSION_PCT / 100).toFixed(2));
-    const gstOnComm     = parseFloat((commission * 18 / 100).toFixed(2));
-    const netPayout     = parseFloat((itemsTotal - commission - gstOnComm).toFixed(2));
+    // ── Use order.payout if available (pre-calculated), otherwise calculate from scratch ──
+    const payout = order.payout;
+    let grossAmount, gstAmount, baseAmount, platformFee, shippingCost, packingCharge = 0, customDeduction = 0, netPayout;
 
+    if (payout && payout.baseAmount !== undefined) {
+      // Use pre-calculated payout
+      grossAmount   = payout.grossAmount || 0;
+      gstAmount     = payout.gstAmount || 0;
+      baseAmount    = payout.baseAmount || 0;
+      platformFee   = payout.platformFee || 0;
+      shippingCost  = payout.shippingCost || 0;
+      packingCharge = payout.packingCharge || 0;
+      customDeduction = payout.customDeduction || 0;
+      netPayout     = payout.netPayout || 0;
+    } else {
+      // Fallback: recalculate (legacy support)
+      grossAmount = itemsTotal;
+      baseAmount = order.pricing?.subtotal || itemsTotal;
+      gstAmount = order.pricing?.tax || 0;
+      platformFee = parseFloat((baseAmount * PLATFORM_COMMISSION_PCT / 100).toFixed(2));
+      shippingCost = order.shiprocket?.shippingCharge || order.pricing?.shipping || 0;
+      netPayout = parseFloat((baseAmount - platformFee - shippingCost).toFixed(2));
+    }
+
+    // Helper for breakdown rows
     const tRow = (label, val, bold = false, color = GRAY) => {
       doc.fontSize(9).font(bold ? 'Helvetica-Bold' : 'Helvetica').fillColor(bold ? DARK : color)
          .text(label, 350, y, { width: 120 })
@@ -80,10 +102,45 @@ const generateSellerPayoutPDF = (order, seller, items) => {
       y += 18;
     };
 
-    tRow('Order Value',                fmt(itemsTotal));
-    tRow(`Platform Commission (${PLATFORM_COMMISSION_PCT}%)`, `- ${fmt(commission)}`, false, '#dc2626');
-    tRow('GST on Commission (18%)',    `- ${fmt(gstOnComm)}`, false, '#dc2626');
+    // ── Payout breakdown ──────────────────────────────────────────
+    tRow('Gross Amount (GST-incl.)', fmt(grossAmount));
+    if (gstAmount > 0) {
+      tRow('GST Amount', `- ${fmt(gstAmount)}`, false, RED);
+    }
+    tRow('Base Amount (ex-GST)', fmt(baseAmount), true);
+    y += 6;
 
+    // Platform fee or bonus indicator
+    if (payout?.isNewSellerBonus) {
+      tRow('Platform Commission', '✓ WAIVED', false, GREEN);
+      doc.fontSize(7.5).font('Helvetica').fillColor(GREEN)
+         .text('First 20 orders bonus — No platform fee', 350, y - 2, { width: 120, height: 16 });
+      y += 8;
+    } else if (platformFee > 0) {
+      tRow(`Platform Commission (${payout?.platformFeeRate || PLATFORM_COMMISSION_PCT}%)`, `- ${fmt(platformFee)}`, false, RED);
+    }
+
+    // Shipping cost
+    if (shippingCost > 0) {
+      tRow('Shipping / Logistics', `- ${fmt(shippingCost)}`, false, RED);
+    }
+
+    // Packing charge
+    if (packingCharge > 0) {
+      tRow('Packing Charge', `- ${fmt(packingCharge)}`, false, RED);
+    }
+
+    // Custom deduction
+    if (customDeduction > 0) {
+      tRow('Other Deduction', `- ${fmt(customDeduction)}`, false, RED);
+      if (payout?.customDeductionNote) {
+        doc.fontSize(7.5).font('Helvetica').fillColor(GRAY)
+           .text(`(${payout.customDeductionNote})`, 350, y - 2, { width: 120, height: 16 });
+        y += 6;
+      }
+    }
+
+    // Net payout
     doc.moveTo(350, y).lineTo(550, y).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
     y += 8;
     doc.rect(350, y, 200, 28).fill(DARK);
@@ -96,6 +153,12 @@ const generateSellerPayoutPDF = (order, seller, items) => {
     doc.fontSize(9).font('Helvetica').fillColor(GRAY)
        .text(`Payment Method: ${(order.paymentMethod || 'N/A').toUpperCase()}`, 45, y)
        .text(`Order Status: ${order.orderStatus || 'N/A'}`, 45, y + 14);
+
+    // Finalization info (if finalized by admin)
+    if (payout?.finalizedBy && payout?.finalizedAt) {
+      doc.fontSize(8).fillColor(GRAY)
+         .text(`Finalized on: ${new Date(payout.finalizedAt).toLocaleString('en-IN')}`, 45, y + 28);
+    }
 
     // Footer
     doc.moveTo(45, 795).lineTo(550, 795).strokeColor('#e2e8f0').lineWidth(0.5).stroke();

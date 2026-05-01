@@ -288,6 +288,24 @@ const getServiceability = async ({ pickupPincode, deliveryPincode, weight = 0.5,
   return data;
 };
 
+// ── Get shipment details including actual freight charge ────
+const getShipmentCharge = async (shipmentId) => {
+  const h = await headers();
+  const { data } = await axios.get(`${BASE_URL}/shipments`, {
+    headers: h,
+    params: { id: shipmentId },
+  });
+  // Extract freight_charge from the response
+  // Response structure: { data: { shipments: [{ freight_charge, ... }] } } or similar
+  const shipmentData = data?.data?.shipments?.[0] || data?.shipments?.[0] || data?.data || data;
+  const freightCharge = parseFloat(shipmentData?.freight_charge || shipmentData?.shippingCharge || 0);
+  return {
+    shipmentId,
+    freightCharge,
+    raw: data,
+  };
+};
+
 module.exports = {
   createShipment,
   assignAWB,
@@ -297,4 +315,5 @@ module.exports = {
   trackByAWB,
   cancelShipment,
   getServiceability,
+  getShipmentCharge,
 };

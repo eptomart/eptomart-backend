@@ -8,7 +8,9 @@ const {
   createManualShipment, refreshShiprocketAWB, reviewPackaging,
   getShiprocketCharge, recalculatePayout,
   getSellerOrders, markSellerOrdersSettled,
+  setAdminShippingCharge, uploadShiprocketBill,
 } = require('../controllers/adminController');
+const { uploadBill } = require('../config/cloudinary');
 const { acknowledgePickup } = require('../controllers/sellerController');
 const { protectAdmin, protectSuperAdmin, requirePermission } = require('../middleware/adminAuth');
 
@@ -22,6 +24,8 @@ router.post('/orders/:orderId/acknowledge-pickup', ...protectAdmin, requirePermi
 router.patch('/orders/:id/packaging-review',       ...protectAdmin, requirePermission('orders'), reviewPackaging);
 router.get('/orders/:id/shiprocket-charge',        ...protectAdmin, requirePermission('orders'), getShiprocketCharge);
 router.post('/orders/:id/recalculate-payout',      ...protectAdmin, requirePermission('orders'), recalculatePayout);
+router.patch('/orders/:id/shipping-charge',        ...protectAdmin, requirePermission('orders'), setAdminShippingCharge);
+router.post('/orders/:id/shiprocket-bill',         ...protectAdmin, requirePermission('orders'), uploadBill.single('bill'), uploadShiprocketBill);
 
 // ── Seller order history + settlements ───────────────────
 router.get('/sellers/:id/orders',           ...protectAdmin, requirePermission('orders'), getSellerOrders);

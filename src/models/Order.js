@@ -104,15 +104,22 @@ const orderSchema = new mongoose.Schema({
 
   // Shiprocket shipment tracking
   shiprocket: {
-    orderId:        String,   // Shiprocket's order ID
-    shipmentId:     String,   // Shiprocket shipment ID
-    awb:            String,   // Airway Bill number
-    courier:        String,   // Courier name (e.g. "Delhivery")
-    trackingUrl:    String,   // Customer tracking URL
-    labelUrl:       String,   // Shipping label PDF URL
-    status:         String,   // Latest Shiprocket status string
-    shippingCharge: { type: Number, default: 0 },  // Actual charge billed by Shiprocket
-    createdAt:      Date,
+    orderId:             String,   // Shiprocket's order ID
+    shipmentId:          String,   // Shiprocket shipment ID
+    awb:                 String,   // Airway Bill number
+    courier:             String,   // Courier name (e.g. "Delhivery")
+    trackingUrl:         String,   // Customer tracking URL
+    labelUrl:            String,   // Shipping label PDF URL
+    status:              String,   // Latest Shiprocket status string
+    shippingCharge:      { type: Number, default: 0 }, // API/auto-detected charge
+    adminShippingCharge: { type: Number, default: null }, // Admin-entered actual charge (overrides API value in payout)
+    bill: {
+      url:        String,   // Cloudinary URL of Shiprocket bill PDF/image
+      publicId:   String,   // Cloudinary public ID for deletion
+      uploadedAt: Date,
+      uploadedBy: { type: require('mongoose').Schema.Types.ObjectId, ref: 'User' },
+    },
+    createdAt:           Date,
   },
 
   // GST breakdown

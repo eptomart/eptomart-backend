@@ -82,13 +82,31 @@ const uploadDocument = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
 });
 
+// Shiprocket bill storage (PDF or image)
+const billStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'eptomart/shiprocket-bills',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'pdf'],
+    resource_type: 'auto',
+  },
+});
+const uploadBill = multer({
+  storage: billStorage,
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB — courier bills can be large
+  fileFilter: (req, file, cb) => {
+    const ok = file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf';
+    ok ? cb(null, true) : cb(new Error('Only images or PDF allowed'), false);
+  },
+});
+
 // Helper to delete image from Cloudinary
-const deleteImage = async (publicId) => {
+const deleteImage = async (publicId, resourceType = 'image') => {
   try {
-    await cloudinary.uploader.destroy(publicId);
+    await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
   } catch (error) {
     console.error('Cloudinary delete error:', error);
   }
 };
 
-module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, deleteImage };
+module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, uploadBill, deleteImage };

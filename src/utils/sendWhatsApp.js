@@ -1,53 +1,43 @@
 // ============================================
-// WHATSAPP NOTIFICATIONS — Meta Cloud API (FREE)
+// WHATSAPP NOTIFICATIONS — Meta Cloud API
 // Free tier: 1,000 conversations / month
 //
-// Setup (one-time, 10 min, no card required):
-//   1. developers.facebook.com → Create App → Business
-//   2. Add "WhatsApp" product to the app
-//   3. WhatsApp → Getting Started → copy:
-//        - Temporary access token  → META_WHATSAPP_TOKEN
-//        - Phone number ID          → META_WHATSAPP_PHONE_NUMBER_ID
-//   4. Add recipient numbers to the test allowlist (under API Setup)
+// PRODUCTION SETUP:
+//   1. business.facebook.com → Security Centre → Business Verification
+//      Make sure status is ✅ Verified before proceeding.
+//   2. developers.facebook.com → Your App → WhatsApp → API Setup
+//      - Copy Phone Number ID  → META_WHATSAPP_PHONE_NUMBER_ID
+//   3. Business Settings → System Users → Create Admin System User
+//      → Generate Token (permissions: whatsapp_business_messaging,
+//        whatsapp_business_management)
+//      → Copy token             → META_WHATSAPP_TOKEN
+//   4. WhatsApp Manager → Message Templates → create "order_confirmation"
+//      template (category: Utility) and wait for Meta approval (< 24h).
+//      Then set:                → META_WHATSAPP_ORDER_TEMPLATE=order_confirmation
 //
-// For production (verified business):
-//   - Verify your business in Meta Business Manager
-//   - Get permanent system user token
-//   - Register your own phone number
+// MESSAGE TYPES:
+//   - Template messages: required outside 24h customer-initiated window.
+//     Must be pre-approved by Meta. Free for Utility category.
+//   - Free-text messages: only work within 24h of customer messaging first.
 // ============================================
 
 const https = require('https');
 
-/**
- * Core sender — Meta Graph API v18
- * @param {string} toPhone  Phone with country code e.g. "919876543210" or "+919876543210"
- * @param {string} message  Plain text body (max 4096 chars)
- */
-const sendMetaWhatsApp = (toPhone, message) => {
-  const token   = process.env.META_WHATSAPP_TOKEN;
-  const phoneId = process.env.META_WHATSAPP_PHONE_NUMBER_ID;
+const API_VERSION = 'v21.0'; // keep updated with Meta's latest stable version
 
-  if (!token || !phoneId) {
-    console.warn('⚠️  META_WHATSAPP_TOKEN or META_WHATSAPP_PHONE_NUMBER_ID not set — WhatsApp skipped');
-    return Promise.resolve({ success: false, error: 'Meta WhatsApp not configured' });
-  }
+// ── Normalise phone number ──────────────────────────────────
+const normalisePhone = (phone) => {
+  const stripped = (phone || '').replace(/^\+/, '').replace(/\s/g, '');
+  return stripped.startsWith('91') ? stripped : `91${stripped}`;
+};
 
-  // Normalise: strip leading + and prepend country code if missing
-  const normalised = toPhone.replace(/^\+/, '');
-  const to = normalised.startsWith('91') ? normalised : `91${normalised}`;
-
+// ── Core HTTP sender ────────────────────────────────────────
+const _postToMeta = (phoneId, token, payload) => {
   return new Promise((resolve) => {
-    const body = JSON.stringify({
-      messaging_product: 'whatsapp',
-      recipient_type:    'individual',
-      to,
-      type: 'text',
-      text: { preview_url: false, body: message },
-    });
-
+    const body = JSON.stringify(payload);
     const options = {
       hostname: 'graph.facebook.com',
-      path:     `/v18.0/${phoneId}/messages`,
+      path:     `/${API_VERSION}/${phoneId}/messages`,
       method:   'POST',
       headers: {
         'Authorization':  `Bearer ${token}`,
@@ -61,10 +51,10 @@ const sendMetaWhatsApp = (toPhone, message) => {
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve({ success: true });
+          resolve({ success: true, raw: data });
         } else {
           console.error('[WhatsApp] Meta API error:', res.statusCode, data);
-          resolve({ success: false, error: data });
+          resolve({ success: false, error: data, statusCode: res.statusCode });
         }
       });
     });
@@ -79,11 +69,77 @@ const sendMetaWhatsApp = (toPhone, message) => {
   });
 };
 
+// ── Free-text sender (works within 24h customer-initiated window) ──
+const sendMetaWhatsApp = (toPhone, message) => {
+  const token   = process.env.META_WHATSAPP_TOKEN;
+  const phoneId = process.env.META_WHATSAPP_PHONE_NUMBER_ID;
+
+  if (!token || !phoneId) {
+    console.warn('⚠️  META_WHATSAPP_TOKEN or META_WHATSAPP_PHONE_NUMBER_ID not set — WhatsApp skipped');
+    return Promise.resolve({ success: false, error: 'Meta WhatsApp not configured' });
+  }
+
+  const to = normalisePhone(toPhone);
+  return _postToMeta(phoneId, token, {
+    messaging_product: 'whatsapp',
+    recipient_type:    'individual',
+    to,
+    type: 'text',
+    text: { preview_url: false, body: message },
+  });
+};
+
+// ── Template message sender (works anytime, requires Meta-approved template) ──
+// templateName: the name you gave the template in WhatsApp Manager (snake_case)
+// components:   array of parameter components — see Meta docs for structure
+const sendTemplateWhatsApp = (toPhone, templateName, components = [], languageCode = 'en') => {
+  const token   = process.env.META_WHATSAPP_TOKEN;
+  const phoneId = process.env.META_WHATSAPP_PHONE_NUMBER_ID;
+
+  if (!token || !phoneId) {
+    console.warn('⚠️  META_WHATSAPP_TOKEN or META_WHATSAPP_PHONE_NUMBER_ID not set — WhatsApp skipped');
+    return Promise.resolve({ success: false, error: 'Meta WhatsApp not configured' });
+  }
+
+  const to = normalisePhone(toPhone);
+  return _postToMeta(phoneId, token, {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'template',
+    template: {
+      name:     templateName,
+      language: { code: languageCode },
+      ...(components.length ? { components } : {}),
+    },
+  });
+};
+
 // ── Customer: order placed ──────────────────────────────
+// Uses the approved "order_confirmation" template if META_WHATSAPP_ORDER_TEMPLATE is set.
+// Falls back to free-text (works within 24h of customer messaging first).
 const sendOrderPlacedWhatsApp = (phone, { orderId, total, paymentMethod, items }) => {
+  const templateName = process.env.META_WHATSAPP_ORDER_TEMPLATE; // e.g. 'order_confirmation'
+
+  if (templateName) {
+    // Template message — works anytime, requires Meta-approved template.
+    // Template body example (set up in WhatsApp Manager):
+    //   "Your order #{{1}} is confirmed! Amount: ₹{{2}} | Payment: {{3}}
+    //    Track at eptomart.com/orders. Thank you for shopping with Eptomart!"
+    return sendTemplateWhatsApp(phone, templateName, [
+      {
+        type: 'body',
+        parameters: [
+          { type: 'text', text: String(orderId) },
+          { type: 'text', text: Number(total).toLocaleString('en-IN') },
+          { type: 'text', text: (paymentMethod || 'ONLINE').toUpperCase() },
+        ],
+      },
+    ]);
+  }
+
+  // Free-text fallback
   const itemList = (items || []).slice(0, 3).map(i => `• ${i.name} ×${i.quantity}`).join('\n');
   const more     = items?.length > 3 ? `\n...and ${items.length - 3} more item(s)` : '';
-
   const message =
 `🛒 *Order Confirmed — Eptomart!*
 
@@ -193,6 +249,80 @@ Track: eptomart.com/orders
   return sendMetaWhatsApp(phone, message);
 };
 
+// ── Customer: order delivered — billing summary ─────────
+// Sends a full billing receipt to the customer on delivery.
+const sendOrderDeliveredWhatsApp = (phone, {
+  name, orderId, items = [], pricing = {}, paymentMethod, deliveredAt,
+}) => {
+  const templateName = process.env.META_WHATSAPP_DELIVERED_TEMPLATE;
+
+  if (templateName) {
+    // Template mode — requires Meta-approved template named e.g. "order_delivered"
+    // Suggested template body:
+    //   "Hi {{1}}! Your Eptomart order #{{2}} has been delivered. 🎉
+    //    Total paid: ₹{{3}}. We hope you love your purchase!
+    //    Need help? Visit eptomart.com/orders"
+    return sendTemplateWhatsApp(phone, templateName, [
+      {
+        type: 'body',
+        parameters: [
+          { type: 'text', text: name || 'Customer' },
+          { type: 'text', text: String(orderId) },
+          { type: 'text', text: Number(pricing.total || 0).toLocaleString('en-IN') },
+        ],
+      },
+    ]);
+  }
+
+  // ── Free-text billing receipt ───────────────────────────
+  const dateStr = deliveredAt
+    ? new Date(deliveredAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    : new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+
+  // Item lines (max 5, then "...and N more")
+  const itemLines = (items || []).slice(0, 5)
+    .map(i => `  • ${i.name} ×${i.quantity}  ₹${Number(i.price * i.quantity).toLocaleString('en-IN')}`)
+    .join('\n');
+  const moreItems = items.length > 5 ? `\n  ...and ${items.length - 5} more item(s)` : '';
+
+  // Pricing breakdown
+  const subtotal = Number(pricing.subtotal || 0).toLocaleString('en-IN');
+  const tax      = Number(pricing.tax || 0).toLocaleString('en-IN');
+  const shipping = Number(pricing.shipping || 0).toLocaleString('en-IN');
+  const discount = Number(pricing.discount || 0);
+  const total    = Number(pricing.total || 0).toLocaleString('en-IN');
+  const method   = (paymentMethod || 'ONLINE').toUpperCase();
+
+  const discountLine = discount > 0
+    ? `\nDiscount:    -₹${discount.toLocaleString('en-IN')}` : '';
+
+  const message =
+`✅ *Order Delivered — Eptomart*
+
+Hi *${name || 'Customer'}* 👋, your order has been delivered!
+
+🧾 *Bill for Order #${orderId}*
+📅 Date: ${dateStr}
+
+*Items Ordered:*
+${itemLines}${moreItems}
+
+─────────────────────
+Subtotal:     ₹${subtotal}
+GST:          ₹${tax}
+Shipping:     ₹${shipping}${discountLine}
+*Total Paid:  ₹${total}*
+Payment:      ${method}
+─────────────────────
+
+🌟 We hope you love your purchase! Rate your experience at eptomart.com/orders
+
+Thank you for shopping with Eptomart 🙏
+— *Team Eptomart*`;
+
+  return sendMetaWhatsApp(phone, message);
+};
+
 // ── OTP via WhatsApp ────────────────────────────────────
 // Used to replace Firebase phone auth (no CAPTCHA, fully backend-controlled).
 const sendOtpWhatsApp = (phone, code) => {
@@ -210,8 +340,11 @@ If you didn't request this, please ignore.
 };
 
 module.exports = {
+  sendMetaWhatsApp,
+  sendTemplateWhatsApp,
   sendOrderPlacedWhatsApp,
   sendOrderPaidWhatsApp,
+  sendOrderDeliveredWhatsApp,
   sendAdminNewOrderAlert,
   sendSellerWelcomeWhatsApp,
   sendSellerActivatedWhatsApp,

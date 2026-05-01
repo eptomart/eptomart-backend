@@ -268,7 +268,7 @@ const updateOrderStatus = async (req, res) => {
     );
   }
 
-  // ── Payout: triggered when order transitions to 'delivered' ──
+  // ── Payout + WhatsApp billing: triggered when order transitions to 'delivered' ──
   if (status === 'delivered' && prevStatus !== 'delivered') {
     try {
       const { calculateOrderPayout, creditSellerSettlement } = require('../utils/payoutCalculator');
@@ -287,6 +287,27 @@ const updateOrderStatus = async (req, res) => {
       // Payout failure must NOT block the status update response
       console.error('[Payout] Failed to calculate payout for order', order.orderId, ':', payoutErr.message);
     }
+
+    // ── Send billing summary to customer via WhatsApp ───────
+    setImmediate(async () => {
+      try {
+        const { sendOrderDeliveredWhatsApp } = require('../utils/sendWhatsApp');
+        const phone = order.shippingAddress?.phone;
+        if (phone) {
+          await sendOrderDeliveredWhatsApp(phone, {
+            name:          order.shippingAddress?.fullName,
+            orderId:       order.orderId,
+            items:         order.items || [],
+            pricing:       order.pricing || {},
+            paymentMethod: order.paymentMethod,
+            deliveredAt:   new Date(),
+          });
+          console.log(`[WhatsApp] Delivery billing sent for order ${order.orderId} → ${phone}`);
+        }
+      } catch (waErr) {
+        console.error('[WhatsApp] Delivery billing failed for order', order.orderId, ':', waErr.message);
+      }
+    });
   }
 
   // ── Notify seller when order is cancelled ──────────────────
@@ -937,6 +958,80 @@ const markSellerOrdersSettled = async (req, res) => {
   }
 };
 
+// ── PATCH /api/admin/orders/:id/shipping-charge ───────────
+// Admin sets the actual shipping charge (as billed by Shiprocket).
+// This value takes priority over the API-detected charge in payout calculation.
+const setAdminShippingCharge = async (req, res) => {
+  try {
+    const { charge } = req.body;
+    const amount = parseFloat(charge);
+    if (isNaN(amount) || amount < 0) {
+      return res.status(400).json({ success: false, message: 'Invalid shipping charge amount' });
+    }
+
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    order.set('shiprocket.adminShippingCharge', amount);
+    await order.save();
+
+    // If payout already exists, update its shippingCost and recalculate netPayout
+    if (order.payout?.baseAmount !== undefined) {
+      const payout = order.payout.toObject ? order.payout.toObject() : { ...order.payout };
+      payout.shippingCost = amount;
+      payout.netPayout = Math.max(
+        0,
+        parseFloat(
+          (payout.baseAmount - (payout.platformFee || 0) - amount - (payout.packingCharge || 0) - (payout.customDeduction || 0)).toFixed(2)
+        )
+      );
+      await Order.findByIdAndUpdate(order._id, { payout });
+    }
+
+    logActivity(req, 'order.shipping_charge_set', 'order', order._id.toString(), `Order #${order.orderId}`, { amount });
+
+    res.json({ success: true, message: `Shipping charge set to ₹${amount}`, adminShippingCharge: amount });
+  } catch (err) {
+    console.error('[Admin setShippingCharge]', err.message);
+    res.status(500).json({ success: false, message: err.message || 'Failed to set shipping charge' });
+  }
+};
+
+// ── POST /api/admin/orders/:id/shiprocket-bill ────────────
+// Admin uploads Shiprocket bill (PDF or image) for an order.
+// File is stored in Cloudinary under eptomart/shiprocket-bills/
+const uploadShiprocketBill = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
+
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    // Delete previous bill from Cloudinary if it exists
+    if (order.shiprocket?.bill?.publicId) {
+      const { deleteImage } = require('../config/cloudinary');
+      const resourceType = order.shiprocket.bill.url?.includes('/raw/') ? 'raw' : 'image';
+      await deleteImage(order.shiprocket.bill.publicId, resourceType).catch(() => {});
+    }
+
+    const bill = {
+      url:        req.file.path,      // Cloudinary URL
+      publicId:   req.file.filename,  // Cloudinary public_id
+      uploadedAt: new Date(),
+      uploadedBy: req.user._id,
+    };
+
+    await Order.findByIdAndUpdate(order._id, { 'shiprocket.bill': bill });
+
+    logActivity(req, 'order.bill_uploaded', 'order', order._id.toString(), `Order #${order.orderId}`, { url: bill.url });
+
+    res.json({ success: true, message: 'Bill uploaded successfully', bill });
+  } catch (err) {
+    console.error('[Admin uploadBill]', err.message);
+    res.status(500).json({ success: false, message: err.message || 'Failed to upload bill' });
+  }
+};
+
 module.exports = {
   getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, updateUser, deleteUser,
   getAllOrders, updateOrderStatus, adminCancelWithRefund,
@@ -944,4 +1039,5 @@ module.exports = {
   createManualShipment, refreshShiprocketAWB, reviewPackaging,
   getShiprocketCharge, recalculatePayout,
   getSellerOrders, markSellerOrdersSettled,
+  setAdminShippingCharge, uploadShiprocketBill,
 };

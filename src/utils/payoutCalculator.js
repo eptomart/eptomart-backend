@@ -88,9 +88,9 @@ const calculateOrderPayout = async (order) => {
     }
 
     // ── 5. Shipping cost = actual Shiprocket charge ──────────────────
-    // Falls back to the order's stored shipping charge if Shiprocket charge not yet known
+    // Use admin-entered charge if set (most accurate), otherwise fall back to API/pricing value
     const shippingCost = parseFloat(
-      (order.shiprocket?.shippingCharge || order.pricing?.shipping || 0).toFixed(2)
+      (order.shiprocket?.adminShippingCharge ?? order.shiprocket?.shippingCharge ?? order.pricing?.shipping ?? 0).toFixed(2)
     );
 
     // ── 6. Net payout ───────────────────────────────────────────────

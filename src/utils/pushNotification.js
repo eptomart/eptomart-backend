@@ -28,6 +28,7 @@ try {
 }
 
 const PushSubscription = require('../models/PushSubscription');
+const Notification     = require('../models/Notification');
 
 /**
  * Send push notification to a specific subscription
@@ -54,9 +55,25 @@ const sendPush = async (subscription, payload) => {
 };
 
 /**
- * Send notification to a specific user
+ * Send notification to a specific user (web push + in-app DB record)
  */
 const notifyUser = async (userId, payload) => {
+  if (!userId) return [];
+
+  // 1. Persist in-app notification to DB
+  try {
+    await Notification.create({
+      user:  userId,
+      title: payload.title,
+      body:  payload.body,
+      url:   payload.url || '/',
+      tag:   payload.tag  || null,
+    });
+  } catch (e) {
+    console.warn('[Notify] DB save failed:', e.message);
+  }
+
+  // 2. Send web push (best effort)
   const subscriptions = await PushSubscription.find({ user: userId, isActive: true });
   const results = await Promise.all(subscriptions.map(sub => sendPush(sub, payload)));
   return results;

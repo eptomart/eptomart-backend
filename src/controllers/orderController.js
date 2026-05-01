@@ -625,7 +625,14 @@ const uploadPackageImages = async (req, res) => {
     return res.status(400).json({ success: false, message: `side must be one of: ${PACKAGING_SIDES.join(', ')}` });
   }
 
-  const existing      = order.packaging?.images || [];
+  const wasRejected   = order.packaging?.status === 'rejected';
+  // When resubmitting after rejection, wipe old rejected photos so we start clean
+  if (wasRejected) {
+    const { deleteImage } = require('../config/cloudinary');
+    const oldImages = order.packaging?.images || [];
+    Promise.all(oldImages.filter(i => i.publicId).map(i => deleteImage(i.publicId).catch(() => {}))).catch(() => {});
+  }
+  const existing      = wasRejected ? [] : (order.packaging?.images || []);
   const wasFirstPhoto = existing.length === 0;
 
   // Build new image objects with optional side label

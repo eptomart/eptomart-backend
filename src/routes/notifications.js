@@ -4,6 +4,7 @@
 const express = require('express');
 const router = express.Router();
 const PushSubscription = require('../models/PushSubscription');
+const Notification     = require('../models/Notification');
 const { notifyUser, notifyAll, notifications } = require('../utils/pushNotification');
 const { protect } = require('../middleware/auth');
 const { protectAdmin } = require('../middleware/adminAuth');
@@ -99,6 +100,42 @@ router.post('/broadcast', protectAdmin, async (req, res) => {
   const { title, body, url } = req.body;
   const result = await notifyAll({ title, body, icon: '/icons/icon-192x192.png', url: url || '/', tag: 'broadcast' });
   res.json({ success: true, ...result });
+});
+
+// ── In-app notification endpoints ─────────────────────────
+
+/**
+ * GET /api/notifications/mine
+ * Returns the current user's last 30 notifications + unread count
+ */
+router.get('/mine', protect, async (req, res) => {
+  const [items, unreadCount] = await Promise.all([
+    Notification.find({ user: req.user._id })
+      .sort({ createdAt: -1 })
+      .limit(30)
+      .lean(),
+    Notification.countDocuments({ user: req.user._id, read: false }),
+  ]);
+  res.json({ success: true, items, unreadCount });
+});
+
+/**
+ * PATCH /api/notifications/read-all
+ * Mark all current user notifications as read
+ * ⚠️ Must be declared BEFORE /:id/read to avoid Express matching 'read-all' as an id
+ */
+router.patch('/read-all', protect, async (req, res) => {
+  await Notification.updateMany({ user: req.user._id, read: false }, { read: true });
+  res.json({ success: true });
+});
+
+/**
+ * PATCH /api/notifications/:id/read
+ * Mark a single notification as read
+ */
+router.patch('/:id/read', protect, async (req, res) => {
+  await Notification.findOneAndUpdate({ _id: req.params.id, user: req.user._id }, { read: true });
+  res.json({ success: true });
 });
 
 module.exports = router;

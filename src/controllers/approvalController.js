@@ -1,14 +1,26 @@
 const Product        = require('../models/Product');
 const ProductApproval= require('../models/ProductApproval');
 const Seller         = require('../models/Seller');
+const { makeUniqueSellerCode } = require('../utils/generateSellerCode');
 
 // ── Auto-generate product code tied to seller ──────────────
-// Format: MAL-P-0001 (seller code + P + per-seller sequence)
+// Format: MAL-P-0001  (seller's name-derived code + P + per-seller sequence)
+// If seller somehow has no sellerId yet, we generate and persist it now
+// so every product code is always rooted in the seller's real name.
 const assignProductCode = async (product) => {
   if (product.productCode) return; // already assigned
   try {
-    const seller = await Seller.findById(product.seller).select('sellerId businessName').lean();
-    const sellerCode = seller?.sellerId || 'EPT';
+    let seller = await Seller.findById(product.seller).select('sellerId businessName').lean();
+    if (!seller) return;
+
+    let sellerCode = seller.sellerId;
+
+    // Seller has no code yet → generate from business name and save it
+    if (!sellerCode) {
+      sellerCode = await makeUniqueSellerCode(seller.businessName);
+      await Seller.updateOne({ _id: seller._id }, { $set: { sellerId: sellerCode } });
+    }
+
     // Count existing products for THIS seller that already have a code
     const count = await Product.countDocuments({
       seller: product.seller,

@@ -160,6 +160,8 @@ const updateSeller = async (req, res) => {
   const seller = await Seller.findById(req.params.id);
   if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
 
+  const prevBusinessName = seller.businessName;
+
   const allowed = ['businessName','displayName','description','contact','address','gstNumber','panNumber','fssaiLicenseNumber','bankDetails','notes'];
   allowed.forEach(k => { if (req.body[k] !== undefined) seller[k] = req.body[k]; });
 
@@ -167,6 +169,21 @@ const updateSeller = async (req, res) => {
   if (req.body.address?.pincode && req.body.address.pincode !== seller.address.pincode) {
     const coords = await geocode(req.body.address.pincode);
     if (coords) { seller.address.lat = coords.lat; seller.address.lng = coords.lng; seller.address.geocodedAt = new Date(); }
+  }
+
+  // If business name changed → regenerate seller code from the new name
+  if (req.body.businessName && req.body.businessName.trim() !== prevBusinessName) {
+    try {
+      const newCode = await makeUniqueSellerCode(req.body.businessName.trim(), seller._id);
+      seller.sellerId = newCode;
+    } catch (_) { /* keep old code on collision edge case */ }
+  }
+
+  // If seller has no code at all → generate one now from current name
+  if (!seller.sellerId) {
+    try {
+      seller.sellerId = await makeUniqueSellerCode(seller.businessName, seller._id);
+    } catch (_) {}
   }
 
   await seller.save();

@@ -132,8 +132,11 @@ const createProduct = async (req, res) => {
     name, description, shortDescription, price, discountPrice, stock,
     category, tags, brand, sku, isFeatured, metaTitle, metaDescription,
     gstRate, hsnCode, codAvailable, priceIncludesGst, seller, variants, instagramLink,
+    location,
     // Seller margin fields
     platformMargin, sellerMargin,
+    costPrice, sellerPrice, eptomartMargin,
+    freeShippingAbove,
   } = req.body;
 
   // Handle uploaded images
@@ -143,10 +146,17 @@ const createProduct = async (req, res) => {
     isDefault: index === 0,
   })) || [];
 
-  // Parse variants if sent as JSON string
+  // Parse variants if sent as JSON string (strip any _id)
   let parsedVariants = [];
   if (variants) {
-    parsedVariants = typeof variants === 'string' ? JSON.parse(variants) : variants;
+    const raw = typeof variants === 'string' ? JSON.parse(variants) : variants;
+    parsedVariants = raw.map(({ _id, ...v }) => v);
+  }
+
+  // Parse location if sent as JSON string
+  let parsedLocation;
+  if (location) {
+    try { parsedLocation = typeof location === 'string' ? JSON.parse(location) : location; } catch (_) {}
   }
 
   const productData = {
@@ -157,6 +167,11 @@ const createProduct = async (req, res) => {
     discountPrice: discountPrice ? Number(discountPrice) : undefined,
     stock: Number(stock),
     category,
+    location: parsedLocation,
+    costPrice: costPrice ? Number(costPrice) : undefined,
+    sellerPrice: sellerPrice ? Number(sellerPrice) : undefined,
+    eptomartMargin: eptomartMargin !== undefined && eptomartMargin !== '' ? Number(eptomartMargin) : undefined,
+    freeShippingAbove: freeShippingAbove ? Number(freeShippingAbove) : 499,
     images,
     tags: tags ? (Array.isArray(tags) ? tags : tags.split(',').map(t => t.trim())) : [],
     brand,
@@ -253,9 +268,14 @@ const updateProduct = async (req, res) => {
     updates.tags = updates.tags.split(',').map(t => t.trim());
   }
 
-  // Parse variants if sent as JSON string
+  // Parse variants if sent as JSON string (strip any _id so Mongoose adds fresh ones)
   if (updates.variants && typeof updates.variants === 'string') {
-    updates.variants = JSON.parse(updates.variants);
+    updates.variants = JSON.parse(updates.variants).map(({ _id, ...v }) => v);
+  }
+
+  // Parse location if sent as JSON string
+  if (updates.location && typeof updates.location === 'string') {
+    try { updates.location = JSON.parse(updates.location); } catch (_) {}
   }
 
   // instagramLink — only superAdmin or admin can set/update
@@ -263,9 +283,12 @@ const updateProduct = async (req, res) => {
     delete updates.instagramLink;
   }
 
-  // Numeric margin fields
-  if (updates.platformMargin !== undefined) updates.platformMargin = Number(updates.platformMargin);
-  if (updates.sellerMargin   !== undefined) updates.sellerMargin   = Number(updates.sellerMargin);
+  // Numeric fields — FormData sends everything as strings, convert explicitly
+  const numericFields = ['price', 'discountPrice', 'stock', 'gstRate', 'costPrice',
+                         'sellerPrice', 'eptomartMargin', 'platformMargin', 'sellerMargin', 'freeShippingAbove'];
+  numericFields.forEach(f => {
+    if (updates[f] !== undefined && updates[f] !== '') updates[f] = Number(updates[f]);
+  });
 
   // Admin/superAdmin saving a product always marks it active (undoes any deactivation)
   if (['admin', 'superAdmin'].includes(req.user.role)) {
@@ -450,13 +473,15 @@ const cloneProduct = async (req, res) => {
   }
 
   // Build clone — strip unique fields, reset approval
-  const { _id, slug, sku, createdAt, updatedAt, __v, soldCount, likeCount, repeatBuyerCount, reviews, ratings, ...rest } = source;
+  // productCode is intentionally excluded so assignProductCode gives it a fresh name-based code on approval
+  const { _id, slug, sku, productCode, createdAt, updatedAt, __v, soldCount, likeCount, repeatBuyerCount, reviews, ratings, ...rest } = source;
   const clone = await Product.create({
     ...rest,
     name: `${source.name} (Copy)`,
     approvalStatus: 'draft',
     isActive: false,
-    images: source.images, // reuse same Cloudinary URLs (no re-upload needed)
+    productCode: null,       // will be assigned (from seller's name code) when approved
+    images: source.images,   // reuse same Cloudinary URLs (no re-upload needed)
   });
 
   res.status(201).json({ success: true, message: 'Product cloned as draft', product: clone });

@@ -7,6 +7,7 @@ const {
   listAdmins, createAdmin, deleteAdmin, updateAdminPermissions,
   createManualShipment, refreshShiprocketAWB, reviewPackaging,
   getShiprocketCharge, recalculatePayout,
+  getSellerOrders, markSellerOrdersSettled,
 } = require('../controllers/adminController');
 const { acknowledgePickup } = require('../controllers/sellerController');
 const { protectAdmin, protectSuperAdmin, requirePermission } = require('../middleware/adminAuth');
@@ -21,6 +22,10 @@ router.post('/orders/:orderId/acknowledge-pickup', ...protectAdmin, requirePermi
 router.patch('/orders/:id/packaging-review',       ...protectAdmin, requirePermission('orders'), reviewPackaging);
 router.get('/orders/:id/shiprocket-charge',        ...protectAdmin, requirePermission('orders'), getShiprocketCharge);
 router.post('/orders/:id/recalculate-payout',      ...protectAdmin, requirePermission('orders'), recalculatePayout);
+
+// ── Seller order history + settlements ───────────────────
+router.get('/sellers/:id/orders',           ...protectAdmin, requirePermission('orders'), getSellerOrders);
+router.post('/sellers/:id/mark-settled',    ...protectAdmin, requirePermission('orders'), markSellerOrdersSettled);
 
 // ── Routes restricted to superAdmin ONLY ──────────────────
 // Dashboard with analytics

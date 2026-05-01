@@ -542,8 +542,8 @@ const createManualShipment = async (req, res) => {
 };
 
 // ── Refresh AWB for an existing shipment ─────
-// Called from admin panel when AWB shows as blank after shipment creation.
-// Shiprocket assigns couriers asynchronously — this polls and saves the AWB.
+// Called from admin panel when AWB is blank OR when courier was changed in Shiprocket dashboard.
+// Always re-fetches from Shiprocket to catch courier reassignments (which change the AWB).
 const refreshShiprocketAWB = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
@@ -555,12 +555,17 @@ const refreshShiprocketAWB = async (req, res) => {
       return res.status(400).json({ success: false, message: 'No Shiprocket shipment linked to this order' });
     }
 
-    if (sr.awb) {
-      return res.json({ success: true, awb: sr.awb, courier: sr.courier, message: 'AWB already assigned' });
-    }
+    const { getShipmentDetails, assignAWB } = require('../utils/shiprocket');
 
-    const { assignAWB } = require('../utils/shiprocket');
-    const result = await assignAWB(sr.shipmentId);
+    // Step 1: Always fetch the latest shipment details from Shiprocket
+    // This picks up any courier change that happened in the Shiprocket dashboard.
+    let result = await getShipmentDetails(sr.shipmentId);
+
+    // Step 2: If still no AWB (courier not yet assigned), try assigning one
+    if (!result.awb) {
+      const assigned = await assignAWB(sr.shipmentId);
+      if (assigned.awb) result = assigned;
+    }
 
     if (!result.awb) {
       return res.status(400).json({
@@ -572,16 +577,29 @@ const refreshShiprocketAWB = async (req, res) => {
     const trackingUrl = `https://shiprocket.co/tracking/${result.awb}`;
     const updateFields = {
       'shiprocket.awb':         result.awb,
-      'shiprocket.courier':     result.courier,
+      'shiprocket.courier':     result.courier || sr.courier,
       'shiprocket.trackingUrl': trackingUrl,
       trackingNumber:           result.awb,
     };
-    if (result.shippingCharge) {
-      updateFields['shiprocket.shippingCharge'] = result.shippingCharge;
+    if (result.freightCharge || result.shippingCharge) {
+      updateFields['shiprocket.shippingCharge'] = result.freightCharge || result.shippingCharge;
     }
     await Order.findByIdAndUpdate(order._id, updateFields);
 
-    res.json({ success: true, awb: result.awb, courier: result.courier, trackingUrl, shippingCharge: result.shippingCharge || 0 });
+    const changed = sr.awb && sr.awb !== result.awb;
+    res.json({
+      success: true,
+      awb:      result.awb,
+      courier:  result.courier || sr.courier,
+      trackingUrl,
+      shippingCharge: result.freightCharge || result.shippingCharge || 0,
+      changed,
+      message: changed
+        ? `AWB updated — courier changed to ${result.courier}`
+        : sr.awb === result.awb
+          ? 'AWB confirmed (no change)'
+          : 'AWB assigned successfully',
+    });
   } catch (err) {
     console.error('[Admin refreshAWB]', err.message);
     res.status(500).json({ success: false, message: err.message || 'Failed to refresh AWB' });
@@ -769,8 +787,155 @@ const recalculatePayout = async (req, res) => {
   }
 };
 
-// ── Gate AWB: createManualShipment already written above;
-//    we add a packaging status check inside it ─────────────
+// ── GET /api/admin/sellers/:id/orders ─────────────────────
+// Orders for a specific seller, with filters and settlement summary.
+const getSellerOrders = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      status,
+      from,        // date range start (ISO string)
+      to,          // date range end   (ISO string)
+      day,         // single day shortcut (YYYY-MM-DD)
+      settled,     // 'true' | 'false' — payout settled filter
+      sort = 'newest',
+      page = 1,
+      limit = 25,
+    } = req.query;
+
+    // Verify seller exists
+    const seller = await Seller.findById(id).lean();
+    if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+    // Find all products belonging to this seller
+    const products = await Product.find({ seller: id }).select('_id name').lean();
+    const productIds = products.map(p => p._id);
+
+    if (!productIds.length) {
+      return res.json({ success: true, orders: [], total: 0, stats: { totalRevenue: 0, totalOrders: 0, settled: 0, pending: 0 } });
+    }
+
+    // Build match filter — orders containing at least one of seller's products
+    const match = { 'items.product': { $in: productIds } };
+
+    if (status)  match.orderStatus = status;
+
+    if (day) {
+      const d = new Date(day);
+      const next = new Date(d); next.setDate(next.getDate() + 1);
+      match.createdAt = { $gte: d, $lt: next };
+    } else if (from || to) {
+      match.createdAt = {};
+      if (from) match.createdAt.$gte = new Date(from);
+      if (to)   { const end = new Date(to); end.setHours(23, 59, 59, 999); match.createdAt.$lte = end; }
+    }
+
+    if (settled === 'true')  match['payout.status'] = 'paid';
+    if (settled === 'false') match['payout.status'] = { $in: ['pending', 'calculated', 'processing', 'on_hold', null] };
+
+    // Sort
+    const sortMap = {
+      newest:    { createdAt: -1 },
+      oldest:    { createdAt: 1  },
+      topselling:{ 'pricing.total': -1 },
+    };
+    const sortObj = sortMap[sort] || { createdAt: -1 };
+
+    const skip = (Number(page) - 1) * Number(limit);
+
+    const [orders, total] = await Promise.all([
+      Order.find(match)
+        .sort(sortObj)
+        .skip(skip)
+        .limit(Number(limit))
+        .populate('user', 'name email phone')
+        .populate('items.product', 'name price sku images')
+        .lean(),
+      Order.countDocuments(match),
+    ]);
+
+    // Stats
+    const [stats] = await Order.aggregate([
+      { $match: match },
+      { $group: {
+          _id: null,
+          totalRevenue:   { $sum: '$pricing.total' },
+          totalOrders:    { $sum: 1 },
+          settledCount:   { $sum: { $cond: [{ $eq: ['$payout.status', 'paid'] }, 1, 0] } },
+          pendingCount:   { $sum: { $cond: [{ $ne:  ['$payout.status', 'paid'] }, 1, 0] } },
+          totalNetPayout: { $sum: { $ifNull: ['$payout.netPayout', 0] } },
+      }},
+    ]).catch(() => [{}]);
+
+    // Top selling products for this seller
+    const topProducts = await Order.aggregate([
+      { $match: match },
+      { $unwind: '$items' },
+      { $match: { 'items.product': { $in: productIds } } },
+      { $group: {
+          _id: '$items.product',
+          name: { $first: '$items.name' },
+          totalSold: { $sum: '$items.quantity' },
+          revenue:   { $sum: { $multiply: ['$items.price', '$items.quantity'] } },
+      }},
+      { $sort: { totalSold: -1 } },
+      { $limit: 5 },
+    ]).catch(() => []);
+
+    res.json({
+      success: true,
+      seller: {
+        _id: seller._id,
+        businessName: seller.businessName,
+        email: seller.email,
+        phone: seller.phone,
+        gstNumber: seller.gstNumber,
+      },
+      orders,
+      total,
+      page: Number(page),
+      pages: Math.ceil(total / Number(limit)),
+      stats: {
+        totalRevenue:   stats?.totalRevenue   || 0,
+        totalOrders:    stats?.totalOrders    || 0,
+        settledCount:   stats?.settledCount   || 0,
+        pendingCount:   stats?.pendingCount   || 0,
+        totalNetPayout: stats?.totalNetPayout || 0,
+      },
+      topProducts,
+    });
+  } catch (err) {
+    console.error('[Admin getSellerOrders]', err.message);
+    res.status(500).json({ success: false, message: err.message || 'Failed to fetch seller orders' });
+  }
+};
+
+// ── POST /api/admin/sellers/:id/mark-settled ──────────────
+// Mark selected orders' payouts as paid/settled.
+const markSellerOrdersSettled = async (req, res) => {
+  try {
+    const { orderIds } = req.body;
+    if (!orderIds?.length) return res.status(400).json({ success: false, message: 'No order IDs provided' });
+
+    const result = await Order.updateMany(
+      { _id: { $in: orderIds } },
+      {
+        $set: {
+          'payout.status': 'paid',
+          'payout.paidAt': new Date(),
+          'payout.finalizedBy': req.user._id,
+        },
+      }
+    );
+
+    logActivity(req, 'payout.settled', 'order', null, `Batch settlement — ${result.modifiedCount} orders`, { count: result.modifiedCount });
+
+    res.json({ success: true, message: `${result.modifiedCount} orders marked as settled`, count: result.modifiedCount });
+  } catch (err) {
+    console.error('[Admin markSettled]', err.message);
+    res.status(500).json({ success: false, message: err.message || 'Failed to mark settled' });
+  }
+};
 
 module.exports = {
   getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, updateUser, deleteUser,
@@ -778,4 +943,5 @@ module.exports = {
   listAdmins, createAdmin, deleteAdmin, updateAdminPermissions,
   createManualShipment, refreshShiprocketAWB, reviewPackaging,
   getShiprocketCharge, recalculatePayout,
+  getSellerOrders, markSellerOrdersSettled,
 };

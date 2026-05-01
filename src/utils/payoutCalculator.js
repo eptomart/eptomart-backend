@@ -18,6 +18,7 @@
 
 const Product = require('../models/Product');
 const Seller  = require('../models/Seller');
+const Order   = require('../models/Order');
 
 // Default platform fee rate if not set on seller profile
 const DEFAULT_PLATFORM_FEE_RATE = 10; // 10%

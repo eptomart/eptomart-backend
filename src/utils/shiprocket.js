@@ -306,6 +306,25 @@ const getShipmentCharge = async (shipmentId) => {
   };
 };
 
+// ── Get full shipment details — AWB, courier, charge ──────
+// Used to refresh our stored AWB after courier changes in Shiprocket dashboard.
+// Queries the shipment list endpoint which always returns the latest assigned AWB.
+const getShipmentDetails = async (shipmentId) => {
+  const h = await headers();
+  const { data } = await axios.get(`${BASE_URL}/shipments`, {
+    headers: h,
+    params: { id: shipmentId },
+  });
+  const s = data?.data?.shipments?.[0] || data?.shipments?.[0] || data?.data || data;
+  return {
+    awb:          s?.awb_code       || s?.awb       || '',
+    courier:      s?.courier_name   || s?.courier   || '',
+    freightCharge: parseFloat(s?.freight_charge || s?.shippingCharge || 0),
+    status:       s?.status         || '',
+    raw:          data,
+  };
+};
+
 module.exports = {
   createShipment,
   assignAWB,
@@ -316,4 +335,5 @@ module.exports = {
   cancelShipment,
   getServiceability,
   getShipmentCharge,
+  getShipmentDetails,
 };

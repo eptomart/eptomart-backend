@@ -193,6 +193,22 @@ Track: eptomart.com/orders
   return sendMetaWhatsApp(phone, message);
 };
 
+// ── OTP via WhatsApp ────────────────────────────────────
+// Used to replace Firebase phone auth (no CAPTCHA, fully backend-controlled).
+const sendOtpWhatsApp = (phone, code) => {
+  const message =
+`🔐 *Your Eptomart OTP*
+
+Your one-time password is: *${code}*
+
+Valid for ${process.env.OTP_EXPIRY_MINUTES || 10} minutes. Do not share this with anyone.
+
+If you didn't request this, please ignore.
+— *Team Eptomart*`;
+
+  return sendMetaWhatsApp(phone, message);
+};
+
 module.exports = {
   sendOrderPlacedWhatsApp,
   sendOrderPaidWhatsApp,
@@ -200,4 +216,5 @@ module.exports = {
   sendSellerWelcomeWhatsApp,
   sendSellerActivatedWhatsApp,
   sendOrderShippedWhatsApp,
+  sendOtpWhatsApp,
 };

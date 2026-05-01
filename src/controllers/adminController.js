@@ -205,10 +205,17 @@ const deleteUser = async (req, res) => {
  * @access  Admin
  */
 const getAllOrders = async (req, res) => {
-  const { page = 1, limit = 20, status, paymentStatus } = req.query;
+  const { page = 1, limit = 20, status, paymentStatus, seller: sellerFilter } = req.query;
   const filter = {};
   if (status) filter.orderStatus = status;
   if (paymentStatus) filter.paymentStatus = paymentStatus;
+
+  // Filter by seller: find all products belonging to that seller, then filter orders containing them
+  if (sellerFilter) {
+    const sellerProducts = await Product.find({ seller: sellerFilter }).select('_id').lean();
+    const productIds = sellerProducts.map(p => p._id);
+    filter['items.product'] = { $in: productIds };
+  }
 
   const skip = (Number(page) - 1) * Number(limit);
   const [orders, total] = await Promise.all([
@@ -217,7 +224,7 @@ const getAllOrders = async (req, res) => {
       .skip(skip)
       .limit(Number(limit))
       .populate('user', 'name email phone')
-      .populate({ path: 'items.product', select: 'seller name images', populate: { path: 'seller', model: 'Seller', select: 'businessName _id' } }),
+      .populate({ path: 'items.product', select: 'seller name images productCode', populate: { path: 'seller', model: 'Seller', select: 'businessName sellerId _id' } }),
     Order.countDocuments(filter),
   ]);
 

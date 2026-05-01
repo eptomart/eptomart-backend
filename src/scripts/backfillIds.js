@@ -19,36 +19,10 @@ const Seller   = require('../models/Seller');
 const Product  = require('../models/Product');
 const Category = require('../models/Category');
 
-// ── same logic as utils/generateSellerCode.js (no circular dep here) ──
-const STOP_WORDS = new Set([
-  'pvt','ltd','private','limited','co','company',
-  'enterprises','enterprise','traders','trading',
-  'solutions','services','industries','international',
-  'exports','imports','retail','wholesale','mart',
-  'store','shop','world','group','and','the','a','of','&',
-]);
-
+// First 3 alphanumeric chars of business name — always predictable
 function deriveCode(businessName) {
-  const words = businessName
-    .trim()
-    .split(/[\s\-_]+/)
-    .map(w => w.replace(/[^a-zA-Z0-9]/g, ''))
-    .filter(w => w.length > 0 && !STOP_WORDS.has(w.toLowerCase()));
-
-  const src = words.length > 0 ? words : [businessName.replace(/[^a-zA-Z0-9]/g, '')];
-
-  let code;
-  if (src.length >= 3) {
-    code = src.slice(0, 3).map(w => w[0]).join('');
-  } else if (src.length === 2) {
-    const initials = src.map(w => w[0]).join('');
-    const pad = src[0][1] || src[1][1] || src[0][0];
-    code = (initials[0] + initials[1] + pad).slice(0, 3);
-  } else {
-    code = src[0].slice(0, 3);
-  }
-
-  return code.toUpperCase().padEnd(3, 'X').slice(0, 3);
+  const letters = businessName.replace(/[^a-zA-Z0-9]/g, '');
+  return letters.slice(0, 3).toUpperCase().padEnd(3, 'X');
 }
 
 async function makeUniqueCode(businessName, usedCodes) {

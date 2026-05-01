@@ -562,6 +562,16 @@ const reviewPackaging = async (req, res) => {
     return res.status(400).json({ success: false, message: 'No packaging submission pending review' });
   }
 
+  // On approval — delete all packaging photos from Cloudinary (no longer needed)
+  if (action === 'approve') {
+    const { deleteImage } = require('../config/cloudinary');
+    const toDelete = (order.packaging.images || []).filter(img => img.publicId);
+    // Fire-and-forget deletions (don't block the response)
+    Promise.all(toDelete.map(img => deleteImage(img.publicId).catch(() => {}))).catch(() => {});
+    // Clear images from the document — keep the status + reviewedAt for audit trail
+    order.packaging.images = [];
+  }
+
   order.packaging.status      = action === 'approve' ? 'approved' : 'rejected';
   order.packaging.reviewedAt  = new Date();
   order.packaging.reviewedBy  = req.user._id;

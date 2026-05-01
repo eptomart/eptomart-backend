@@ -540,53 +540,77 @@ const toggleProductActive = async (req, res) => {
 /**
  * @route   POST /api/products/bulk-stock
  * @desc    Bulk update product stock from CSV data
+ *          Accepts rows with: sku OR product_code (either works as identifier)
+ *          Optional: price, discount_price (admin only)
  * @access  Seller / Admin
  */
 const bulkUpdateStock = async (req, res) => {
   try {
     const { updates } = req.body;
 
-    if (!Array.isArray(updates)) {
-      return res.status(400).json({ success: false, message: 'updates must be an array' });
+    if (!Array.isArray(updates) || updates.length === 0) {
+      return res.status(400).json({ success: false, message: 'updates must be a non-empty array' });
     }
 
     let updated = 0;
     let skipped = 0;
-    const errors = [];
+    const errors  = [];
+    const results = [];
 
     for (let i = 0; i < updates.length; i++) {
       const item = updates[i];
-      const { sku, stock } = item;
+      // Support: sku, product_code (aliases: productCode, code)
+      const identifier = (item.sku || item.product_code || item.productCode || item.code || '').trim();
+      const stockVal   = item.stock !== undefined && item.stock !== '' ? Number(item.stock) : undefined;
 
-      if (!sku || stock === undefined) {
-        errors.push(`Row ${i + 1}: Missing sku or stock`);
+      if (!identifier) {
+        errors.push(`Row ${i + 2}: Missing identifier (sku or product_code)`);
+        skipped++;
+        continue;
+      }
+      if (stockVal === undefined || isNaN(stockVal)) {
+        errors.push(`Row ${i + 2}: Invalid stock value for "${identifier}"`);
         skipped++;
         continue;
       }
 
       try {
-        const product = await Product.findOne({ sku: sku.trim() });
+        // Find by SKU first, then fall back to productCode
+        let product = await Product.findOne({ sku: identifier });
+        if (!product) product = await Product.findOne({ productCode: identifier });
+
         if (!product) {
-          errors.push(`Row ${i + 1}: Product with SKU "${sku}" not found`);
+          errors.push(`Row ${i + 2}: No product found with SKU/Code "${identifier}"`);
           skipped++;
           continue;
         }
 
-        // Seller can only update their own products
+        // Sellers can only touch their own products
         if (req.user.role === 'seller') {
           const sellerDocId = getSellerDocId(req);
           if (!sellerDocId || product.seller?.toString() !== sellerDocId.toString()) {
-            errors.push(`Row ${i + 1}: Access denied for product "${sku}"`);
+            errors.push(`Row ${i + 2}: Access denied for "${identifier}" — not your product`);
             skipped++;
             continue;
           }
         }
 
-        product.stock = Math.max(0, Number(stock));
+        // Apply stock update
+        product.stock = Math.max(0, stockVal);
+
+        // Admin-only: optional price / discount_price columns
+        if (req.user.role !== 'seller') {
+          const newPrice = item.price !== undefined && item.price !== '' ? Number(item.price) : undefined;
+          const newDisc  = item.discount_price !== undefined && item.discount_price !== '' ? Number(item.discount_price) : undefined;
+          if (newPrice  !== undefined && !isNaN(newPrice)  && newPrice  > 0) product.price         = newPrice;
+          if (newDisc   !== undefined && !isNaN(newDisc)   && newDisc   >= 0) product.discountPrice = newDisc;
+        }
+
         await product.save();
         updated++;
+        results.push({ identifier, name: product.name, stock: product.stock });
       } catch (err) {
-        errors.push(`Row ${i + 1}: Error updating "${sku}" - ${err.message}`);
+        errors.push(`Row ${i + 2}: Error updating "${identifier}" — ${err.message}`);
         skipped++;
       }
     }
@@ -596,11 +620,52 @@ const bulkUpdateStock = async (req, res) => {
       updated,
       skipped,
       errors,
-      message: `${updated} products updated, ${skipped} skipped`,
+      results,
+      message: `${updated} product${updated !== 1 ? 's' : ''} updated${skipped > 0 ? `, ${skipped} skipped` : ''}`,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
-module.exports = { getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct, toggleProductActive, bulkUpdateStock };
+/**
+ * @route   GET /api/products/seller/export-stock
+ * @desc    Seller downloads their own product list as CSV (pre-filled for stock update)
+ * @access  Seller
+ */
+const exportSellerStock = async (req, res) => {
+  try {
+    const sellerDocId = getSellerDocId(req);
+    if (!sellerDocId) return res.status(403).json({ success: false, message: 'Seller profile not found' });
+
+    const products = await Product.find({ seller: sellerDocId, isActive: true })
+      .select('name productCode sku stock price discountPrice')
+      .sort('name')
+      .lean();
+
+    const escape = (val) => {
+      const s = String(val ?? '');
+      return s.includes(',') || s.includes('"') || s.includes('\n')
+        ? `"${s.replace(/"/g, '""')}"`
+        : s;
+    };
+
+    const headers = ['product_name', 'product_code', 'sku', 'current_stock', 'new_stock'];
+    const rows = products.map(p => [
+      escape(p.name),
+      escape(p.productCode || ''),
+      escape(p.sku || ''),
+      p.stock ?? 0,
+      '', // blank — seller fills in new_stock
+    ]);
+
+    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="stock-update.csv"');
+    res.send(csv);
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+module.exports = { getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct, toggleProductActive, bulkUpdateStock, exportSellerStock };

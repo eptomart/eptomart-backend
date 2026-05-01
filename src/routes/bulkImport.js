@@ -164,4 +164,31 @@ router.get('/csv-template', protectAdmin, (req, res) => {
   res.send(template);
 });
 
+/**
+ * @route   GET /api/bulk/stock-update-template
+ * @desc    Download sample CSV for bulk stock update (admin version — includes price columns)
+ * @access  Admin
+ */
+router.get('/stock-update-template', protectAdmin, (req, res) => {
+  const template = [
+    '# Eptomart — Bulk Stock Update Template (Admin)',
+    '# Rules:',
+    '#   - Use either product_code OR sku to identify each product (one is enough)',
+    '#   - new_stock: required — the quantity to set (0 = mark as out of stock)',
+    '#   - price, discount_price: optional — leave blank to keep existing price',
+    '#   - Remove comment lines (starting with #) before uploading',
+    '#',
+    'product_code,sku,product_name,current_stock,new_stock,price,discount_price',
+    'EPT-001,SAM-S24-BLK,Samsung Galaxy S24,12,50,79999,69999',
+    'EPT-002,TSHIRT-M-BLU,Cotton T-Shirt Blue M,200,150,499,399',
+    'EPT-003,RICE-BAS-5KG,Basmati Rice 5kg,100,200,650,',
+    'EPT-004,,Wireless Earbuds Pro,0,30,1299,999',
+    ',SKU-WATCH-01,Smart Watch Series 5,8,25,,',
+  ].join('\n');
+
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="stock-update-template-admin.csv"');
+  res.send(template);
+});
+
 module.exports = router;

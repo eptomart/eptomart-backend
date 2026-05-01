@@ -52,7 +52,7 @@ const getProducts = async (req, res) => {
   const [products, total] = await Promise.all([
     Product.find(filter)
       .populate('category', 'name slug')
-      .populate('seller', 'businessName')
+      .populate('seller', 'businessName sellerId')
       .sort(sort)
       .skip(skip)
       .limit(Number(limit))
@@ -414,7 +414,7 @@ const getAdminProducts = async (req, res) => {
   const [products, total] = await Promise.all([
     Product.find(filter)
       .populate('category', 'name')
-      .populate('seller',   'businessName status')
+      .populate('seller', 'businessName sellerId status')
       .sort('-createdAt')
       .skip(skip)
       .limit(Number(limit))
@@ -470,7 +470,7 @@ const cloneProduct = async (req, res) => {
 const previewProduct = async (req, res) => {
   const product = await Product.findById(req.params.id)
     .populate('category', 'name slug')
-    .populate('seller', 'businessName');
+    .populate('seller', 'businessName sellerId');
 
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 

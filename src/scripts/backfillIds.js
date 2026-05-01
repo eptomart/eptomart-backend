@@ -30,9 +30,31 @@ function derivePrefix(businessName) {
   return letters.slice(0, 3).toUpperCase().padEnd(3, 'X');
 }
 
+function randomPrefixFromName(businessName) {
+  const chars = businessName.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+  if (chars.length < 3) return chars.padEnd(3, 'X');
+  let result = '';
+  const indices = new Set();
+  let attempts = 0;
+  while (result.length < 3 && attempts < 200) {
+    const i = Math.floor(Math.random() * chars.length);
+    if (!indices.has(i)) { indices.add(i); result += chars[i]; }
+    attempts++;
+  }
+  return result.padEnd(3, 'X');
+}
+
 async function makeUniqueCode(businessName, usedCodes) {
-  const prefix = derivePrefix(businessName);
-  for (let attempt = 0; attempt < 200; attempt++) {
+  // Pass 1: natural prefix (first 3 chars)
+  const naturalPrefix = derivePrefix(businessName);
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const digits = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
+    const code = naturalPrefix + digits;
+    if (!usedCodes.has(code)) return code;
+  }
+  // Pass 2: random chars from name
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const prefix = randomPrefixFromName(businessName);
     const digits = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
     const code = prefix + digits;
     if (!usedCodes.has(code)) return code;

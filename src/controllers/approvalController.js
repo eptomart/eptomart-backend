@@ -2,12 +2,19 @@ const Product        = require('../models/Product');
 const ProductApproval= require('../models/ProductApproval');
 const Seller         = require('../models/Seller');
 
-// ── Auto-generate human-readable product code ─────────────
+// ── Auto-generate product code tied to seller ──────────────
+// Format: MAL-P-0001 (seller code + P + per-seller sequence)
 const assignProductCode = async (product) => {
   if (product.productCode) return; // already assigned
   try {
-    const count = await Product.countDocuments({ productCode: { $exists: true, $ne: null } });
-    product.productCode = `EPT-P-${String(count + 1).padStart(4, '0')}`;
+    const seller = await Seller.findById(product.seller).select('sellerId businessName').lean();
+    const sellerCode = seller?.sellerId || 'EPT';
+    // Count existing products for THIS seller that already have a code
+    const count = await Product.countDocuments({
+      seller: product.seller,
+      productCode: { $exists: true, $ne: null },
+    });
+    product.productCode = `${sellerCode}-P-${String(count + 1).padStart(4, '0')}`;
   } catch (_) {}
 };
 

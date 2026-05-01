@@ -2,6 +2,7 @@ const User    = require('../models/User');
 const Seller  = require('../models/Seller');
 const Product = require('../models/Product');
 const { geocode } = require('../utils/deliveryEstimator');
+const { makeUniqueSellerCode } = require('../utils/generateSellerCode');
 const { sendSellerWelcomeEmail, sendSellerActivatedEmail } = require('../utils/sendEmail');
 const { sendOtpSms }   = require('../utils/sendSMS');
 const { sendSellerWelcomeWhatsApp, sendSellerActivatedWhatsApp } = require('../utils/sendWhatsApp');
@@ -101,9 +102,8 @@ const createSeller = async (req, res) => {
   // Geocode seller location
   const coords = await geocode(address.pincode);
 
-  // Auto-generate sellerId: EPT-S-0001, 0002, …
-  const sellerCount = await Seller.countDocuments({ sellerId: { $exists: true, $ne: null } });
-  const sellerIdCode = `EPT-S-${String(sellerCount + 1).padStart(4, '0')}`;
+  // Auto-generate unique 3-letter seller code from business name (e.g. MAL, SRT, KKM)
+  const sellerIdCode = await makeUniqueSellerCode(businessName);
 
   const seller = await Seller.create({
     user:         user._id,

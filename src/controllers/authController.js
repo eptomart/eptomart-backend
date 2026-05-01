@@ -6,7 +6,7 @@ const Otp = require('../models/Otp');
 const { generateOtp, parseUserAgent, getClientIp } = require('../utils/generateOtp');
 const { sendTokenResponse } = require('../utils/generateToken');
 const { sendOtpEmail } = require('../utils/sendEmail');
-const { sendOtpWhatsApp } = require('../utils/sendWhatsApp');
+// SMS is used only for order confirmations — OTP uses email (or Firebase for phone)
 
 /**
  * @route   POST /api/auth/send-otp
@@ -78,14 +78,9 @@ const sendOtp = async (req, res) => {
     }
   }
   if (type === 'phone') {
-    // Send OTP via WhatsApp — no Firebase / no CAPTCHA required
-    const waResult = await sendOtpWhatsApp(contact, code);
-    if (!waResult.success) {
-      // Log but don't block — dev mode will still return OTP in response
-      console.warn('[Auth] WhatsApp OTP send failed for', contact, '—', waResult.error || 'unknown');
-    } else {
-      console.log('[Auth] Phone OTP sent via WhatsApp to:', contact);
-    }
+    // Phone OTP is handled by Firebase on the frontend (RecaptchaVerifier + signInWithPhoneNumber)
+    // This backend path is a fallback only — no SMS sent here to avoid double-charging
+    console.log('[Auth] Phone OTP generated (Firebase handles delivery):', contact);
   }
 
   // In development, return OTP in response for testing

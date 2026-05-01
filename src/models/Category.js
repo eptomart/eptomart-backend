@@ -24,7 +24,8 @@ const categorySchema = new mongoose.Schema({
     url: String,
     publicId: String,
   },
-  icon: String, // Emoji or icon class
+  icon:  String, // Emoji or icon class (kept for backward compat)
+  color: String, // Hex color for the icon circle e.g. "#e91e8c"
   parentCategory: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Category',

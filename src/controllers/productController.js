@@ -20,6 +20,7 @@ const getProducts = async (req, res) => {
     page = 1,
     limit = 12,
     category,
+    subCategory,
     search,
     minPrice,
     maxPrice,
@@ -31,7 +32,11 @@ const getProducts = async (req, res) => {
   // Show all approved products (including inactive/deactivated seller products — they appear greyed out on frontend)
   const filter = { approvalStatus: 'approved' };
 
-  if (category) filter.category = category;
+  if (subCategory) {
+    filter.subCategory = subCategory; // subcategory filter takes precedence
+  } else if (category) {
+    filter.category = category;
+  }
   if (featured === 'true') filter.isFeatured = true;
   if (inStock === 'true') filter.stock = { $gt: 0 };
 
@@ -83,7 +88,9 @@ const getProduct = async (req, res) => {
     : { slug: req.params.slug, approvalStatus: 'approved' };
 
   const product = await Product.findOne(query)
-    .populate('category', 'name slug').populate('subCategory', 'name slug')
+    .populate('category', 'name slug')
+    .populate('subCategory', 'name slug')
+    .populate('seller', 'businessName sellerId address status')
     .populate('reviews.user', 'name avatar');
 
   if (!product) {

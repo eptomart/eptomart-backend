@@ -60,6 +60,11 @@ const productSchema = new mongoose.Schema({
     ref: 'Category',
     required: [true, 'Category is required'],
   },
+  subCategory: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Category',
+    default: null,
+  },
   tags: [String],
   brand: String,
   sku: {

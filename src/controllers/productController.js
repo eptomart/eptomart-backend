@@ -51,7 +51,7 @@ const getProducts = async (req, res) => {
 
   const [products, total] = await Promise.all([
     Product.find(filter)
-      .populate('category', 'name slug')
+      .populate('category', 'name slug').populate('subCategory', 'name slug')
       .populate('seller', 'businessName sellerId')
       .sort(sort)
       .skip(skip)
@@ -83,7 +83,7 @@ const getProduct = async (req, res) => {
     : { slug: req.params.slug, approvalStatus: 'approved' };
 
   const product = await Product.findOne(query)
-    .populate('category', 'name slug')
+    .populate('category', 'name slug').populate('subCategory', 'name slug')
     .populate('reviews.user', 'name avatar');
 
   if (!product) {
@@ -111,7 +111,7 @@ const getSellerProducts = async (req, res) => {
 
   const [products, total] = await Promise.all([
     Product.find(filter)
-      .populate('category', 'name slug')
+      .populate('category', 'name slug').populate('subCategory', 'name slug')
       .sort('-createdAt')
       .skip((Number(page) - 1) * Number(limit))
       .limit(Number(limit))
@@ -130,7 +130,7 @@ const getSellerProducts = async (req, res) => {
 const createProduct = async (req, res) => {
   const {
     name, description, shortDescription, price, discountPrice, stock,
-    category, tags, brand, sku, isFeatured, metaTitle, metaDescription,
+    category, subCategory, tags, brand, sku, isFeatured, metaTitle, metaDescription,
     gstRate, hsnCode, codAvailable, priceIncludesGst, seller, variants, instagramLink,
     location,
     // Seller margin fields
@@ -167,6 +167,7 @@ const createProduct = async (req, res) => {
     discountPrice: discountPrice ? Number(discountPrice) : undefined,
     stock: Number(stock),
     category,
+    subCategory: subCategory || undefined,
     location: parsedLocation,
     costPrice: costPrice ? Number(costPrice) : undefined,
     sellerPrice: sellerPrice ? Number(sellerPrice) : undefined,
@@ -406,7 +407,7 @@ const searchProducts = async (req, res) => {
       { brand: { $regex: q, $options: 'i' } },
     ],
   })
-    .populate('category', 'name')
+    .populate('category', 'name').populate('subCategory', 'name')
     .limit(Number(limit))
     .select('name slug price discountPrice images ratings');
 
@@ -436,7 +437,7 @@ const getAdminProducts = async (req, res) => {
   const skip = (Number(page) - 1) * Number(limit);
   const [products, total] = await Promise.all([
     Product.find(filter)
-      .populate('category', 'name')
+      .populate('category', 'name').populate('subCategory', 'name')
       .populate('seller', 'businessName sellerId status')
       .sort('-createdAt')
       .skip(skip)
@@ -494,7 +495,7 @@ const cloneProduct = async (req, res) => {
  */
 const previewProduct = async (req, res) => {
   const product = await Product.findById(req.params.id)
-    .populate('category', 'name slug')
+    .populate('category', 'name slug').populate('subCategory', 'name slug')
     .populate('seller', 'businessName sellerId');
 
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });

@@ -41,6 +41,7 @@ const listApprovals = async (req, res) => {
     Product.find(filter)
       .populate('seller', 'businessName contact address sellerId')
       .populate('category', 'name')
+      .populate('subCategory', 'name')
       .sort({ submittedAt: -1 })
       .skip((page - 1) * limit)
       .limit(Number(limit))

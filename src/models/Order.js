@@ -137,6 +137,7 @@ const orderSchema = new mongoose.Schema({
     images: [{
       url:        { type: String, required: true },
       publicId:   String,
+      side:       { type: String, enum: ['front', 'back', 'left', 'right'], default: null },
       uploadedAt: { type: Date, default: Date.now },
     }],
     submittedAt:    Date,

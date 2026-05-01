@@ -593,11 +593,16 @@ const _createShiprocketCOD = async (order) => {
 };
 
 // ── POST /api/orders/:id/package-images — seller uploads packaging photos ─
+// Body: side = 'front' | 'back' | 'left' | 'right'  (one photo per request)
+const PACKAGING_SIDES = ['front', 'back', 'left', 'right'];
+const SIDE_LABELS = { front: 'Front', back: 'Back', left: 'Left', right: 'Right' };
+const SIDE_EMOJIS = { front: '🔵', back: '🟢', left: '🟡', right: '🟠' };
+
 const uploadPackageImages = async (req, res) => {
   const sellerDocId = req.user.sellerProfile || null;
   if (!sellerDocId) return res.status(403).json({ success: false, message: 'Seller profile not found' });
 
-  const order = await Order.findById(req.params.id);
+  const order = await Order.findById(req.params.id).populate('user', '_id name');
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
   // Verify this seller owns items in this order
@@ -614,36 +619,122 @@ const uploadPackageImages = async (req, res) => {
   const files = req.files || [];
   if (files.length < 1) return res.status(400).json({ success: false, message: 'Please upload at least 1 packaging image' });
 
-  const newImages = files.map(f => ({ url: f.path, publicId: f.filename, uploadedAt: new Date() }));
-  const existing  = order.packaging?.images || [];
+  // Determine the side for this upload (from body or query)
+  const side = (req.body.side || req.query.side || '').toLowerCase();
+  if (side && !PACKAGING_SIDES.includes(side)) {
+    return res.status(400).json({ success: false, message: `side must be one of: ${PACKAGING_SIDES.join(', ')}` });
+  }
+
+  const existing      = order.packaging?.images || [];
+  const wasFirstPhoto = existing.length === 0;
+
+  // Build new image objects with optional side label
+  const newImages = files.map(f => ({
+    url:        f.path,
+    publicId:   f.filename,
+    side:       side || null,
+    uploadedAt: new Date(),
+  }));
+
   const allImages = [...existing, ...newImages];
 
-  const statusNow = allImages.length >= 4 ? 'pending_review' : 'not_submitted';
+  // Which sides are now covered?
+  const coveredSides = new Set(allImages.map(img => img.side).filter(Boolean));
+  const missingSides = PACKAGING_SIDES.filter(s => !coveredSides.has(s));
+  const allSidesDone = coveredSides.size >= 4 || allImages.length >= 4;
+
+  const statusNow = allSidesDone ? 'pending_review' : 'not_submitted';
+  const wasAlreadySubmitted = order.packaging?.status === 'pending_review';
 
   order.packaging = {
     ...order.packaging,
     images:      allImages,
     status:      statusNow,
-    submittedAt: statusNow === 'pending_review' ? new Date() : order.packaging?.submittedAt,
+    submittedAt: statusNow === 'pending_review' && !wasAlreadySubmitted
+                   ? new Date()
+                   : order.packaging?.submittedAt,
   };
   await order.save();
 
-  // Notify admin if newly submitted
-  if (statusNow === 'pending_review') {
-    const { notifyUser: notify } = require('../utils/pushNotification');
-    notify('admin', {
-      title: `📦 Packaging ready for review — #${order.orderId}`,
-      body:  `Seller uploaded ${allImages.length} packaging photos. Review to release AWB.`,
-      url:   '/admin/orders',
-    }).catch(() => {});
-  }
+  // ── Fire notifications (non-blocking) ─────────────────────────────────
+  setImmediate(async () => {
+    try {
+      const User = require('../models/User');
+
+      // 1️⃣ Notify the SELLER about their own upload progress
+      const sellerDoc = await Seller.findById(sellerDocId).select('user').lean();
+      if (sellerDoc?.user) {
+        const uploadedSideLabel = side ? SIDE_LABELS[side] : `Photo ${allImages.length}`;
+        const emoji = side ? SIDE_EMOJIS[side] : '📷';
+
+        if (allSidesDone && !wasAlreadySubmitted) {
+          // All 4 sides done — tell seller it's submitted
+          await notifyUser(sellerDoc.user, {
+            title: `✅ All packaging photos submitted — #${order.orderId}`,
+            body:  `All 4 sides uploaded. Admin will review and release your AWB label shortly.`,
+            url:   '/seller/orders',
+            tag:   `pkg-seller-${order.orderId}`,
+          });
+        } else if (!allSidesDone) {
+          // Partial upload — nudge for missing sides
+          const nextMissing = missingSides[0];
+          const nextLabel   = nextMissing ? `Upload ${SIDE_LABELS[nextMissing]} side next.` : '';
+          await notifyUser(sellerDoc.user, {
+            title: `${emoji} ${uploadedSideLabel} side photo uploaded — #${order.orderId}`,
+            body:  missingSides.length > 0
+              ? `${allImages.length}/4 photos done. ${nextLabel} Missing: ${missingSides.map(s => SIDE_LABELS[s]).join(', ')}.`
+              : `${allImages.length} photos uploaded.`,
+            url:   '/seller/orders',
+            tag:   `pkg-seller-${order.orderId}`,
+          });
+        }
+      }
+
+      // 2️⃣ Notify the CUSTOMER — only when first photo is uploaded (packaging started)
+      if (wasFirstPhoto && order.user?._id) {
+        await notifyUser(order.user._id, {
+          title: `📷 Your order #${order.orderId} is being packaged`,
+          body:  `Your seller has started packaging your order with care. You'll be notified when it ships!`,
+          url:   '/orders',
+          tag:   `pkg-customer-${order.orderId}`,
+        });
+      }
+
+      // 3️⃣ Notify all ADMINS — only when all sides done (newly submitted for review)
+      if (allSidesDone && !wasAlreadySubmitted) {
+        const admins = await User.find({ role: 'admin', isActive: true }).select('_id').lean();
+        await Promise.all(admins.map(admin =>
+          notifyUser(admin._id, {
+            title: `📦 Packaging ready for review — #${order.orderId}`,
+            body:  `Seller uploaded all ${allImages.length} packaging photos (Front, Back, Left, Right). Review to release AWB.`,
+            url:   '/admin/orders',
+            tag:   `pkg-admin-${order.orderId}`,
+          })
+        ));
+      }
+    } catch (notifErr) {
+      console.error('[PackageImg] Notification error:', notifErr.message);
+    }
+  });
+  // ──────────────────────────────────────────────────────────────────────
+
+  const sideStatus = PACKAGING_SIDES.map(s => ({
+    side: s,
+    label: SIDE_LABELS[s],
+    done: coveredSides.has(s) || (!side && allImages.length >= PACKAGING_SIDES.indexOf(s) + 1),
+  }));
 
   res.json({
     success: true,
-    message: allImages.length >= 4
-      ? 'Packaging submitted for admin review!'
-      : `${allImages.length}/4 images uploaded. Upload at least 4 to submit for review.`,
-    packaging: order.packaging,
+    message: allSidesDone && !wasAlreadySubmitted
+      ? '✅ All packaging photos submitted for admin review!'
+      : allSidesDone
+        ? 'Photos updated. Already under review.'
+        : `${allImages.length}/4 photos uploaded. ${missingSides.length > 0 ? `Still needed: ${missingSides.map(s => SIDE_LABELS[s]).join(', ')}.` : ''}`,
+    packaging:  order.packaging,
+    sideStatus,
+    coveredSides: [...coveredSides],
+    missingSides,
   });
 };
 

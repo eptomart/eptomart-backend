@@ -4,6 +4,7 @@
 const User = require('../models/User');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
+const Seller = require('../models/Seller');
 const Analytics = require('../models/Analytics');
 const { logActivity } = require('../utils/activityLogger');
 
@@ -288,6 +289,26 @@ const updateOrderStatus = async (req, res) => {
     }
   }
 
+  // ── Notify seller when order is cancelled ──────────────────
+  if (status === 'cancelled' && prevStatus !== 'cancelled') {
+    setImmediate(async () => {
+      try {
+        const { notifyUser } = require('../utils/pushNotification');
+        if (order.sellerPickup?.sellerId) {
+          const sellerDoc = await Seller.findById(order.sellerPickup.sellerId).select('user').lean();
+          if (sellerDoc?.user) {
+            await notifyUser(sellerDoc.user, {
+              title: `❌ Order #${order.orderId} Cancelled`,
+              body:  note ? `Reason: ${note}` : 'This order has been cancelled by admin. Stock has been restored.',
+              url:   '/seller/orders',
+              tag:   `order-cancel-${order.orderId}`,
+            });
+          }
+        }
+      } catch (e) { console.error('[Notify] Seller cancel notify failed:', e.message); }
+    });
+  }
+
   res.json({ success: true, message: 'Order updated', order });
 };
 
@@ -322,6 +343,26 @@ const adminCancelWithRefund = async (req, res) => {
   const { processRefundForOrder } = require('./orderController');
   await processRefundForOrder(order);
   await order.save();
+
+  // ── Notify seller about cancellation ──────────────────────
+  setImmediate(async () => {
+    try {
+      const { notifyUser } = require('../utils/pushNotification');
+      if (order.sellerPickup?.sellerId) {
+        const sellerDoc = await Seller.findById(order.sellerPickup.sellerId).select('user').lean();
+        if (sellerDoc?.user) {
+          await notifyUser(sellerDoc.user, {
+            title: `❌ Order #${order.orderId} Cancelled`,
+            body:  reason !== 'Cancelled by admin'
+              ? `Reason: ${reason}. Stock has been restored to your inventory.`
+              : 'This order has been cancelled by admin. Stock has been restored to your inventory.',
+            url:   '/seller/orders',
+            tag:   `order-cancel-${order.orderId}`,
+          });
+        }
+      }
+    } catch (e) { console.error('[Notify] Seller cancel notify failed:', e.message); }
+  });
 
   res.json({ success: true, message: 'Order cancelled', order, refund: order.refund });
 };

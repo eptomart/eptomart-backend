@@ -127,6 +127,8 @@ const requestCorrection = (req, res) => performAction(req, res, 'request_correct
 // ── Seller: resubmit after correction ────────────────────
 const resubmit = async (req, res) => {
   const { productId } = req.params;
+  const { note } = req.body; // seller's comment explaining what was fixed
+
   const product = await Product.findById(productId);
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
@@ -141,6 +143,8 @@ const resubmit = async (req, res) => {
   product.approvalStatus = 'pending';
   product.submittedAt    = new Date();
   product.approvalNote   = undefined;
+  // Store seller's resubmission note on the product so admin can see it in the approval queue
+  if (note?.trim()) product.sellerNote = note.trim();
   await product.save();
 
   await ProductApproval.create({
@@ -148,6 +152,7 @@ const resubmit = async (req, res) => {
     seller:      req.seller._id,
     action:      'resubmitted',
     performedBy: req.user._id,
+    note:        note?.trim() || undefined,  // visible in approval history
     snapshot:    product.toObject(),
   });
 

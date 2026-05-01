@@ -143,7 +143,8 @@ const productSchema = new mongoose.Schema({
     enum: ['draft', 'pending', 'approved', 'rejected', 'correction_needed'],
     default: 'approved',
   },
-  approvalNote:  String,
+  approvalNote:  String,   // admin → seller (rejection / correction reason)
+  sellerNote:    String,   // seller → admin (what was fixed on resubmit)
   approvedBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   approvedAt:    Date,
   submittedAt:   Date,

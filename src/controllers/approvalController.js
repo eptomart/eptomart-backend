@@ -129,6 +129,10 @@ const resubmit = async (req, res) => {
   const { productId } = req.params;
   const { note } = req.body; // seller's comment explaining what was fixed
 
+  if (!note?.trim()) {
+    return res.status(400).json({ success: false, message: 'Please describe what you fixed before resubmitting.' });
+  }
+
   const product = await Product.findById(productId);
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 

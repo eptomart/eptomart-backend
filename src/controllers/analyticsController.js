@@ -23,6 +23,9 @@ const getOverview = async (req, res) => {
     deviceStats,
     browserStats,
     dailyTrend,
+    topCountries,
+    topCities,
+    recentVisitors,
   ] = await Promise.all([
     Analytics.countDocuments({ isBot: false }),
     Analytics.distinct('ip', { isBot: false }),
@@ -45,9 +48,7 @@ const getOverview = async (req, res) => {
       { $limit: 5 },
     ]),
     Analytics.aggregate([
-      {
-        $match: { isBot: false, timestamp: { $gte: last7days } }
-      },
+      { $match: { isBot: false, timestamp: { $gte: last7days } } },
       {
         $group: {
           _id: { $dateToString: { format: '%Y-%m-%d', date: '$timestamp' } },
@@ -55,14 +56,42 @@ const getOverview = async (req, res) => {
           uniqueIps: { $addToSet: '$ip' },
         }
       },
+      { $project: { date: '$_id', visits: 1, unique: { $size: '$uniqueIps' } } },
+      { $sort: { date: 1 } }
+    ]),
+    // Top countries (30 days)
+    Analytics.aggregate([
+      { $match: { isBot: false, timestamp: { $gte: last30days }, country: { $nin: ['', null, 'Local'] } } },
+      { $group: { _id: '$country', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 10 },
+    ]),
+    // Top cities (30 days)
+    Analytics.aggregate([
+      { $match: { isBot: false, timestamp: { $gte: last30days }, city: { $nin: ['', null, 'Local'] } } },
+      { $group: { _id: '$city', country: { $first: '$country' }, count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 10 },
+    ]),
+    // Recent unique visitors (last 50)
+    Analytics.aggregate([
+      { $match: { isBot: false, timestamp: { $gte: last7days } } },
+      { $sort: { timestamp: -1 } },
       {
-        $project: {
-          date: '$_id',
-          visits: 1,
-          unique: { $size: '$uniqueIps' },
+        $group: {
+          _id: '$ip',
+          lastSeen: { $first: '$timestamp' },
+          country: { $first: '$country' },
+          city:    { $first: '$city' },
+          region:  { $first: '$region' },
+          device:  { $first: '$device' },
+          browser: { $first: '$browser' },
+          page:    { $first: '$page' },
+          visits:  { $sum: 1 },
         }
       },
-      { $sort: { date: 1 } }
+      { $sort: { lastSeen: -1 } },
+      { $limit: 50 },
     ]),
   ]);
 
@@ -79,6 +108,9 @@ const getOverview = async (req, res) => {
       deviceStats,
       browserStats,
       dailyTrend,
+      topCountries,
+      topCities,
+      recentVisitors,
     },
   });
 };

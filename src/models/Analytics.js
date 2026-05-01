@@ -20,6 +20,7 @@ const analyticsSchema = new mongoose.Schema({
   device: String, // mobile, tablet, desktop
   country: String,
   city: String,
+  region: String,
   isBot: {
     type: Boolean,
     default: false,

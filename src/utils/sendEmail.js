@@ -58,7 +58,7 @@ const sendMail = async (to, subject, html, attachments = []) => {
 // ── Resend API helper ───────────────────────
 const sendViaResend = (to, subject, html, attachments = []) => {
   if (!process.env.RESEND_API_KEY) {
-    console.error('[Email] No transport configured. Set GMAIL_USER+GMAIL_APP_PASSWORD or RESEND_API_KEY.');
+    console.error('[Email] ❌ No transport configured. Add RESEND_API_KEY to your .env file.');
     return Promise.resolve({ success: false, error: 'No email transport configured' });
   }
 
@@ -340,7 +340,7 @@ const sendSellerActivatedEmail = async (to, { businessName }) => {
  * @param {{ to, subject, html, attachments? }} opts
  */
 const sendEmail = ({ to, subject, html, attachments = [] }) =>
-  sendViaResend(to, subject, html, attachments);
+  sendMail(to, subject, html, attachments);
 
 module.exports = {
   sendOtpEmail,

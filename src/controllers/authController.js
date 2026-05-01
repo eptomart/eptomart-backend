@@ -73,6 +73,7 @@ const sendOtp = async (req, res) => {
   if (type === 'email') {
     const result = await sendOtpEmail(contact, code, purpose);
     if (!result.success) {
+      console.error('[OTP] Email send failed for', contact, '— reason:', result.error || 'unknown');
       return res.status(500).json({ success: false, message: 'Failed to send OTP email. Try again.' });
     }
   }

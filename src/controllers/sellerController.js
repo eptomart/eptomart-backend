@@ -552,6 +552,41 @@ const uploadKycDocument = async (req, res) => {
   res.json({ success: true, message: 'Document uploaded successfully', seller, kycStatus: seller.kycStatus });
 };
 
+// ── Admin: upload KYC document on behalf of a seller ──────
+const adminUploadKycDocument = async (req, res) => {
+  const { id, docType } = req.params;
+  const ALLOWED = ['cheque', 'agreement', 'idProof', 'addressProof'];
+  if (!ALLOWED.includes(docType)) {
+    return res.status(400).json({ success: false, message: `docType must be one of: ${ALLOWED.join(', ')}` });
+  }
+  if (!req.file) return res.status(400).json({ success: false, message: 'File is required' });
+
+  const seller = await Seller.findById(id);
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+  const fileData = { url: req.file.path, publicId: req.file.filename, uploadedAt: new Date() };
+
+  if (docType === 'cheque') {
+    seller.cancelledCheque              = fileData;
+    seller.kycStatus.chequeUploaded     = true;
+  } else if (docType === 'agreement') {
+    seller.agreementFile                = fileData;
+    seller.kycStatus.agreementUploaded  = true;
+  } else if (docType === 'idProof') {
+    seller.idProof                      = { ...fileData, docType: req.body.idDocType || 'aadhaar' };
+    seller.kycStatus.idProofUploaded    = true;
+  } else if (docType === 'addressProof') {
+    seller.addressProof                 = { ...fileData, docType: req.body.addressDocType || 'utility_bill' };
+    seller.kycStatus.addressProofUploaded = true;
+  }
+
+  const bd = seller.bankDetails || {};
+  seller.kycStatus.bankDetailsComplete = !!(bd.accountNumber && bd.ifscCode && bd.bankName && bd.accountHolder);
+
+  await seller.save();
+  res.json({ success: true, message: 'Document uploaded successfully', seller, kycStatus: seller.kycStatus });
+};
+
 // ── Public: get seller store info + products ──────────────
 const getSellerStore = async (req, res) => {
   const { id } = req.params;
@@ -620,5 +655,5 @@ module.exports = {
   getMyProfile, updateMyProfile, getSellerStats,
   getMyPickupAddresses, addPickupAddress, deletePickupAddress, setDefaultPickupAddress, getSellerPickupAddresses,
   listPendingPickupAddresses, approvePickupAddress, rejectPickupAddress, acknowledgePickup,
-  getSellerPayoutHistory, uploadKycDocument, getSellerStore,
+  getSellerPayoutHistory, uploadKycDocument, adminUploadKycDocument, getSellerStore,
 };

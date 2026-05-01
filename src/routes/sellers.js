@@ -8,7 +8,7 @@ const {
   setSellerStatus, deleteSeller, restoreSeller, getMyProfile, updateMyProfile, getSellerStats,
   getMyPickupAddresses, addPickupAddress, deletePickupAddress, setDefaultPickupAddress, getSellerPickupAddresses,
   listPendingPickupAddresses, approvePickupAddress, rejectPickupAddress, getSellerPayoutHistory,
-  uploadKycDocument, getSellerStore,
+  uploadKycDocument, adminUploadKycDocument, getSellerStore,
 } = require('../controllers/sellerController');
 const { uploadDocument } = require('../config/cloudinary');
 
@@ -38,6 +38,9 @@ router.patch('/:id/restore',  ...protectSuperAdmin, restoreSeller);
 router.get('/pickup-addresses/pending',              ...protectAdmin, requirePermission('approvals'), listPendingPickupAddresses);
 router.post('/:sellerId/pickup-addresses/:addrId/approve', ...protectAdmin, requirePermission('approvals'), approvePickupAddress);
 router.post('/:sellerId/pickup-addresses/:addrId/reject',  ...protectAdmin, requirePermission('approvals'), rejectPickupAddress);
+
+// Admin: upload KYC doc on behalf of a seller
+router.post('/:id/kyc/:docType',        ...protectAdmin, uploadDocument.single('file'), adminUploadKycDocument);
 
 // Admin + SuperAdmin: list / view / update sellers
 router.get('/',                         ...protectAdmin, listSellers);

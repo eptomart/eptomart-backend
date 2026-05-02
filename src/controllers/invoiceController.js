@@ -2,8 +2,13 @@ const Invoice  = require('../models/Invoice');
 const Order    = require('../models/Order');
 const Seller   = require('../models/Seller');
 const PDFDocument = require('pdfkit');
+const path     = require('path');
+const fs       = require('fs');
 const { generateInvoicePDF, uploadInvoicePDF } = require('../utils/generateInvoicePDF');
 const business = require('../../config/business');
+
+// Resolve logo path (backend/src/assets/logo.png)
+const LOGO_PATH = path.join(__dirname, '../assets/logo.png');
 
 // Platform commission rate (configurable via env)
 const PLATFORM_COMMISSION_PCT = parseFloat(process.env.PLATFORM_COMMISSION_PCT || '10');
@@ -26,8 +31,13 @@ const generateSellerPayoutPDF = (order, seller, items) => {
 
     // Header
     doc.rect(0, 0, 595, 80).fill(DARK);
-    doc.fontSize(22).font('Helvetica-Bold').fillColor(ORANGE).text('eptomart', 45, 22);
-    doc.fontSize(10).font('Helvetica').fillColor('#94a3b8').text('Seller Payout Statement', 45, 52);
+    // Logo image (fallback to text if file missing)
+    if (fs.existsSync(LOGO_PATH)) {
+      doc.image(LOGO_PATH, 45, 18, { height: 44, fit: [160, 44] });
+    } else {
+      doc.fontSize(22).font('Helvetica-Bold').fillColor(ORANGE).text('eptomart', 45, 22);
+    }
+    doc.fontSize(10).font('Helvetica').fillColor('#94a3b8').text('Seller Payout Statement', 45, 56);
     doc.fontSize(14).font('Helvetica-Bold').fillColor('white')
        .text('SELLER INVOICE', 350, 28, { width: 200, align: 'right' });
     doc.fontSize(8).font('Helvetica').fillColor('#94a3b8')
@@ -111,12 +121,16 @@ const generateSellerPayoutPDF = (order, seller, items) => {
     y += 6;
 
     // Platform fee or bonus indicator
-    if (payout?.isNewSellerBonus) {
+    // Show WAIVED if: explicit bonus flag OR platformFee is 0 (admin override / early orders)
+    const feeWaived = payout?.isNewSellerBonus || platformFee === 0;
+    if (feeWaived) {
       tRow('Platform Commission', '✓ WAIVED', false, GREEN);
-      doc.fontSize(7.5).font('Helvetica').fillColor(GREEN)
-         .text('First 20 orders bonus — No platform fee', 350, y - 2, { width: 120, height: 16 });
-      y += 8;
-    } else if (platformFee > 0) {
+      if (payout?.isNewSellerBonus) {
+        doc.fontSize(7.5).font('Helvetica').fillColor(GREEN)
+           .text('First 20 orders bonus — No platform fee', 350, y - 2, { width: 195, height: 16 });
+        y += 8;
+      }
+    } else {
       tRow(`Platform Commission (${payout?.platformFeeRate || PLATFORM_COMMISSION_PCT}%)`, `- ${fmt(platformFee)}`, false, RED);
     }
 
@@ -186,8 +200,12 @@ const generateAdminSummaryPDF = (order, items, invoice) => {
 
     // Header
     doc.rect(0, 0, 595, 80).fill(DARK);
-    doc.fontSize(22).font('Helvetica-Bold').fillColor(ORANGE).text('eptomart', 45, 22);
-    doc.fontSize(10).font('Helvetica').fillColor('#94a3b8').text('Admin Financial Summary', 45, 52);
+    if (fs.existsSync(LOGO_PATH)) {
+      doc.image(LOGO_PATH, 45, 18, { height: 44, fit: [160, 44] });
+    } else {
+      doc.fontSize(22).font('Helvetica-Bold').fillColor(ORANGE).text('eptomart', 45, 22);
+    }
+    doc.fontSize(10).font('Helvetica').fillColor('#94a3b8').text('Admin Financial Summary', 45, 56);
     doc.fontSize(14).font('Helvetica-Bold').fillColor('white')
        .text('ADMIN INVOICE', 350, 28, { width: 200, align: 'right' });
     doc.fontSize(8).font('Helvetica').fillColor('#94a3b8')

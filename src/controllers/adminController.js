@@ -746,12 +746,25 @@ const recalculatePayout = async (req, res) => {
     let payoutData = await calculateOrderPayout(order);
 
     // ── Apply admin overrides ─────────────────────────────────────────
-    // Override platform fee if explicitly set
+    // Override platform fee if explicitly set by admin
     if (applyPlatformFee === false) {
-      payoutData.platformFee = 0;
+      payoutData.platformFee    = 0;
       payoutData.applyPlatformFee = false;
+      // If admin manually waives the fee and calculator didn't set bonus, mark it
+      if (!payoutData.isNewSellerBonus) {
+        payoutData.adminFeeWaived = true;
+      }
     } else if (applyPlatformFee === true) {
-      payoutData.applyPlatformFee = true;
+      // Admin forcing fee — override bonus
+      payoutData.applyPlatformFee  = true;
+      payoutData.isNewSellerBonus  = false;
+      payoutData.platformFee       = parseFloat(
+        (payoutData.baseAmount * (payoutData.platformFeeRate || 10) / 100).toFixed(2)
+      );
+    }
+    // If isNewSellerBonus was set by calculator, ensure fee is 0
+    if (payoutData.isNewSellerBonus) {
+      payoutData.platformFee = 0;
     }
 
     // Add packing charge (deduction)

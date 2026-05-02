@@ -29,30 +29,31 @@ const generateSellerPayoutPDF = (order, seller, items) => {
     const RED    = '#dc2626';
     const fmt    = n => `Rs. ${(Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
 
-    // Header
-    doc.rect(0, 0, 595, 80).fill(DARK);
-    // Logo image (774×244 px, 3.17:1 ratio — fit within 190×60 at y=10)
+    // Header — 100px tall to give logo room without overlap
+    doc.rect(0, 0, 595, 100).fill(DARK);
+    // Logo (774×244, 3.17:1). Fit within 175×55 box → renders ≈175×55, y=10..65
     if (fs.existsSync(LOGO_PATH)) {
-      doc.image(LOGO_PATH, 45, 10, { fit: [190, 60] });
+      doc.image(LOGO_PATH, 45, 10, { fit: [175, 55] });
     } else {
-      doc.fontSize(22).font('Helvetica-Bold').fillColor(ORANGE).text('eptomart', 45, 22);
+      doc.fontSize(22).font('Helvetica-Bold').fillColor(ORANGE).text('eptomart', 45, 18);
     }
-    doc.fontSize(8).font('Helvetica').fillColor('#94a3b8').text('Seller Payout Statement', 45, 66);
+    // Subtitle sits BELOW the logo (y=70), safely inside the 100px header
+    doc.fontSize(8).font('Helvetica').fillColor('#94a3b8').text('Seller Payout Statement', 45, 72);
     doc.fontSize(14).font('Helvetica-Bold').fillColor('white')
-       .text('SELLER INVOICE', 350, 28, { width: 200, align: 'right' });
+       .text('SELLER INVOICE', 350, 30, { width: 200, align: 'right' });
     doc.fontSize(8).font('Helvetica').fillColor('#94a3b8')
-       .text(`Order: #${order.orderId}  ·  Date: ${new Date(order.createdAt).toLocaleDateString('en-IN')}`, 350, 52, { width: 200, align: 'right' });
+       .text(`Order: #${order.orderId}  ·  Date: ${new Date(order.createdAt).toLocaleDateString('en-IN')}`, 350, 56, { width: 200, align: 'right' });
 
-    // Seller info box
-    doc.rect(45, 100, 505, 70).stroke('#e2e8f0');
-    doc.fontSize(7).font('Helvetica-Bold').fillColor(GRAY).text('SELLER', 55, 110);
-    doc.fontSize(11).font('Helvetica-Bold').fillColor(DARK).text(seller.businessName || 'Seller', 55, 122);
+    // Seller info box — pushed down to y=116 to clear the taller header
+    doc.rect(45, 116, 505, 70).stroke('#e2e8f0');
+    doc.fontSize(7).font('Helvetica-Bold').fillColor(GRAY).text('SELLER', 55, 126);
+    doc.fontSize(11).font('Helvetica-Bold').fillColor(DARK).text(seller.businessName || 'Seller', 55, 138);
     doc.fontSize(8.5).font('Helvetica').fillColor(GRAY)
-       .text(`${seller.address?.street || ''}, ${seller.address?.city || ''}, ${seller.address?.state || ''} — ${seller.address?.pincode || ''}`, 55, 138)
-       .text(`GST: ${seller.gstNumber || 'N/A'}`, 55, 152);
+       .text(`${seller.address?.street || ''}, ${seller.address?.city || ''}, ${seller.address?.state || ''} — ${seller.address?.pincode || ''}`, 55, 154)
+       .text(`GST: ${seller.gstNumber || 'N/A'}`, 55, 168);
 
     // Items table
-    let y = 190;
+    let y = 206;
     doc.rect(45, y, 505, 22).fill(DARK);
     doc.fontSize(8).font('Helvetica-Bold').fillColor('white')
        .text('PRODUCT',       50, y + 7)
@@ -199,13 +200,13 @@ const generateAdminSummaryPDF = (order, items, invoice) => {
     const fmt    = n => `Rs. ${(Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
 
     // Header
-    doc.rect(0, 0, 595, 80).fill(DARK);
+    doc.rect(0, 0, 595, 100).fill(DARK);
     if (fs.existsSync(LOGO_PATH)) {
-      doc.image(LOGO_PATH, 45, 10, { fit: [190, 60] });
+      doc.image(LOGO_PATH, 45, 10, { fit: [175, 55] });
     } else {
-      doc.fontSize(22).font('Helvetica-Bold').fillColor(ORANGE).text('eptomart', 45, 22);
+      doc.fontSize(22).font('Helvetica-Bold').fillColor(ORANGE).text('eptomart', 45, 18);
     }
-    doc.fontSize(8).font('Helvetica').fillColor('#94a3b8').text('Admin Financial Summary', 45, 66);
+    doc.fontSize(8).font('Helvetica').fillColor('#94a3b8').text('Admin Financial Summary', 45, 72);
     doc.fontSize(14).font('Helvetica-Bold').fillColor('white')
        .text('ADMIN INVOICE', 350, 28, { width: 200, align: 'right' });
     doc.fontSize(8).font('Helvetica').fillColor('#94a3b8')

@@ -306,22 +306,49 @@ const getSellerStats = async (req, res) => {
   const Product = require('../models/Product');
   const Order   = require('../models/Order');
 
-  const [productStats, orderStats] = await Promise.all([
+  // Get all product IDs for this seller (needed for order queries)
+  const sellerProducts = await Product.find({ seller: seller._id }).select('_id').lean();
+  const productIds = sellerProducts.map(p => p._id);
+
+  const [productStats, orderStats, deliveredCount] = await Promise.all([
     Product.aggregate([
       { $match: { seller: seller._id } },
       { $group: { _id: '$approvalStatus', count: { $sum: 1 } } },
     ]),
     Order.aggregate([
-      { $match: { 'sellerBreakdown.seller': seller._id } },
+      { $match: { 'items.product': { $in: productIds } } },
       { $group: { _id: null, totalOrders: { $sum: 1 }, totalRevenue: { $sum: '$pricing.total' } } },
     ]),
+    // Count delivered orders — used to calculate first-20-orders bonus progress
+    Order.countDocuments({
+      'items.product': { $in: productIds },
+      orderStatus: 'delivered',
+    }),
   ]);
 
   const products = {};
   productStats.forEach(s => { products[s._id] = s.count; });
   const orders = orderStats[0] || { totalOrders: 0, totalRevenue: 0 };
 
-  res.json({ success: true, stats: { products, orders } });
+  // Bonus info: first 20 delivered orders have no platform fee
+  const BONUS_LIMIT = 20;
+  const bonusOrdersUsed      = Math.min(deliveredCount, BONUS_LIMIT);
+  const bonusOrdersRemaining = Math.max(0, BONUS_LIMIT - deliveredCount);
+  const bonusActive          = deliveredCount < BONUS_LIMIT;
+
+  res.json({
+    success: true,
+    stats: {
+      products,
+      orders,
+      bonus: {
+        active:         bonusActive,
+        ordersUsed:     bonusOrdersUsed,
+        ordersRemaining:bonusOrdersRemaining,
+        limit:          BONUS_LIMIT,
+      },
+    },
+  });
 };
 
 // ── Seller: list own pickup addresses ────────────────────

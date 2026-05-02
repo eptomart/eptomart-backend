@@ -61,23 +61,30 @@ const calculateOrderPayout = async (order) => {
     const baseAmount = subtotalExGst;
 
     // ── 3. Check if seller qualifies for first 20 orders bonus (no platform fee) ──
-    let isNewSellerBonus = false;
+    // Rule: every seller's first 20 delivered orders are fee-free.
+    // If seller can't be resolved (data issue), default to bonus = true (never charge in doubt).
+    let isNewSellerBonus = true; // safe default — no charge if seller lookup fails
     if (sellerDoc?._id) {
       // Get all product IDs for this seller
       const sellerProducts = await Product.find({ seller: sellerDoc._id }).select('_id').lean();
       const productIds = sellerProducts.map(p => p._id);
 
-      // Count delivered orders for this seller (before this order)
+      // Count delivered orders for this seller (excluding current order)
       const deliveredCount = await Order.countDocuments({
         'items.product': { $in: productIds },
         orderStatus: 'delivered',
-        _id: { $ne: order._id }, // Exclude current order
+        _id: { $ne: order._id },
       });
 
-      // If less than 20 delivered orders, apply bonus
-      if (deliveredCount < 20) {
-        isNewSellerBonus = true;
-      }
+      // Bonus applies for first 20 delivered orders (orders 1–20 inclusive)
+      isNewSellerBonus = deliveredCount < 20;
+
+      console.log(
+        `[Payout] Seller ${sellerDoc.businessName} — delivered orders so far: ${deliveredCount}` +
+        ` | bonus: ${isNewSellerBonus ? 'YES (fee waived)' : 'NO (fee charged)'}`
+      );
+    } else {
+      console.warn(`[Payout] Seller not found for order ${order.orderId} — applying new-seller bonus by default (no charge)`);
     }
 
     // ── 4. Platform fee on base (ex-GST) amount ──────────────────────

@@ -266,7 +266,17 @@ const placeOrder = async (req, res) => {
       total:         order.pricing.total,
       paymentMethod: order.paymentMethod,
       items:         order.items,
-    }).catch(() => {});
+    }).then(result => {
+      if (!result?.success) {
+        console.error(`[WhatsApp] Order placed message failed for ${customerPhone}:`, result?.error || 'unknown error');
+      } else {
+        console.log(`[WhatsApp] Order placed message sent to ${customerPhone} for order ${order.orderId}`);
+      }
+    }).catch(err => {
+      console.error(`[WhatsApp] Order placed message exception for ${customerPhone}:`, err.message);
+    });
+  } else {
+    console.warn(`[WhatsApp] No phone number found for order ${order.orderId} — skipping WhatsApp`);
   }
 
   // WhatsApp alert to admin

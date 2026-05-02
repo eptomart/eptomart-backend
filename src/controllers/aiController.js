@@ -116,8 +116,12 @@ const chat = async (req, res) => {
     });
     res.json({ success: true, reply: result.text });
   } catch (err) {
-    console.error('[AI Chat]', err.message);
-    res.status(503).json({ success: false, message: 'AI assistant is temporarily unavailable. Please try again shortly.' });
+    console.error('[AI Chat] ERROR:', err.message);
+    res.status(503).json({
+      success: false,
+      message: 'AI assistant is temporarily unavailable. Please try again shortly.',
+      debug: process.env.NODE_ENV !== 'production' ? err.message : undefined,
+    });
   }
 };
 

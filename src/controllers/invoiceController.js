@@ -602,7 +602,35 @@ const downloadSellerInvoice = async (req, res) => {
 
     if (!myItems.length) return res.status(403).json({ success: false, message: 'No items in this order belong to your store' });
 
-    const buffer = await generateSellerPayoutPDF(order, seller, myItems);
+    // ── Live bonus re-check ───────────────────────────────────────────
+    // Fixes old orders saved before isNewSellerBonus logic existed.
+    // Count how many delivered orders this seller had BEFORE this order.
+    const Product = require('../models/Product');
+    const sellerProducts = await Product.find({ seller: sellerDocId }).select('_id').lean();
+    const productIds     = sellerProducts.map(p => p._id);
+    const deliveredBefore = await Order.countDocuments({
+      'items.product': { $in: productIds },
+      orderStatus: 'delivered',
+      _id: { $ne: order._id },
+    });
+    const qualifiesForBonus = deliveredBefore < 20;
+
+    // Clone payout and apply live bonus status — doesn't write to DB
+    const livePayout = { ...(order.payout || {}) };
+    if (qualifiesForBonus) {
+      livePayout.isNewSellerBonus = true;
+      livePayout.platformFee      = 0;
+      livePayout.applyPlatformFee = false;
+      // Recalculate net payout with fee zeroed
+      const base     = livePayout.baseAmount    || 0;
+      const shipping = livePayout.shippingCost  || 0;
+      const packing  = livePayout.packingCharge || 0;
+      const custom   = livePayout.customDeduction || 0;
+      livePayout.netPayout = Math.max(0, base - shipping - packing - custom);
+    }
+    const orderForPDF = { ...order, payout: livePayout };
+
+    const buffer = await generateSellerPayoutPDF(orderForPDF, seller, myItems);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="seller-invoice-${order.orderId}.pdf"`);
     return res.end(buffer);

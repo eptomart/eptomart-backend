@@ -38,7 +38,11 @@ const calculateOrderPayout = async (order) => {
     let sellerDoc = null;
     let platformFeeRate = DEFAULT_PLATFORM_FEE_RATE;
 
-    const firstProduct = await Product.findById(order.items?.[0]?.product)
+    // Support both raw ObjectId and populated product object (lean populate sends a plain object)
+    const rawProduct = order.items?.[0]?.product;
+    const productId  = rawProduct?._id ?? rawProduct; // if populated, use ._id; if ObjectId, use as-is
+
+    const firstProduct = await Product.findById(productId)
       .populate('seller', 'defaultPlatformMargin businessName settlement')
       .lean();
 

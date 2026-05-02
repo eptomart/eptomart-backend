@@ -746,25 +746,22 @@ const recalculatePayout = async (req, res) => {
     let payoutData = await calculateOrderPayout(order);
 
     // ── Apply admin overrides ─────────────────────────────────────────
-    // Override platform fee if explicitly set by admin
-    if (applyPlatformFee === false) {
-      payoutData.platformFee    = 0;
+    // NEW-SELLER BONUS ALWAYS WINS: if calculator says bonus applies, fee is always 0
+    // regardless of what the admin checkbox says (prevents accidental double-charging)
+    if (payoutData.isNewSellerBonus) {
+      payoutData.platformFee      = 0;
       payoutData.applyPlatformFee = false;
-      // If admin manually waives the fee and calculator didn't set bonus, mark it
-      if (!payoutData.isNewSellerBonus) {
-        payoutData.adminFeeWaived = true;
-      }
+    } else if (applyPlatformFee === false) {
+      // Admin manually waiving fee for a non-bonus seller
+      payoutData.platformFee      = 0;
+      payoutData.applyPlatformFee = false;
+      payoutData.adminFeeWaived   = true;
     } else if (applyPlatformFee === true) {
-      // Admin forcing fee — override bonus
-      payoutData.applyPlatformFee  = true;
-      payoutData.isNewSellerBonus  = false;
-      payoutData.platformFee       = parseFloat(
+      // Admin explicitly applying fee
+      payoutData.applyPlatformFee = true;
+      payoutData.platformFee      = parseFloat(
         (payoutData.baseAmount * (payoutData.platformFeeRate || 10) / 100).toFixed(2)
       );
-    }
-    // If isNewSellerBonus was set by calculator, ensure fee is 0
-    if (payoutData.isNewSellerBonus) {
-      payoutData.platformFee = 0;
     }
 
     // Add packing charge (deduction)

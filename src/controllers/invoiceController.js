@@ -31,13 +31,13 @@ const generateSellerPayoutPDF = (order, seller, items) => {
 
     // Header
     doc.rect(0, 0, 595, 80).fill(DARK);
-    // Logo image (fallback to text if file missing)
+    // Logo image (774×244 px, 3.17:1 ratio — fit within 190×60 at y=10)
     if (fs.existsSync(LOGO_PATH)) {
-      doc.image(LOGO_PATH, 45, 18, { height: 44, fit: [160, 44] });
+      doc.image(LOGO_PATH, 45, 10, { fit: [190, 60] });
     } else {
       doc.fontSize(22).font('Helvetica-Bold').fillColor(ORANGE).text('eptomart', 45, 22);
     }
-    doc.fontSize(10).font('Helvetica').fillColor('#94a3b8').text('Seller Payout Statement', 45, 56);
+    doc.fontSize(8).font('Helvetica').fillColor('#94a3b8').text('Seller Payout Statement', 45, 66);
     doc.fontSize(14).font('Helvetica-Bold').fillColor('white')
        .text('SELLER INVOICE', 350, 28, { width: 200, align: 'right' });
     doc.fontSize(8).font('Helvetica').fillColor('#94a3b8')
@@ -201,11 +201,11 @@ const generateAdminSummaryPDF = (order, items, invoice) => {
     // Header
     doc.rect(0, 0, 595, 80).fill(DARK);
     if (fs.existsSync(LOGO_PATH)) {
-      doc.image(LOGO_PATH, 45, 18, { height: 44, fit: [160, 44] });
+      doc.image(LOGO_PATH, 45, 10, { fit: [190, 60] });
     } else {
       doc.fontSize(22).font('Helvetica-Bold').fillColor(ORANGE).text('eptomart', 45, 22);
     }
-    doc.fontSize(10).font('Helvetica').fillColor('#94a3b8').text('Admin Financial Summary', 45, 56);
+    doc.fontSize(8).font('Helvetica').fillColor('#94a3b8').text('Admin Financial Summary', 45, 66);
     doc.fontSize(14).font('Helvetica-Bold').fillColor('white')
        .text('ADMIN INVOICE', 350, 28, { width: 200, align: 'right' });
     doc.fontSize(8).font('Helvetica').fillColor('#94a3b8')

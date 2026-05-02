@@ -18,35 +18,30 @@ const _rateOk = (ip) => {
 };
 
 // ── Shopping Assistant system prompt ────────────────────────────────
-const SHOPPING_SYSTEM = `You are Priya, Eptomart's personal shopping assistant. Eptomart is a premium Indian e-commerce platform with quality, organic, and curated products.
+const SHOPPING_SYSTEM = `You are Priya, Eptomart's shopping assistant.
 
-TONE: Warm, confident, and conversational — like a knowledgeable friend who shops here regularly. Never robotic. Never use bullet points or numbered lists. Write in flowing natural sentences like a real person would talk.
+RULES — follow strictly:
+1. ONLY talk about products from the catalog context provided. Never invent products, prices, or policies.
+2. When products are available: respond with one warm sentence then list each product as "• Product Name — ₹Price". Nothing more.
+3. When no products match: say in one sentence that we don't have it yet and invite them to check back. No padding, no suggestions, no generic advice.
+4. NEVER mention shipping charges, return policies, delivery times, or payment methods unless the user specifically asks about them.
+5. Never write more than 3 sentences total. No long stories.
+6. No bullet points for explanations — only for the product list itself.
+7. If the user asks about something unrelated to shopping (e.g. how to cook), politely say you're here to help with product recommendations only.
+8. Respond in the same language the user writes in (English, Hindi, or Tamil).
 
-CRITICAL RULES:
-- Never ask more than ONE question at a time, and only ask if truly essential
-- Jump straight to recommendations — don't interrogate the user first
-- If products are in the context below, mention them by name and price naturally in your response
-- If no matching products are found, say so honestly and suggest they browse that category
-- Never make up product names or prices
-- Keep replies under 80 words unless the user asks for details
-- Address the user by first name if you know it
-- Respond in the same language the user writes in (English, Hindi, or Tamil)
+EXAMPLE — products exist:
+User: "What do you have for biryani?"
+Priya: "Here's what we have for your biryani! 🍛
+• Kohinoor Basmati Rice 1kg — ₹180
+• Eastern Biryani Masala 50g — ₹55
+• Pure Cow Ghee 500ml — ₹320"
 
-EPTOMART FACTS (mention naturally when relevant):
-- Free shipping above ₹499, otherwise ₹60
-- UPI, cards, wallets, and Cash on Delivery accepted
-- 7-day returns on most products
-- Delivery in 3–7 business days
-- All sellers are verified
+EXAMPLE — no products:
+User: "Do you have protein bars?"
+Priya: "We don't carry protein bars right now — check back soon, we're adding new products regularly!"
 
-STYLE EXAMPLES (follow this tone):
-User: "I need something for dinner tonight"
-You: "Ooh perfect timing! We have some great ready-to-cook options. [mention products if available]. Want me to help you build the full meal?"
-
-User: "What's good for weight loss?"
-You: "We have a few solid picks! [mention products]. These are popular with customers watching their diet. Shall I tell you more about any of these?"
-
-Product catalog context will be injected below. Use it naturally — don't list products mechanically, weave them into conversation.`;
+Product catalog will be injected below. Use ONLY those products.`;
 
 // ── Seller product description system prompt ─────────────────────────
 const DESCRIPTION_SYSTEM = `You are an expert e-commerce copywriter for Eptomart, a premium Indian marketplace.
@@ -87,25 +82,49 @@ const chat = async (req, res) => {
   const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content || '';
   let productContext = '';
   try {
-    const searchWords = lastUserMsg.replace(/[^\w\s]/g, '').split(/\s+/).slice(0, 4).join(' ');
-    const products = await Product.find({
-      approvalStatus: 'approved',
-      isActive: true,
-      $or: [
-        { name:        { $regex: searchWords, $options: 'i' } },
-        { description: { $regex: searchWords, $options: 'i' } },
-        { category:    categoryHint ? { $regex: categoryHint, $options: 'i' } : undefined },
-      ].filter(Boolean),
-    })
-      .limit(5)
-      .select('name discountPrice price category description gstRate stock')
-      .lean();
+    // Strip stop words to extract meaningful search keywords
+    const STOP_WORDS = new Set([
+      'what','which','do','you','have','for','the','a','an','i','me','my','your',
+      'can','could','please','want','need','looking','show','tell','about','any',
+      'some','get','find','suggest','recommend','is','are','and','or','to','of',
+      'on','in','at','with','how','best','good','top','list','products','product',
+      'items','item','buy','purchase','something','things','stuff','us','give',
+    ]);
+
+    const keywords = lastUserMsg
+      .replace(/[^\w\s]/g, '')
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(w => w.length > 2 && !STOP_WORDS.has(w));
+
+    let products = [];
+    if (keywords.length > 0) {
+      // Search each keyword separately so partial matches work
+      const orClauses = keywords.flatMap(kw => [
+        { name:        { $regex: kw, $options: 'i' } },
+        { description: { $regex: kw, $options: 'i' } },
+        { tags:        { $regex: kw, $options: 'i' } },
+      ]);
+      if (categoryHint) orClauses.push({ category: { $regex: categoryHint, $options: 'i' } });
+
+      products = await Product.find({
+        approvalStatus: 'approved',
+        isActive: true,
+        $or: orClauses,
+      })
+        .limit(6)
+        .select('name discountPrice price category description stock')
+        .lean();
+    }
 
     if (products.length) {
-      productContext = '\n\nRelevant products currently on Eptomart:\n' +
+      productContext = '\n\nMatching products currently on Eptomart:\n' +
         products.map(p =>
-          `• ${p.name} — ₹${p.discountPrice || p.price}${p.stock === 0 ? ' (Out of stock)' : ''}`
-        ).join('\n');
+          `• ${p.name} — ₹${p.discountPrice || p.price}${p.stock === 0 ? ' (Out of stock)' : ''} [${p.category}]`
+        ).join('\n') +
+        '\n\nOnly recommend products listed above. Do not suggest anything else.';
+    } else {
+      productContext = '\n\nNo matching products found in the catalog right now. Tell the customer honestly and briefly that we don\'t carry that specific item yet, and invite them to check back or explore related categories. Do NOT make up product names or pretend products exist.';
     }
   } catch (_) {}
 

@@ -21,27 +21,30 @@ const _rateOk = (ip) => {
 const SHOPPING_SYSTEM = `You are Zya, Eptomart's shopping assistant.
 
 RULES — follow strictly:
-1. ONLY talk about products from the catalog context provided. Never invent products, prices, or policies.
-2. When products are available: respond with one warm sentence then list each product as "• Product Name — ₹Price". Nothing more.
-3. When no products match: say in one sentence that we don't have it yet and invite them to check back. No padding, no suggestions, no generic advice.
-4. NEVER mention shipping charges, return policies, delivery times, or payment methods unless the user specifically asks about them.
-5. Never write more than 3 sentences total. No long stories.
-6. No bullet points for explanations — only for the product list itself.
-7. If the user asks about something unrelated to shopping (e.g. how to cook), politely say you're here to help with product recommendations only.
+1. A product list will be provided below. From that list, show ONLY the products that are directly and genuinely relevant to what the user asked. Skip anything that doesn't match their intent — even if it's in the list.
+2. When relevant products exist: one short warm sentence, then list each as "• Product Name — ₹Price". Nothing else.
+3. When no relevant products exist (either none provided, or none actually match): one honest sentence saying we don't have it yet. No padding, no generic advice, no suggestions.
+4. NEVER mention shipping, returns, delivery times, or payment unless the user specifically asks.
+5. Maximum 3 sentences total. Be crisp.
+6. Never make up products or prices.
+7. If asked something unrelated to shopping, say in one sentence that you're here for product recommendations only.
 8. Respond in the same language the user writes in (English, Hindi, or Tamil).
 
-EXAMPLE — products exist:
+RELEVANCE FILTER — use your judgment:
+- User asks "biryani" → show rice, masala, spices, ghee. NOT soap or shampoo.
+- User asks "weight loss" → show health supplements, oats, seeds, herbal teas. NOT cleaning products.
+- User asks "baby food" → show infant/toddler products. NOT adult snacks.
+- User asks "skin care" → show creams, face wash, serums. NOT cooking oil (even if it's coconut oil).
+- If a product in the list is unrelated to the user's query — skip it entirely.
+
+EXAMPLE:
 User: "What do you have for biryani?"
-Zya: "Here's what we have for your biryani! 🍛
+Zya: "Here's what you need! 🍛
 • Kohinoor Basmati Rice 1kg — ₹180
 • Eastern Biryani Masala 50g — ₹55
 • Pure Cow Ghee 500ml — ₹320"
 
-EXAMPLE — no products:
-User: "Do you have protein bars?"
-Zya: "We don't carry protein bars right now — check back soon, we're adding new products regularly!"
-
-Product catalog will be injected below. Use ONLY those products.`;
+Product catalog injected below — filter it by relevance before responding.`;
 
 // ── Seller product description system prompt ─────────────────────────
 const DESCRIPTION_SYSTEM = `You are an expert e-commerce copywriter for Eptomart, a premium Indian marketplace.
@@ -82,24 +85,59 @@ const chat = async (req, res) => {
   const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content || '';
   let productContext = '';
   try {
-    // Strip stop words to extract meaningful search keywords
+    // Stop words — stripped before keyword extraction
     const STOP_WORDS = new Set([
       'what','which','do','you','have','for','the','a','an','i','me','my','your',
       'can','could','please','want','need','looking','show','tell','about','any',
       'some','get','find','suggest','recommend','is','are','and','or','to','of',
       'on','in','at','with','how','best','good','top','list','products','product',
-      'items','item','buy','purchase','something','things','stuff','us','give',
+      'items','item','buy','purchase','something','things','stuff','us','give','cook',
+      'making','make','prepare','need','use','using',
     ]);
 
-    const keywords = lastUserMsg
+    // Query expansion — maps a dish/topic to relevant product keywords
+    const EXPAND = {
+      biryani:    ['biryani','basmati','rice','masala','spice','ghee','saffron','cardamom','clove','bay','cinnamon','star anise','mace'],
+      curry:      ['curry','masala','turmeric','cumin','coriander','chilli','spice','garam'],
+      dosa:       ['dosa','rice flour','urad dal','idli','batter','fenugreek'],
+      sambar:     ['sambar','toor dal','tamarind','mustard','curry leaf','drumstick'],
+      cake:       ['cake','flour','baking powder','vanilla','sugar','butter','cocoa','chocolate'],
+      bread:      ['bread','yeast','flour','wheat','atta','whole wheat'],
+      coffee:     ['coffee','filter coffee','instant coffee','chicory','creamer'],
+      tea:        ['tea','green tea','chai','masala tea','ginger','cardamom','herbal'],
+      weight:     ['weight loss','protein','fibre','oats','quinoa','flaxseed','chia','detox','green tea','herbal'],
+      protein:    ['protein','whey','soy','pea protein','supplement','nuts','seeds'],
+      organic:    ['organic','natural','chemical free','pure','cold pressed'],
+      baby:       ['baby','infant','toddler','child','kids','cereal','puree'],
+      skin:       ['skin','face','cream','lotion','moisturizer','vitamin c','neem','turmeric'],
+      hair:       ['hair','shampoo','conditioner','oil','amla','bhringraj','coconut'],
+      pickle:     ['pickle','achar','mango pickle','lime pickle','mixed pickle'],
+      ghee:       ['ghee','clarified butter','cow ghee','desi ghee'],
+      honey:      ['honey','raw honey','organic honey','wild honey'],
+      oil:        ['oil','coconut oil','sesame oil','mustard oil','groundnut oil','olive oil'],
+      dal:        ['dal','lentil','toor','moong','masoor','chana','split'],
+      rice:       ['rice','basmati','sona masoori','brown rice','red rice','parboiled'],
+      flour:      ['flour','atta','wheat','maida','besan','ragi','jowar','bajra','millet'],
+      spice:      ['spice','masala','pepper','turmeric','cumin','coriander','chilli','cardamom','clove','cinnamon'],
+    };
+
+    const msgLower = lastUserMsg.toLowerCase();
+    const rawKeywords = msgLower
       .replace(/[^\w\s]/g, '')
-      .toLowerCase()
       .split(/\s+/)
       .filter(w => w.length > 2 && !STOP_WORDS.has(w));
 
+    // Expand keywords using the map
+    const expandedSet = new Set(rawKeywords);
+    for (const [trigger, synonyms] of Object.entries(EXPAND)) {
+      if (msgLower.includes(trigger)) {
+        synonyms.forEach(s => expandedSet.add(s));
+      }
+    }
+    const keywords = [...expandedSet];
+
     let products = [];
     if (keywords.length > 0) {
-      // Search each keyword separately so partial matches work
       const orClauses = keywords.flatMap(kw => [
         { name:        { $regex: kw, $options: 'i' } },
         { description: { $regex: kw, $options: 'i' } },

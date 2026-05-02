@@ -6,7 +6,7 @@
 const https = require('https');
 
 const ANTHROPIC_VERSION = '2023-06-01';
-const DEFAULT_MODEL     = 'claude-haiku-4-5'; // fast + affordable for real-time UX
+const DEFAULT_MODEL     = 'claude-haiku-4-5-20251001'; // fast + affordable for real-time UX
 const DEFAULT_MAX_TOKENS = 1024;
 
 /**

@@ -189,17 +189,20 @@ const placeOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: `Insufficient stock for "${product.name}"` });
     }
 
-    const price       = product.discountPrice || product.price;
+    // Use variant price if sent from client, otherwise fall back to product base price
+    const basePrice   = product.discountPrice || product.price;
+    const price       = (item.price && item.price > 0) ? item.price : basePrice;
     const gstRate     = product.gstRate || 18;
     const priceExGst  = extractBasePrice(price, gstRate);
     const sellerState = product.seller?.address?.state || business.state;
 
     validatedItems.push({
-      product:  product._id,
-      name:     product.name,
-      image:    product.images?.[0]?.url || '',
+      product:      product._id,
+      name:         product.name,
+      image:        product.images?.[0]?.url || '',
       price,
-      quantity: item.quantity,
+      quantity:     item.quantity,
+      variantLabel: item.variantLabel || undefined,
     });
 
     gstLineItems.push({ unitPriceExGst: priceExGst, gstRate, quantity: item.quantity, sellerState });
@@ -463,7 +466,11 @@ const getSellerOrders = async (req, res) => {
   const productIds = sellerProducts.map(p => p._id);
   if (productIds.length === 0) return res.json({ success: true, orders: [], total: 0 });
 
-  const filter = { 'items.product': { $in: productIds } };
+  // Hide unpaid orders from sellers — only show paid or COD orders
+  const filter = {
+    'items.product': { $in: productIds },
+    $or: [{ paymentStatus: 'paid' }, { paymentMethod: 'cod' }],
+  };
 
   const [orders, total] = await Promise.all([
     Order.find(filter)

@@ -207,7 +207,10 @@ const deleteUser = async (req, res) => {
  */
 const getAllOrders = async (req, res) => {
   const { page = 1, limit = 20, status, paymentStatus, seller: sellerFilter } = req.query;
-  const filter = {};
+  // Exclude unpaid online orders from admin view (buyer can still see their own)
+  const filter = {
+    $or: [{ paymentStatus: 'paid' }, { paymentMethod: 'cod' }],
+  };
   if (status) filter.orderStatus = status;
   if (paymentStatus) filter.paymentStatus = paymentStatus;
 

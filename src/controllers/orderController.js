@@ -762,11 +762,50 @@ const uploadPackageImages = async (req, res) => {
   });
 };
 
+// ── GET /api/orders/pending-payments ──────────────────────
+const getPendingPaymentOrders = async (req, res) => {
+  const { page = 1, limit = 20 } = req.query;
+  const sellerDocId = req.user.sellerProfile || null;
+  if (!sellerDocId) return res.json({ success: true, orders: [], total: 0 });
+
+  // Find all product IDs belonging to this seller
+  const sellerProducts = await Product.find({ seller: sellerDocId }).select('_id').lean();
+  const productIds = sellerProducts.map(p => p._id);
+  if (productIds.length === 0) return res.json({ success: true, orders: [], total: 0 });
+
+  // Filter orders: payment not paid AND payment method is not COD
+  const filter = {
+    'items.product': { $in: productIds },
+    paymentStatus: { $ne: 'paid' },
+    paymentMethod: { $ne: 'cod' },
+  };
+
+  const [orders, total] = await Promise.all([
+    Order.find(filter)
+      .populate('user', 'name email phone')
+      .populate('items.product', 'name images')
+      .sort('-createdAt')
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit))
+      .lean(),
+    Order.countDocuments(filter),
+  ]);
+
+  // Keep only this seller's items in each order
+  const productIdSet = new Set(productIds.map(p => p.toString()));
+  const result = orders.map(o => ({
+    ...o,
+    items: o.items.filter(item => productIdSet.has(item.product._id.toString())),
+  }));
+
+  res.json({ success: true, orders: result, total, totalPages: Math.ceil(total / Number(limit)) });
+};
+
 // Export processRefund so adminController can reuse it
 const processRefundForOrder = processRefund;
 
 module.exports = {
   placeOrder, getMyOrders, getOrder, cancelOrder, createInvoice,
   notifySeller, getSellerOrders, sellerConfirmOrder, processRefundForOrder,
-  uploadPackageImages,
+  uploadPackageImages, getPendingPaymentOrders,
 };

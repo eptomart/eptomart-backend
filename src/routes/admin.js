@@ -9,6 +9,7 @@ const {
   getShiprocketCharge, recalculatePayout,
   getSellerOrders, markSellerOrdersSettled,
   setAdminShippingCharge, uploadShiprocketBill,
+  getPendingPaymentOrders,
 } = require('../controllers/adminController');
 const { uploadBill } = require('../config/cloudinary');
 const { acknowledgePickup } = require('../controllers/sellerController');
@@ -16,6 +17,7 @@ const { protectAdmin, protectSuperAdmin, requirePermission } = require('../middl
 
 // ── Admin + SuperAdmin routes — gated by RBAC permission ──
 router.get('/orders',                              ...protectAdmin, requirePermission('orders'), getAllOrders);
+router.get('/orders/pending-payments',             ...protectAdmin, requirePermission('orders'), getPendingPaymentOrders);
 router.put('/orders/:id/status',                   ...protectAdmin, requirePermission('orders'), updateOrderStatus);
 router.post('/orders/:id/ship',                    ...protectAdmin, requirePermission('orders'), createManualShipment);
 router.post('/orders/:id/refresh-awb',             ...protectAdmin, requirePermission('orders'), refreshShiprocketAWB);

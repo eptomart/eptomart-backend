@@ -3,6 +3,7 @@ const router  = express.Router();
 const {
   placeOrder, getMyOrders, getOrder, cancelOrder,
   getSellerOrders, sellerConfirmOrder, uploadPackageImages,
+  getPendingPaymentOrders,
 } = require('../controllers/orderController');
 const { protect }         = require('../middleware/auth');
 const { uploadPackaging } = require('../config/cloudinary');
@@ -10,6 +11,7 @@ const { uploadPackaging } = require('../config/cloudinary');
 router.post('/',                     protect, placeOrder);
 router.get('/',                      protect, getMyOrders);
 router.get('/seller/mine',           protect, getSellerOrders);         // before /:id
+router.get('/pending-payments',      protect, getPendingPaymentOrders);  // before /:id
 router.get('/:id',                   protect, getOrder);
 router.put('/:id/cancel',            protect, cancelOrder);
 router.patch('/:id/seller-confirm',  protect, sellerConfirmOrder);

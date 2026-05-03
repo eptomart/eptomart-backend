@@ -1045,6 +1045,30 @@ const uploadShiprocketBill = async (req, res) => {
   }
 };
 
+// ── GET /api/admin/orders/pending-payments ────────────────
+const getPendingPaymentOrders = async (req, res) => {
+  const { page = 1, limit = 20 } = req.query;
+
+  // Filter orders: payment not paid AND payment method is not COD
+  const filter = {
+    paymentStatus: { $ne: 'paid' },
+    paymentMethod: { $ne: 'cod' },
+  };
+
+  const [orders, total] = await Promise.all([
+    Order.find(filter)
+      .populate('user', 'name email phone')
+      .populate('items.product', 'name images')
+      .sort('-createdAt')
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit))
+      .lean(),
+    Order.countDocuments(filter),
+  ]);
+
+  res.json({ success: true, orders, total, totalPages: Math.ceil(total / Number(limit)) });
+};
+
 module.exports = {
   getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, updateUser, deleteUser,
   getAllOrders, updateOrderStatus, adminCancelWithRefund,
@@ -1053,4 +1077,5 @@ module.exports = {
   getShiprocketCharge, recalculatePayout,
   getSellerOrders, markSellerOrdersSettled,
   setAdminShippingCharge, uploadShiprocketBill,
+  getPendingPaymentOrders,
 };

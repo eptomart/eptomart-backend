@@ -211,12 +211,13 @@ const placeOrder = async (req, res) => {
   // GST calculation
   const gst = calcOrderGst(gstLineItems, business.state, buyerState);
 
-  // Shipping: use the Shiprocket-calculated rate sent by frontend.
-  // Never fall back to a hardcoded value — if no rate provided, shipping = 0
-  // (order should not be reachable without shipping being calculated in checkout).
-  const shipping = (typeof clientShipping === 'number' && clientShipping >= 0)
-    ? clientShipping
-    : 0;
+  // Free shipping threshold — always override if cart total >= ₹1499
+  const FREE_SHIPPING_THRESHOLD = 1499;
+  const shipping = gst.grandTotal >= FREE_SHIPPING_THRESHOLD
+    ? 0
+    : (typeof clientShipping === 'number' && clientShipping >= 0)
+      ? clientShipping
+      : 0;
 
   const total = gst.grandTotal + shipping;
 

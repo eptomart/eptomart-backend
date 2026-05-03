@@ -27,7 +27,8 @@ router.get('/cod-check', async (req, res) => {
       return res.json({ success: true, codAvailable: true, edd: null, note: 'Estimate based on location' });
     }
 
-    const totalWeight = Number(weight) || 0.5;
+    const totalWeight       = Number(weight) || 0.5;
+    const DEFAULT_RATE      = Number(process.env.DEFAULT_SHIPPING_RATE) || 80; // flat fallback
 
     const data = await shiprocket.getServiceability({
       pickupPincode:   pickupPin,
@@ -38,26 +39,24 @@ router.get('/cod-check', async (req, res) => {
 
     const couriers = data?.data?.available_courier_companies || [];
 
-    // ── Surface couriers only (cheapest mode) ─────────────
-    // Shiprocket marks surface couriers with is_surface=1 or courier_type containing 'Surface'
+    // Prefer surface couriers (cheapest); fall back to all if none found
     const surfaceCouriers = couriers.filter(c =>
-      c.is_surface === 1 ||
+      c.is_surface === 1 || c.is_surface === true ||
       (c.courier_type || '').toLowerCase().includes('surface') ||
       (c.courier_name || '').toLowerCase().includes('surface')
     );
+    const eligible    = surfaceCouriers.length > 0 ? surfaceCouriers : couriers;
+    const codCouriers = eligible.filter(c => c.cod === 1);
+    const pool        = codCouriers.length > 0 ? codCouriers : eligible;
 
-    // Fall back to all couriers if no surface ones available for this route
-    const eligible = surfaceCouriers.length > 0 ? surfaceCouriers : couriers;
+    // Cheapest available with ETD; fall back to cheapest overall
+    const sorted  = pool.filter(c => c.etd).sort((a, b) => (a.rate ?? 9999) - (b.rate ?? 9999));
+    const display = sorted[0] || pool[0] || null;
 
-    const codEligible    = eligible.filter(c => c.cod === 1);
-    const usePool        = codEligible.length > 0 ? codEligible : eligible;
-
-    // Pick cheapest with ETD
-    const sorted         = usePool.filter(c => c.etd).sort((a, b) => (a.rate ?? 9999) - (b.rate ?? 9999));
-    const display        = sorted[0] || usePool[0] || null;
-
-    const allRates = eligible.map(c => c.rate).filter(r => r != null);
-    const minRate  = allRates.length ? Math.min(...allRates) : null;
+    const allRates = eligible.map(c => c.rate).filter(r => r != null && r >= 0);
+    // Use minimum available rate; if none returned use flat default
+    const minRate  = allRates.length ? Math.min(...allRates) : DEFAULT_RATE;
+    const dispRate = display?.rate != null ? display.rate : minRate;
 
     res.json({
       success:         true,
@@ -66,13 +65,18 @@ router.get('/cod-check', async (req, res) => {
       edd:             display?.etd || null,
       eddDays:         display?.estimated_delivery_days || null,
       courierName:     display?.courier_name || null,
-      shippingRate:    display?.rate != null ? display.rate : null,  // ₹ — actual courier charge (0 is valid)
-      minShippingRate: minRate != null ? minRate : null,  // cheapest available courier (0 is valid)
+      shippingRate:    dispRate,      // ₹ — selected courier rate (never null)
+      minShippingRate: minRate,       // ₹ — cheapest available (never null)
     });
   } catch (err) {
     console.error('[COD Check] Shiprocket serviceability failed:', err.message);
-    // Don't block checkout — return graceful fallback
-    res.json({ success: true, codAvailable: true, edd: null, note: 'Could not verify serviceability' });
+    const DEFAULT_RATE = Number(process.env.DEFAULT_SHIPPING_RATE) || 80;
+    // Return flat default — never block the buyer from seeing a shipping charge
+    res.json({
+      success: true, codAvailable: true, edd: null,
+      shippingRate: DEFAULT_RATE, minShippingRate: DEFAULT_RATE,
+      note: 'Estimated rate',
+    });
   }
 });
 

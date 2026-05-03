@@ -27,28 +27,36 @@ router.get('/cod-check', async (req, res) => {
       return res.json({ success: true, codAvailable: true, edd: null, note: 'Estimate based on location' });
     }
 
+    const totalWeight = Number(weight) || 0.5;
+
     const data = await shiprocket.getServiceability({
       pickupPincode:   pickupPin,
       deliveryPincode: delivery,
-      weight:          Number(weight) || 0.5,
+      weight:          totalWeight,
       cod:             true,
     });
 
-    const couriers    = data?.data?.available_courier_companies || [];
-    const codCouriers = couriers.filter(c => c.cod === 1);
+    const couriers = data?.data?.available_courier_companies || [];
 
-    // Best COD courier by rate (cheapest with ETD)
-    const codWithEtd     = codCouriers.filter(c => c.etd).sort((a, b) => (a.rate || 9999) - (b.rate || 9999));
-    const bestCodCourier = codWithEtd[0];
+    // ── Surface couriers only (cheapest mode) ─────────────
+    // Shiprocket marks surface couriers with is_surface=1 or courier_type containing 'Surface'
+    const surfaceCouriers = couriers.filter(c =>
+      c.is_surface === 1 ||
+      (c.courier_type || '').toLowerCase().includes('surface') ||
+      (c.courier_name || '').toLowerCase().includes('surface')
+    );
 
-    // Best overall courier (fastest EDD)
-    const allWithEtd  = couriers.filter(c => c.etd).sort((a, b) => new Date(a.etd) - new Date(b.etd));
-    const bestCourier = allWithEtd[0];
+    // Fall back to all couriers if no surface ones available for this route
+    const eligible = surfaceCouriers.length > 0 ? surfaceCouriers : couriers;
 
-    // Use COD courier for display; fallback to overall best
-    const display = bestCodCourier || bestCourier;
+    const codEligible    = eligible.filter(c => c.cod === 1);
+    const usePool        = codEligible.length > 0 ? codEligible : eligible;
 
-    const allRates = couriers.map(c => c.rate).filter(r => r > 0);
+    // Pick cheapest with ETD
+    const sorted         = usePool.filter(c => c.etd).sort((a, b) => (a.rate ?? 9999) - (b.rate ?? 9999));
+    const display        = sorted[0] || usePool[0] || null;
+
+    const allRates = eligible.map(c => c.rate).filter(r => r != null);
     const minRate  = allRates.length ? Math.min(...allRates) : null;
 
     res.json({

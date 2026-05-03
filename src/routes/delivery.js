@@ -58,8 +58,8 @@ router.get('/cod-check', async (req, res) => {
       edd:             display?.etd || null,
       eddDays:         display?.estimated_delivery_days || null,
       courierName:     display?.courier_name || null,
-      shippingRate:    display?.rate          || null,   // ₹ — actual courier charge
-      minShippingRate: minRate,                          // cheapest available courier
+      shippingRate:    display?.rate != null ? display.rate : null,  // ₹ — actual courier charge (0 is valid)
+      minShippingRate: minRate != null ? minRate : null,  // cheapest available courier (0 is valid)
     });
   } catch (err) {
     console.error('[COD Check] Shiprocket serviceability failed:', err.message);

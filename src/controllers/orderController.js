@@ -168,7 +168,7 @@ const notifySeller = async (order) => {
 
 // ── POST /api/orders ──────────────────────────────────────
 const placeOrder = async (req, res) => {
-  const { items, shippingAddress, paymentMethod, notes } = req.body;
+  const { items, shippingAddress, paymentMethod, notes, shipping: clientShipping } = req.body;
   if (!items?.length) {
     return res.status(400).json({ success: false, message: 'Order items are required' });
   }
@@ -209,9 +209,16 @@ const placeOrder = async (req, res) => {
   }
 
   // GST calculation
-  const gst      = calcOrderGst(gstLineItems, business.state, buyerState);
-  const shipping = (gst.grandTotal >= 499) ? 0 : 49;
-  const total    = gst.grandTotal + shipping;
+  const gst = calcOrderGst(gstLineItems, business.state, buyerState);
+
+  // Shipping: use the Shiprocket-calculated rate sent by frontend.
+  // Never fall back to a hardcoded value — if no rate provided, shipping = 0
+  // (order should not be reachable without shipping being calculated in checkout).
+  const shipping = (typeof clientShipping === 'number' && clientShipping >= 0)
+    ? clientShipping
+    : 0;
+
+  const total = gst.grandTotal + shipping;
 
   const order = await Order.create({
     user:            req.user._id,

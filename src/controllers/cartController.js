@@ -40,8 +40,10 @@ const buildCartSummary = (items, buyerState = business.state) => {
   const sgstTotal     = lineItems.reduce((s, l) => s + l.sgstAmount, 0);
   const igstTotal     = lineItems.reduce((s, l) => s + l.igstAmount, 0);
   const gstTotal      = parseFloat((cgstTotal + sgstTotal + igstTotal).toFixed(2));
-  const shipping      = subtotalExGst + gstTotal >= 499 ? 0 : 49;
-  const grandTotal    = parseFloat((subtotalExGst + gstTotal + shipping).toFixed(2));
+  // Shipping is NOT calculated here — it requires a delivery pincode and Shiprocket lookup.
+  // Frontend fetches shipping via /delivery/cod-check and sends it at order creation.
+  const shipping      = null;
+  const grandTotal    = parseFloat((subtotalExGst + gstTotal).toFixed(2)); // excl. shipping
   const itemCount     = lineItems.reduce((s, l) => s + l.quantity, 0);
 
   return {
@@ -52,7 +54,7 @@ const buildCartSummary = (items, buyerState = business.state) => {
       sgstTotal:     parseFloat(sgstTotal.toFixed(2)),
       igstTotal:     parseFloat(igstTotal.toFixed(2)),
       gstTotal,
-      shipping,
+      shipping,        // null — must be fetched from Shiprocket by frontend
       grandTotal,
       itemCount,
     },

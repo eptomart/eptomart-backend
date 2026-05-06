@@ -481,16 +481,49 @@ const cloneProduct = async (req, res) => {
       }
     }
 
-    // Build clone — strip unique fields, reset approval
-    // productCode is intentionally excluded so assignProductCode gives it a fresh name-based code on approval
-    const { _id, slug, sku, productCode, createdAt, updatedAt, __v, soldCount, likeCount, repeatBuyerCount, reviews, ratings, ...rest } = source;
+    // Explicitly pick safe fields to avoid carrying over unique/indexed fields
+    // that would cause duplicate-key errors on the clone.
     const clone = await Product.create({
-      ...rest,
-      name: `${source.name} (Copy)`,
-      approvalStatus: 'draft',
-      isActive: false,
-      productCode: null,       // will be assigned (from seller's name code) when approved
-      images: source.images,   // reuse same Cloudinary URLs (no re-upload needed)
+      // ── Core product fields ──
+      name:              `${source.name} (Copy)`,
+      description:       source.description,
+      shortDescription:  source.shortDescription,
+      price:             source.price,
+      discountPrice:     source.discountPrice,
+      stock:             source.stock,
+      images:            source.images,      // reuse Cloudinary URLs — no re-upload needed
+      category:          source.category,
+      subCategory:       source.subCategory  || null,
+      tags:              source.tags         || [],
+      brand:             source.brand,
+      weight:            source.weight,
+      dimensions:        source.dimensions,
+      codAvailable:      source.codAvailable !== false,
+      isFeatured:        false,
+      instagramLink:     source.instagramLink,
+      variants:          (source.variants || []).map(v => ({
+        label: v.label, value: v.value, unit: v.unit,
+        price: v.price, stock: v.stock,
+        // strip variant-level sku to avoid conflicts
+      })),
+
+      // ── Seller & pricing ──
+      seller:            source.seller,
+      costPrice:         source.costPrice,
+      sellerPrice:       source.sellerPrice,
+      eptomartMargin:    source.eptomartMargin,
+      freeShippingAbove: source.freeShippingAbove,
+      location:          source.location,
+
+      // ── GST ──
+      gstRate:           source.gstRate,
+      hsnCode:           source.hsnCode,
+      priceIncludesGst:  source.priceIncludesGst,
+
+      // ── Reset approval state ──
+      approvalStatus:    'draft',
+      isActive:          false,
+      // slug, sku, productCode auto-generated / intentionally omitted
     });
 
     res.status(201).json({ success: true, message: 'Product cloned as draft', product: clone });

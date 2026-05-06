@@ -6,6 +6,7 @@ const express       = require('express');
 const router        = express.Router();
 const Conversation  = require('../models/Conversation');
 const Seller        = require('../models/Seller');
+const User          = require('../models/User');
 const { protect }   = require('../middleware/auth');
 const { protectAdmin } = require('../middleware/adminAuth');
 
@@ -273,6 +274,78 @@ router.patch('/admin/:id/status', ...protectAdmin, async (req, res) => {
     if (!['open','closed'].includes(status)) return res.status(400).json({ success: false, message: 'Invalid status' });
     const conv = await Conversation.findByIdAndUpdate(req.params.id, { status }, { new: true });
     res.json({ success: true, conversation: conv });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /conversations/admin/new — admin initiates a conversation with a user or seller
+router.post('/admin/new', ...protectAdmin, async (req, res) => {
+  try {
+    const { participantType, participantId, subject, content } = req.body;
+    if (!participantType || !participantId || !subject || !content) {
+      return res.status(400).json({ success: false, message: 'participantType, participantId, subject and content are required' });
+    }
+
+    let participantName  = '';
+    let participantEmail = '';
+
+    if (participantType === 'user') {
+      const user = await User.findById(participantId).select('name email phone');
+      if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+      participantName  = user.name;
+      participantEmail = user.email || user.phone || '';
+    } else if (participantType === 'seller') {
+      const seller = await Seller.findById(participantId).select('businessName email');
+      if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+      participantName  = seller.businessName;
+      participantEmail = seller.email || '';
+    } else {
+      return res.status(400).json({ success: false, message: 'participantType must be user or seller' });
+    }
+
+    const conv = await Conversation.create({
+      participantType,
+      participantId,
+      participantName,
+      participantEmail,
+      subject,
+      status: 'open',
+      unreadByParticipant: 1,  // participant hasn't read admin's message yet
+      unreadByAdmin: 0,
+      lastMessageAt: new Date(),
+      messages: [{
+        senderType: 'admin',
+        senderName: req.user.name || 'Admin',
+        content,
+      }],
+    });
+
+    res.status(201).json({ success: true, conversation: conv });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET /conversations/admin/search-participants — search users & sellers for the new message form
+router.get('/admin/search-participants', ...protectAdmin, async (req, res) => {
+  try {
+    const { q = '', type = 'user' } = req.query;
+    const regex = { $regex: q, $options: 'i' };
+
+    if (type === 'seller') {
+      const sellers = await Seller.find({
+        $or: [{ businessName: regex }, { email: regex }],
+      }).select('_id businessName email').limit(10);
+      return res.json({ success: true, results: sellers.map(s => ({ _id: s._id, name: s.businessName, email: s.email, type: 'seller' })) });
+    }
+
+    // Default: users (exclude sellers/admins)
+    const users = await User.find({
+      role: 'user',
+      $or: [{ name: regex }, { email: regex }, { phone: regex }],
+    }).select('_id name email phone').limit(10);
+    res.json({ success: true, results: users.map(u => ({ _id: u._id, name: u.name, email: u.email || u.phone, type: 'user' })) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

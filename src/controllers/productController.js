@@ -311,28 +311,83 @@ const updateProduct = async (req, res) => {
 
 /**
  * @route   DELETE /api/products/:id
- * @desc    Delete product (Admin)
- * @access  Admin
+ * @desc    Delete product
+ *          Admin: can delete any product
+ *          Seller: can only delete their own draft / rejected / correction_needed products
+ * @access  Seller (own drafts) | Admin
  */
 const deleteProduct = async (req, res) => {
-  const product = await Product.findById(req.params.id);
-  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
-  // Seller can only delete their own products — compare using Seller document ID
-  if (req.user.role === 'seller') {
-    const sellerDocId = getSellerDocId(req);
-    if (!sellerDocId || product.seller?.toString() !== sellerDocId.toString()) {
-      return res.status(403).json({ success: false, message: 'You can only delete your own products' });
+    if (req.user.role === 'seller') {
+      const sellerDocId = getSellerDocId(req);
+      if (!sellerDocId || product.seller?.toString() !== sellerDocId.toString()) {
+        return res.status(403).json({ success: false, message: 'You can only delete your own products' });
+      }
+      // Sellers cannot delete approved or pending products
+      const DELETABLE = ['draft', 'rejected', 'correction_needed'];
+      if (!DELETABLE.includes(product.approvalStatus)) {
+        return res.status(403).json({
+          success: false,
+          message: `Cannot delete a product that is ${product.approvalStatus}. Contact admin to remove live products.`,
+        });
+      }
     }
-  }
 
-  // Delete images from Cloudinary
-  for (const image of product.images) {
-    if (image.publicId) await deleteImage(image.publicId);
-  }
+    // Delete images from Cloudinary
+    for (const image of product.images) {
+      if (image.publicId) await deleteImage(image.publicId);
+    }
 
-  await product.deleteOne();
-  res.json({ success: true, message: 'Product deleted' });
+    await product.deleteOne();
+    res.json({ success: true, message: 'Product deleted' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * @route   PATCH /api/products/admin/bulk-assign
+ * @desc    Assign an array of product IDs to a seller (admin only)
+ *          Also marks them approved + active so they appear in the seller's portal
+ * @body    { productIds: string[], sellerId: string }
+ * @access  Admin
+ */
+const bulkAssignSeller = async (req, res) => {
+  try {
+    const { productIds, sellerId } = req.body;
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'productIds array is required' });
+    }
+    if (!sellerId) {
+      return res.status(400).json({ success: false, message: 'sellerId is required' });
+    }
+
+    const Seller = require('../models/Seller');
+    const seller = await Seller.findById(sellerId).select('businessName email');
+    if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+    const result = await Product.updateMany(
+      { _id: { $in: productIds } },
+      {
+        $set: {
+          seller:         sellerId,
+          approvalStatus: 'approved',
+          isActive:       true,
+        },
+      }
+    );
+
+    res.json({
+      success: true,
+      message: `${result.modifiedCount} product(s) assigned to ${seller.businessName || 'seller'}`,
+      modifiedCount: result.modifiedCount,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 };
 
 /**
@@ -744,4 +799,4 @@ const updateProductStock = async (req, res) => {
   }
 };
 
-module.exports = { getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct, toggleProductActive, bulkUpdateStock, exportSellerStock, updateProductStock };
+module.exports = { getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct, toggleProductActive, bulkUpdateStock, exportSellerStock, updateProductStock, bulkAssignSeller };

@@ -3,7 +3,7 @@ const router = express.Router();
 const {
   getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct,
   deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct,
-  toggleProductActive, bulkUpdateStock, exportSellerStock, updateProductStock,
+  toggleProductActive, bulkUpdateStock, exportSellerStock, updateProductStock, bulkAssignSeller,
 } = require('../controllers/productController');
 const { protect } = require('../middleware/auth');
 const { protectAdmin } = require('../middleware/adminAuth');
@@ -39,10 +39,12 @@ router.put('/:id', protectSeller, uploadProduct.array('images', 5), updateProduc
 router.post('/:id/clone',   protectSeller, cloneProduct);
 router.get('/:id/preview',  protectSeller, previewProduct);
 
-// Admin only: toggle active, delete products, remove images
-router.patch('/:id/toggle-active', protectAdmin, toggleProductActive);
-router.delete('/:id', protectAdmin, deleteProduct);
-router.delete('/:id/image/:imageId', protectSeller, removeProductImage);
+// Admin only: toggle active, bulk-assign to seller, remove images
+router.patch('/:id/toggle-active',     protectAdmin,   toggleProductActive);
+router.patch('/admin/bulk-assign',     protectAdmin,   bulkAssignSeller);
+// Delete: sellers can delete their own drafts; admins can delete any
+router.delete('/:id',                  protectSeller,  deleteProduct);
+router.delete('/:id/image/:imageId',   protectSeller,  removeProductImage);
 
 // User routes
 router.post('/:id/review', protect, addReview);

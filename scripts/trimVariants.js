@@ -21,18 +21,22 @@ async function run() {
 
   let updated = 0;
   for (const product of products) {
-    const first = product.variants[0];
+    // Pick the variant with the highest price
+    const highest = product.variants.reduce((best, v) =>
+      (v.price ?? 0) > (best.price ?? 0) ? v : best,
+      product.variants[0]
+    );
 
-    // Keep only the first variant
-    product.variants = [first];
+    // Keep only that variant
+    product.variants = [highest];
 
-    // Sync base price to first variant price if the variant has an explicit price
-    if (first.price != null && first.price > 0) {
-      product.price = first.price;
+    // Sync base price to the highest variant's price
+    if (highest.price != null && highest.price > 0) {
+      product.price = highest.price;
     }
 
     await product.save();
-    console.log(`  ✓ ${product.name} — kept variant "${first.label}", price ₹${product.price}`);
+    console.log(`  ✓ ${product.name} — kept variant "${highest.label}", price ₹${product.price}`);
     updated++;
   }
 

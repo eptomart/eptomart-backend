@@ -469,30 +469,35 @@ const getAdminProducts = async (req, res) => {
  * @access  Seller / Admin
  */
 const cloneProduct = async (req, res) => {
-  const source = await Product.findById(req.params.id).lean();
-  if (!source) return res.status(404).json({ success: false, message: 'Product not found' });
+  try {
+    const source = await Product.findById(req.params.id).lean();
+    if (!source) return res.status(404).json({ success: false, message: 'Product not found' });
 
-  // Sellers can only clone their own products
-  if (req.user.role === 'seller') {
-    const sellerDocId = getSellerDocId(req);
-    if (!sellerDocId || source.seller?.toString() !== sellerDocId.toString()) {
-      return res.status(403).json({ success: false, message: 'You can only clone your own products' });
+    // Sellers can only clone their own products
+    if (req.user.role === 'seller') {
+      const sellerDocId = getSellerDocId(req);
+      if (!sellerDocId || source.seller?.toString() !== sellerDocId.toString()) {
+        return res.status(403).json({ success: false, message: 'You can only clone your own products' });
+      }
     }
+
+    // Build clone — strip unique fields, reset approval
+    // productCode is intentionally excluded so assignProductCode gives it a fresh name-based code on approval
+    const { _id, slug, sku, productCode, createdAt, updatedAt, __v, soldCount, likeCount, repeatBuyerCount, reviews, ratings, ...rest } = source;
+    const clone = await Product.create({
+      ...rest,
+      name: `${source.name} (Copy)`,
+      approvalStatus: 'draft',
+      isActive: false,
+      productCode: null,       // will be assigned (from seller's name code) when approved
+      images: source.images,   // reuse same Cloudinary URLs (no re-upload needed)
+    });
+
+    res.status(201).json({ success: true, message: 'Product cloned as draft', product: clone });
+  } catch (err) {
+    console.error('[cloneProduct]', err.message);
+    res.status(500).json({ success: false, message: err.message || 'Failed to clone product' });
   }
-
-  // Build clone — strip unique fields, reset approval
-  // productCode is intentionally excluded so assignProductCode gives it a fresh name-based code on approval
-  const { _id, slug, sku, productCode, createdAt, updatedAt, __v, soldCount, likeCount, repeatBuyerCount, reviews, ratings, ...rest } = source;
-  const clone = await Product.create({
-    ...rest,
-    name: `${source.name} (Copy)`,
-    approvalStatus: 'draft',
-    isActive: false,
-    productCode: null,       // will be assigned (from seller's name code) when approved
-    images: source.images,   // reuse same Cloudinary URLs (no re-upload needed)
-  });
-
-  res.status(201).json({ success: true, message: 'Product cloned as draft', product: clone });
 };
 
 /**

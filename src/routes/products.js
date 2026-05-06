@@ -3,7 +3,7 @@ const router = express.Router();
 const {
   getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct,
   deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct,
-  toggleProductActive, bulkUpdateStock, exportSellerStock,
+  toggleProductActive, bulkUpdateStock, exportSellerStock, updateProductStock,
 } = require('../controllers/productController');
 const { protect } = require('../middleware/auth');
 const { protectAdmin } = require('../middleware/adminAuth');
@@ -26,6 +26,8 @@ router.get('/:slug',      getProduct);
 
 // Bulk stock update (seller + admin)
 router.post('/bulk-stock',          protectSeller, bulkUpdateStock);
+// Inline stock update — stock ONLY, never triggers approval (seller + admin)
+router.patch('/:id/stock',          protectSeller, updateProductStock);
 // Seller: export their own products as pre-filled CSV template
 router.get('/seller/export-stock',  protectSeller, exportSellerStock);
 

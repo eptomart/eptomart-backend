@@ -706,4 +706,42 @@ const exportSellerStock = async (req, res) => {
   }
 };
 
-module.exports = { getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct, toggleProductActive, bulkUpdateStock, exportSellerStock };
+/**
+ * @route   PATCH /api/products/:id/stock
+ * @desc    Update product stock ONLY — never triggers approval flow
+ *          Seller can only update their own; admin can update any.
+ * @access  Seller / Admin
+ */
+const updateProductStock = async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+
+    // Seller: must own the product
+    if (req.user.role === 'seller') {
+      const sellerDocId = getSellerDocId(req);
+      if (!sellerDocId || product.seller?.toString() !== sellerDocId.toString()) {
+        return res.status(403).json({ success: false, message: 'You can only update your own products' });
+      }
+    }
+
+    const { stock } = req.body;
+    if (stock === undefined || stock === null || stock === '') {
+      return res.status(400).json({ success: false, message: 'stock value is required' });
+    }
+    const stockNum = Number(stock);
+    if (isNaN(stockNum) || stockNum < 0) {
+      return res.status(400).json({ success: false, message: 'stock must be a non-negative number' });
+    }
+
+    // Update ONLY stock — do not touch approvalStatus, isActive, or any other field
+    product.stock = Math.floor(stockNum);
+    await product.save();
+
+    res.json({ success: true, message: 'Stock updated', stock: product.stock });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+module.exports = { getProducts, getProduct, getSellerProducts, getAdminProducts, createProduct, updateProduct, deleteProduct, removeProductImage, addReview, searchProducts, cloneProduct, previewProduct, toggleProductActive, bulkUpdateStock, exportSellerStock, updateProductStock };

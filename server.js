@@ -12,6 +12,11 @@ const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
 const path = require('path');
 
+// Security hardening (run: npm install express-mongo-sanitize hpp)
+let mongoSanitize, hpp;
+try { mongoSanitize = require('express-mongo-sanitize'); } catch (_) {}
+try { hpp = require('hpp'); } catch (_) {}
+
 const connectDB = require('./src/config/db');
 const { rateLimiter } = require('./src/middleware/rateLimiter');
 const { trackVisitor } = require('./src/middleware/trackVisitor');
@@ -80,13 +85,37 @@ const autoSeed = async () => {
 connectDB().then(autoSeed).catch(() => {});
 
 // ─── Security Middleware ──────────────────────
+// ─── Helmet — Security Headers ───────────────
 app.use(helmet({
-  crossOriginResourcePolicy: { policy: 'cross-origin' }
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc:     ["'self'"],
+      scriptSrc:      ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com', 'https://checkout.razorpay.com'],
+      styleSrc:       ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc:        ["'self'", 'https://fonts.gstatic.com'],
+      imgSrc:         ["'self'", 'data:', 'blob:', 'https://res.cloudinary.com', 'https://*.cloudinary.com'],
+      connectSrc:     ["'self'", 'https://api.eptomart.com', 'https://checkout.razorpay.com', 'https://graph.facebook.com'],
+      frameSrc:       ["'none'"],
+      objectSrc:      ["'none'"],
+      upgradeInsecureRequests: [],
+    },
+  },
 }));
 
-// ─── CORS Configuration ───────────────────────
+// ─── CORS — whitelist only known origins ─────
+const ALLOWED_ORIGINS = [
+  'https://eptomart.com',
+  'https://www.eptomart.com',
+  'https://admin.eptomart.com',
+  ...(process.env.NODE_ENV !== 'production' ? ['http://localhost:5173', 'http://localhost:3000'] : []),
+];
 app.use(cors({
-  origin: true,
+  origin: (origin, cb) => {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS blocked: ${origin}`));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-session-id'],
@@ -98,6 +127,10 @@ app.use(compression());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
+
+// ─── NoSQL injection + HTTP param pollution ──
+if (mongoSanitize) app.use(mongoSanitize());
+if (hpp) app.use(hpp());
 
 // ─── Logging ─────────────────────────────────
 if (process.env.NODE_ENV === 'development') {

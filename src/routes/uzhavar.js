@@ -59,9 +59,22 @@ router.post('/farmer/orders/:orderId/accept', protect, ctrl.farmerAcceptOrder);
 router.post('/farmer/orders/:orderId/reject', protect, ctrl.farmerRejectOrder);
 router.get('/farmer/me', protect, async (req, res) => {
   const Farmer = require('../models/Farmer');
-  const farmer = await Farmer.findOne({ user: req.user._id })
+
+  // Primary: look up by linked user ID
+  let farmer = await Farmer.findOne({ user: req.user._id })
     .select('-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc');
-  res.json({ success: true, farmer });
+
+  // Fallback: admin-created farmers have user:null — match by phone and auto-link
+  if (!farmer && req.user.phone) {
+    farmer = await Farmer.findOne({ phone: req.user.phone, user: null })
+      .select('-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc');
+    if (farmer) {
+      farmer.user = req.user._id;
+      await farmer.save();
+    }
+  }
+
+  res.json({ success: true, farmer: farmer || null });
 });
 
 // ── Admin ───────────────────────────────────

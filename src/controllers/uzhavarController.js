@@ -13,6 +13,23 @@ const getRazorpay = () => {
   return new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
 };
 
+// ── Helper: find farmer by user ID, fallback to phone (auto-links) ──
+const getFarmerForUser = async (user) => {
+  // Primary lookup
+  let farmer = await Farmer.findOne({ user: user._id });
+  if (farmer) return farmer;
+
+  // Fallback for admin-created farmers (user: null, matched by phone)
+  if (user.phone) {
+    farmer = await Farmer.findOne({ phone: user.phone, user: null });
+    if (farmer) {
+      farmer.user = user._id;
+      await farmer.save();
+    }
+  }
+  return farmer || null;
+};
+
 // ── BUYER: Get nearby farmers ───────────────────────────────────
 exports.getNearbyFarmers = async (req, res) => {
   const { lat, lng, pincode, radius = 10 } = req.query;
@@ -239,7 +256,7 @@ exports.buyerConfirmOrder = async (req, res) => {
 // ── FARMER: Accept order ───────────────────────────────────────
 exports.farmerAcceptOrder = async (req, res) => {
   const { orderId } = req.params;
-  const farmer = await Farmer.findOne({ user: req.user._id });
+  const farmer = await getFarmerForUser(req.user);
   if (!farmer) return res.status(403).json({ success: false, message: 'Not a farmer account' });
 
   const order = await UzhavarOrder.findOne({ _id: orderId, farmer: farmer._id, status: 'pending_farmer' });
@@ -260,7 +277,7 @@ exports.farmerAcceptOrder = async (req, res) => {
 exports.farmerRejectOrder = async (req, res) => {
   const { orderId } = req.params;
   const { reason } = req.body;
-  const farmer = await Farmer.findOne({ user: req.user._id });
+  const farmer = await getFarmerForUser(req.user);
   if (!farmer) return res.status(403).json({ success: false, message: 'Not a farmer account' });
 
   const order = await UzhavarOrder.findOne({ _id: orderId, farmer: farmer._id, status: 'pending_farmer' });
@@ -384,7 +401,7 @@ exports.registerFarmer = async (req, res) => {
 
 // ── FARMER: Update product listing ────────────────────────────
 exports.addFarmerProduct = async (req, res) => {
-  const farmer = await Farmer.findOne({ user: req.user._id });
+  const farmer = await getFarmerForUser(req.user);
   if (!farmer) return res.status(403).json({ success: false, message: 'Not a farmer' });
   if (farmer.verificationStatus !== 'approved') {
     return res.status(403).json({ success: false, message: 'Farmer not approved yet' });
@@ -400,7 +417,7 @@ exports.addFarmerProduct = async (req, res) => {
 };
 
 exports.updateFarmerProduct = async (req, res) => {
-  const farmer = await Farmer.findOne({ user: req.user._id });
+  const farmer = await getFarmerForUser(req.user);
   if (!farmer) return res.status(403).json({ success: false, message: 'Not a farmer' });
 
   const product = await FarmerProduct.findOneAndUpdate(
@@ -414,7 +431,7 @@ exports.updateFarmerProduct = async (req, res) => {
 };
 
 exports.deleteFarmerProduct = async (req, res) => {
-  const farmer = await Farmer.findOne({ user: req.user._id });
+  const farmer = await getFarmerForUser(req.user);
   if (!farmer) return res.status(403).json({ success: false, message: 'Not a farmer' });
 
   await FarmerProduct.findOneAndUpdate(
@@ -426,8 +443,10 @@ exports.deleteFarmerProduct = async (req, res) => {
 };
 
 exports.toggleAvailability = async (req, res) => {
-  const farmer = await Farmer.findOneAndUpdate(
-    { user: req.user._id },
+  const existing = await getFarmerForUser(req.user);
+  if (!existing) return res.status(403).json({ success: false, message: 'Not a farmer' });
+  const farmer = await Farmer.findByIdAndUpdate(
+    existing._id,
     [{ $set: { availableNow: { $not: '$availableNow' } } }],
     { new: true }
   );
@@ -436,7 +455,7 @@ exports.toggleAvailability = async (req, res) => {
 
 // ── FARMER: Get my orders ──────────────────────────────────────
 exports.getFarmerOrders = async (req, res) => {
-  const farmer = await Farmer.findOne({ user: req.user._id });
+  const farmer = await getFarmerForUser(req.user);
   if (!farmer) return res.status(403).json({ success: false, message: 'Not a farmer' });
 
   const { status, page = 1 } = req.query;
@@ -545,14 +564,20 @@ exports.adminCreateFarmer = async (req, res) => {
     const existing = await Farmer.findOne({ phone });
     if (existing) return res.status(409).json({ success: false, message: 'Phone already registered' });
 
+    // Auto-link to an existing user account with this phone number
+    const User = require('../models/User');
+    const linkedUser = await User.findOne({ phone }).select('_id').lean();
+
+    const langMap = { tamil: 'ta', english: 'en' };
     const farmerData = {
-      name, phone,
-      languagePreference: languagePreference || 'tamil',
+      name,
+      phone,
+      language: langMap[languagePreference] || 'ta',
+      user: linkedUser ? linkedUser._id : null,
       address: { village: village || '', taluk: taluk || '', district, pincode },
-      deliveryRadius: deliveryRadius || 5,
-      verificationStatus: 'approved', // admin-added farmers are auto-approved
+      deliveryRadius: parseInt(deliveryRadius) || 5,
+      verificationStatus: 'approved',
       isActive: true,
-      notes: notes || '',
     };
 
     if (lat && lng) {
@@ -563,11 +588,16 @@ exports.adminCreateFarmer = async (req, res) => {
     }
 
     if (accountNumber && ifsc) {
-      farmerData.bankAccount = { bankName, accountHolderName, accountNumber, ifsc };
+      farmerData.bankAccount = {
+        bankName:      bankName || '',
+        accountName:   accountHolderName || '',
+        accountNumber,
+        ifsc,
+      };
     }
 
     const farmer = await Farmer.create(farmerData);
-    res.status(201).json({ success: true, farmer });
+    res.status(201).json({ success: true, farmer, linkedUser: !!linkedUser });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

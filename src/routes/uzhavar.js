@@ -7,6 +7,8 @@ const ctrl     = require('../controllers/uzhavarController');
 const { protect } = require('../middleware/auth');
 const { protectAdmin } = require('../middleware/adminAuth');
 
+const { uploadDocument } = require('../config/cloudinary');
+
 // ── Public / Buyer ──────────────────────────
 router.get('/farmers/nearby',          ctrl.getNearbyFarmers);
 router.get('/farmers/:farmerId/products', ctrl.getFarmerProducts);
@@ -36,6 +38,17 @@ router.get('/subscription/my',             protect, async (req, res) => {
 });
 
 // ── Farmer self-service ─────────────────────
+router.post('/farmer/upload-doc',       protect, uploadDocument.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
+    // Cloudinary storage engine puts the URL in req.file.path; memoryStorage fallback won't have it
+    const url = req.file.path || req.file.filename || null;
+    if (!url) return res.status(500).json({ success: false, message: 'Upload storage not configured' });
+    res.json({ success: true, url });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 router.post('/farmer/register',         protect, ctrl.registerFarmer);
 router.post('/farmer/products',         protect, ctrl.addFarmerProduct);
 router.put('/farmer/products/:productId', protect, ctrl.updateFarmerProduct);

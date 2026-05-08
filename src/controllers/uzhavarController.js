@@ -527,6 +527,52 @@ exports.adminGetStats = async (req, res) => {
   res.json({ success: true, stats: { totalFarmers, pendingFarmers, totalOrders, activeSubscriptions, todayOrders } });
 };
 
+// ── ADMIN: Create farmer directly ────────────────────────────
+exports.adminCreateFarmer = async (req, res) => {
+  try {
+    const {
+      name, phone, languagePreference,
+      village, taluk, district, pincode,
+      lat, lng, deliveryRadius,
+      bankName, accountHolderName, accountNumber, ifsc,
+      notes,
+    } = req.body;
+
+    if (!name || !phone || !district || !pincode) {
+      return res.status(400).json({ success: false, message: 'Name, phone, district and pincode are required' });
+    }
+
+    const existing = await Farmer.findOne({ phone });
+    if (existing) return res.status(409).json({ success: false, message: 'Phone already registered' });
+
+    const farmerData = {
+      name, phone,
+      languagePreference: languagePreference || 'tamil',
+      address: { village: village || '', taluk: taluk || '', district, pincode },
+      deliveryRadius: deliveryRadius || 5,
+      verificationStatus: 'approved', // admin-added farmers are auto-approved
+      isActive: true,
+      notes: notes || '',
+    };
+
+    if (lat && lng) {
+      farmerData.gpsLocation = {
+        type: 'Point',
+        coordinates: [parseFloat(lng), parseFloat(lat)],
+      };
+    }
+
+    if (accountNumber && ifsc) {
+      farmerData.bankAccount = { bankName, accountHolderName, accountNumber, ifsc };
+    }
+
+    const farmer = await Farmer.create(farmerData);
+    res.status(201).json({ success: true, farmer });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // ── CRON: Auto-cancel expired confirmations ───────────────────
 exports.autoCancelExpired = async () => {
   const expired = await UzhavarOrder.find({

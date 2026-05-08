@@ -65,7 +65,7 @@ const userSchema = new mongoose.Schema({
   // RBAC: which admin modules this user can access (superAdmin ignores this — has all)
   permissions: {
     type: [String],
-    enum: ['orders', 'products', 'approvals', 'sellers', 'users', 'analytics', 'categories', 'expenses', 'settlements', 'admins'],
+    enum: ['orders', 'products', 'approvals', 'sellers', 'users', 'analytics', 'categories', 'expenses', 'settlements', 'admins', 'uzhavar'],
     default: ['orders'],
   },
   isVerified: {

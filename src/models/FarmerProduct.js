@@ -21,8 +21,9 @@ const farmerProductSchema = new mongoose.Schema({
   maxOrderQuantity:  { type: Number, default: 50 },
 
   // Harvest window
-  harvestDate:  { type: Date, required: true },
-  expiryDate:   { type: Date }, // auto: harvestDate + 3 days
+  harvestFrom:  { type: Date, required: true }, // first day available
+  harvestTo:    { type: Date, required: true }, // last day available
+  expiryDate:   { type: Date }, // auto: harvestTo + 3 days (grace period)
   deliveryType: { type: String, enum: ['instant', 'scheduled', 'both'], default: 'both' },
 
   // Delivery slots (day-level: "morning", "evening")
@@ -43,10 +44,10 @@ const farmerProductSchema = new mongoose.Schema({
   soldOut:    { type: Boolean, default: false },
 }, { timestamps: true });
 
-// Auto-set expiry = harvestDate + 3 days
+// Auto-set expiry = harvestTo + 3 days (grace period for late deliveries)
 farmerProductSchema.pre('save', function(next) {
-  if (this.isModified('harvestDate') || !this.expiryDate) {
-    const d = new Date(this.harvestDate);
+  if (this.isModified('harvestTo') || !this.expiryDate) {
+    const d = new Date(this.harvestTo);
     d.setDate(d.getDate() + 3);
     this.expiryDate = d;
   }
@@ -55,7 +56,7 @@ farmerProductSchema.pre('save', function(next) {
 
 farmerProductSchema.index({ gpsLocation: '2dsphere' });
 farmerProductSchema.index({ farmer: 1, isActive: 1 });
-farmerProductSchema.index({ harvestDate: 1, expiryDate: 1 });
+farmerProductSchema.index({ harvestFrom: 1, harvestTo: 1, expiryDate: 1 });
 farmerProductSchema.index({ category: 1, isActive: 1 });
 
 module.exports = mongoose.model('FarmerProduct', farmerProductSchema);

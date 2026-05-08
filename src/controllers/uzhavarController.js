@@ -71,7 +71,7 @@ exports.getFarmerProducts = async (req, res) => {
     soldOut:   false,
     expiryDate:{ $gte: today },
     availableQuantity: { $gt: 0 },
-  }).sort({ harvestDate: 1 }).lean();
+  }).sort({ harvestFrom: 1 }).lean();
 
   res.json({ success: true, products });
 };

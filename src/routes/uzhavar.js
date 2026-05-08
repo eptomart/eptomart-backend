@@ -4,7 +4,8 @@
 const express  = require('express');
 const router   = express.Router();
 const ctrl     = require('../controllers/uzhavarController');
-const { protect, adminOnly } = require('../middleware/auth');
+const { protect } = require('../middleware/auth');
+const { protectAdmin } = require('../middleware/adminAuth');
 
 // ── Public / Buyer ──────────────────────────
 router.get('/farmers/nearby',          ctrl.getNearbyFarmers);
@@ -51,10 +52,10 @@ router.get('/farmer/me', protect, async (req, res) => {
 });
 
 // ── Admin ───────────────────────────────────
-router.get('/admin/farmers',            protect, adminOnly, ctrl.adminGetFarmers);
-router.patch('/admin/farmers/:farmerId/action', protect, adminOnly, ctrl.adminApproveFarmer);
-router.get('/admin/orders',             protect, adminOnly, ctrl.adminGetOrders);
-router.get('/admin/subscriptions',      protect, adminOnly, ctrl.adminGetSubscriptions);
-router.get('/admin/stats',              protect, adminOnly, ctrl.adminGetStats);
+router.get('/admin/farmers',            ...protectAdmin, ctrl.adminGetFarmers);
+router.patch('/admin/farmers/:farmerId/action', ...protectAdmin, ctrl.adminApproveFarmer);
+router.get('/admin/orders',             ...protectAdmin, ctrl.adminGetOrders);
+router.get('/admin/subscriptions',      ...protectAdmin, ctrl.adminGetSubscriptions);
+router.get('/admin/stats',              ...protectAdmin, ctrl.adminGetStats);
 
 module.exports = router;

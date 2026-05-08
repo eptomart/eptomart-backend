@@ -43,6 +43,7 @@ const settingsRoutes = require('./src/routes/settings');
 const activityRoutes      = require('./src/routes/activity');
 const aiRoutes            = require('./src/routes/ai');
 const conversationRoutes  = require('./src/routes/conversations');
+const uzhavarRoutes       = require('./src/routes/uzhavar');
 
 const app = express();
 
@@ -164,6 +165,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/activity',  activityRoutes);
 app.use('/api/ai',            aiRoutes);
 app.use('/api/conversations', conversationRoutes);
+app.use('/api/uzhavar',       uzhavarRoutes);
 app.use('/',             sitemapRoutes);  // /sitemap.xml and /robots.txt
 
 // ─── Health Check ────────────────────────────
@@ -222,5 +224,9 @@ app.listen(PORT, () => {
   console.log(`📦 Environment: ${process.env.NODE_ENV}`);
   console.log(`🌐 URL: http://localhost:${PORT}/api/health\n`);
 });
+
+// ─── Uzhavar: Auto-cancel expired orders every 2 min ──────────
+const { autoCancelExpired } = require('./src/controllers/uzhavarController');
+setInterval(autoCancelExpired, 2 * 60 * 1000);
 
 module.exports = app;

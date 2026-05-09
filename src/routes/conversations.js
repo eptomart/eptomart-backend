@@ -204,6 +204,24 @@ router.post('/seller/:id/reply', protectSeller, async (req, res) => {
 // ADMIN ROUTES
 // ─────────────────────────────────────────────
 
+// GET /conversations/admin/badge-counts — sidebar badge data
+router.get('/admin/badge-counts', ...protectAdmin, async (req, res) => {
+  try {
+    const Product = require('../models/Product');
+    const [msgAgg, pendingApprovals] = await Promise.all([
+      Conversation.aggregate([{ $group: { _id: null, total: { $sum: '$unreadByAdmin' } } }]),
+      Product.countDocuments({ approvalStatus: 'pending', seller: { $exists: true, $ne: null } }),
+    ]);
+    res.json({
+      success: true,
+      unreadMessages:  msgAgg[0]?.total || 0,
+      pendingApprovals,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // GET /conversations/admin/all — all conversations
 router.get('/admin/all', ...protectAdmin, async (req, res) => {
   try {

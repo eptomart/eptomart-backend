@@ -41,62 +41,102 @@ exports.getAllFarmers = async (req, res) => {
 
 // ── BUYER: Get nearby farmers ───────────────────────────────────
 exports.getNearbyFarmers = async (req, res) => {
-  const { lat, lng, pincode, radius = 10 } = req.query;
+  const { lat, lng, pincode, district, radius = 10 } = req.query;
   const baseQuery = { verificationStatus: 'approved', isActive: true };
+  const selectFields = '-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc';
   let farmers = [];
+  let matchType = 'all';
 
-  if (lat && lng) {
+  // ── 1. District filter (most reliable — every farmer has a district) ──
+  if (district) {
+    farmers = await Farmer.find({
+      ...baseQuery,
+      'address.district': { $regex: new RegExp(`^${district.trim()}$`, 'i') },
+    })
+    .select(selectFields)
+    .sort({ 'ratings.average': -1, availableNow: -1 })
+    .limit(50).lean();
+    if (farmers.length > 0) matchType = 'district';
+  }
+
+  // ── 2. GPS-based $near (only if no district result yet) ──
+  else if (lat && lng) {
     const parsedLat = parseFloat(lat);
     const parsedLng = parseFloat(lng);
-
-    // Try GPS $near first — only if coordinates look valid (not 0,0)
     const hasValidGPS = !(parsedLat === 0 && parsedLng === 0);
+
     if (hasValidGPS) {
-      try {
-        farmers = await Farmer.find({
-          ...baseQuery,
-          gpsLocation: {
-            $near: {
-              $geometry: { type: 'Point', coordinates: [parsedLng, parsedLat] },
-              $maxDistance: parseFloat(radius) * 1000,
+      // Try expanding radius: 25km → 50km → 100km → 300km (covers all TN)
+      const radii = [parseFloat(radius), 50, 100, 300];
+      for (const r of radii) {
+        try {
+          farmers = await Farmer.find({
+            ...baseQuery,
+            gpsLocation: {
+              $near: {
+                $geometry: { type: 'Point', coordinates: [parsedLng, parsedLat] },
+                $maxDistance: r * 1000,
+              },
             },
-          },
-        })
-        .select('-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc')
-        .limit(30).lean();
-      } catch (_) {
-        farmers = [];
+          })
+          .select(selectFields)
+          .limit(30).lean();
+        } catch (_) { farmers = []; }
+
+        if (farmers.length > 0) {
+          matchType = r <= parseFloat(radius) ? 'gps_exact' : 'gps_expanded';
+          break;
+        }
       }
     }
 
-    // Fallback: if geo query returned nothing, show all approved farmers
+    // If GPS still empty (all farmers at [0,0]), fall back to all
     if (farmers.length === 0) {
       farmers = await Farmer.find(baseQuery)
-        .select('-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc')
+        .select(selectFields)
         .sort({ 'ratings.average': -1, createdAt: -1 })
         .limit(50).lean();
+      matchType = 'all';
     }
-  } else if (pincode) {
-    // Pincode match — also fallback to all if none found
-    farmers = await Farmer.find({ ...baseQuery, 'address.pincode': pincode })
-      .select('-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc')
-      .limit(30).lean();
-
-    if (farmers.length === 0) {
-      farmers = await Farmer.find(baseQuery)
-        .select('-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc')
-        .sort({ 'ratings.average': -1, createdAt: -1 })
-        .limit(50).lean();
-    }
-  } else {
-    // No location at all — return all
-    farmers = await Farmer.find(baseQuery)
-      .select('-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc')
-      .sort({ 'ratings.average': -1, createdAt: -1 })
-      .limit(50).lean();
   }
 
-  res.json({ success: true, farmers });
+  // ── 3. Pincode search ──
+  else if (pincode) {
+    // Try exact match first
+    farmers = await Farmer.find({ ...baseQuery, 'address.pincode': pincode })
+      .select(selectFields).limit(30).lean();
+    if (farmers.length > 0) { matchType = 'pincode_exact'; }
+
+    // Try district-zone fallback: first 3 digits of pincode = district zone
+    if (farmers.length === 0 && pincode.length >= 3) {
+      const zone = pincode.slice(0, 3);
+      farmers = await Farmer.find({
+        ...baseQuery,
+        'address.pincode': { $regex: `^${zone}` },
+      }).select(selectFields).sort({ 'ratings.average': -1 }).limit(50).lean();
+      if (farmers.length > 0) matchType = 'pincode_zone';
+    }
+
+    // Final fallback: all farmers
+    if (farmers.length === 0) {
+      farmers = await Farmer.find(baseQuery)
+        .select(selectFields)
+        .sort({ 'ratings.average': -1, createdAt: -1 })
+        .limit(50).lean();
+      matchType = 'all';
+    }
+  }
+
+  // ── 4. No filter — return all ──
+  else {
+    farmers = await Farmer.find(baseQuery)
+      .select(selectFields)
+      .sort({ 'ratings.average': -1, createdAt: -1 })
+      .limit(50).lean();
+    matchType = 'all';
+  }
+
+  res.json({ success: true, farmers, matchType });
 };
 
 // ── BUYER: Get farmer products ──────────────────────────────────
@@ -117,28 +157,40 @@ exports.getFarmerProducts = async (req, res) => {
 
 // ── BUYER: Search products near location ───────────────────────
 exports.searchNearbyProducts = async (req, res) => {
-  const { lat, lng, pincode, category, radius = 10 } = req.query;
+  const { lat, lng, pincode, district, category, radius = 10 } = req.query;
   const today = new Date();
   const baseQ = { verificationStatus: 'approved', isActive: true };
 
   let farmerIds;
 
-  if (lat && lng) {
+  if (district) {
+    // District filter — most reliable
+    let distFarmers = await Farmer.find({
+      ...baseQ,
+      'address.district': { $regex: new RegExp(`^${district.trim()}$`, 'i') },
+    }).select('_id').limit(50).lean();
+    if (distFarmers.length === 0) distFarmers = await Farmer.find(baseQ).select('_id').limit(50).lean();
+    farmerIds = distFarmers.map(f => f._id);
+  } else if (lat && lng) {
     const parsedLat = parseFloat(lat), parsedLng = parseFloat(lng);
     const hasValidGPS = !(parsedLat === 0 && parsedLng === 0);
     let geoFarmers = [];
     if (hasValidGPS) {
-      try {
-        geoFarmers = await Farmer.find({
-          ...baseQ,
-          gpsLocation: {
-            $near: {
-              $geometry: { type: 'Point', coordinates: [parsedLng, parsedLat] },
-              $maxDistance: parseFloat(radius) * 1000,
+      const radii = [parseFloat(radius), 50, 100, 300];
+      for (const r of radii) {
+        try {
+          geoFarmers = await Farmer.find({
+            ...baseQ,
+            gpsLocation: {
+              $near: {
+                $geometry: { type: 'Point', coordinates: [parsedLng, parsedLat] },
+                $maxDistance: r * 1000,
+              },
             },
-          },
-        }).select('_id').limit(50).lean();
-      } catch (_) { geoFarmers = []; }
+          }).select('_id').limit(50).lean();
+        } catch (_) { geoFarmers = []; }
+        if (geoFarmers.length > 0) break;
+      }
     }
     const fallback = geoFarmers.length === 0
       ? await Farmer.find(baseQ).select('_id').limit(50).lean()
@@ -146,6 +198,10 @@ exports.searchNearbyProducts = async (req, res) => {
     farmerIds = fallback.map(f => f._id);
   } else if (pincode) {
     let pinFarmers = await Farmer.find({ ...baseQ, 'address.pincode': pincode }).select('_id').limit(50).lean();
+    if (pinFarmers.length === 0 && pincode.length >= 3) {
+      const zone = pincode.slice(0, 3);
+      pinFarmers = await Farmer.find({ ...baseQ, 'address.pincode': { $regex: `^${zone}` } }).select('_id').limit(50).lean();
+    }
     if (pinFarmers.length === 0) pinFarmers = await Farmer.find(baseQ).select('_id').limit(50).lean();
     farmerIds = pinFarmers.map(f => f._id);
   } else {

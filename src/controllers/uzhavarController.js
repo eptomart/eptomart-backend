@@ -312,6 +312,30 @@ exports.createOrder = async (req, res) => {
     });
   }
 
+  // FIX 3 & 4: For scheduled orders, validate each product's harvest window
+  if (bookingType === 'scheduled' && scheduledDate) {
+    const selDate = new Date(scheduledDate);
+    selDate.setHours(12, 0, 0, 0); // normalise to midday for comparison
+    const conflicts = [];
+    for (const it of items) {
+      const prod = await FarmerProduct.findById(it.productId).select('name harvestFrom harvestTo').lean();
+      if (!prod || !prod.harvestFrom || !prod.harvestTo) continue;
+      const from = new Date(prod.harvestFrom); from.setHours(0, 0, 0, 0);
+      const to   = new Date(prod.harvestTo);   to.setHours(23, 59, 59, 999);
+      if (selDate < from || selDate > to) {
+        const fromStr = from.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+        const toStr   = to.toLocaleDateString('en-IN',   { day: 'numeric', month: 'short' });
+        conflicts.push(`${prod.name} (harvest: ${fromStr}–${toStr})`);
+      }
+    }
+    if (conflicts.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `The selected delivery date is outside the harvest window for: ${conflicts.join(', ')}. Please choose a date within the available harvest period.`,
+      });
+    }
+  }
+
   // Booking fee
   const bookingFee = { base: 21, gst: parseFloat((21 * 0.18).toFixed(2)), total: parseFloat((21 * 1.18).toFixed(2)) };
   const grandTotal = parseFloat((subtotal + (paymentMethod === 'subscription' ? 0 : bookingFee.total)).toFixed(2));

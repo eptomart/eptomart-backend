@@ -30,31 +30,70 @@ const getFarmerForUser = async (user) => {
   return farmer || null;
 };
 
+// ── BUYER: Get all approved farmers (default, no geo filter) ──
+exports.getAllFarmers = async (req, res) => {
+  const farmers = await Farmer.find({ verificationStatus: 'approved', isActive: true })
+    .select('-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc')
+    .sort({ 'ratings.average': -1, createdAt: -1 })
+    .limit(50).lean();
+  res.json({ success: true, farmers });
+};
+
 // ── BUYER: Get nearby farmers ───────────────────────────────────
 exports.getNearbyFarmers = async (req, res) => {
   const { lat, lng, pincode, radius = 10 } = req.query;
-
-  let query = { verificationStatus: 'approved', isActive: true };
-  let farmers;
+  const baseQuery = { verificationStatus: 'approved', isActive: true };
+  let farmers = [];
 
   if (lat && lng) {
-    farmers = await Farmer.find({
-      ...query,
-      gpsLocation: {
-        $near: {
-          $geometry: { type: 'Point', coordinates: [parseFloat(lng), parseFloat(lat)] },
-          $maxDistance: parseFloat(radius) * 1000,
-        },
-      },
-    })
-    .select('-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc')
-    .limit(30).lean();
+    const parsedLat = parseFloat(lat);
+    const parsedLng = parseFloat(lng);
+
+    // Try GPS $near first — only if coordinates look valid (not 0,0)
+    const hasValidGPS = !(parsedLat === 0 && parsedLng === 0);
+    if (hasValidGPS) {
+      try {
+        farmers = await Farmer.find({
+          ...baseQuery,
+          gpsLocation: {
+            $near: {
+              $geometry: { type: 'Point', coordinates: [parsedLng, parsedLat] },
+              $maxDistance: parseFloat(radius) * 1000,
+            },
+          },
+        })
+        .select('-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc')
+        .limit(30).lean();
+      } catch (_) {
+        farmers = [];
+      }
+    }
+
+    // Fallback: if geo query returned nothing, show all approved farmers
+    if (farmers.length === 0) {
+      farmers = await Farmer.find(baseQuery)
+        .select('-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc')
+        .sort({ 'ratings.average': -1, createdAt: -1 })
+        .limit(50).lean();
+    }
   } else if (pincode) {
-    farmers = await Farmer.find({ ...query, 'address.pincode': pincode })
+    // Pincode match — also fallback to all if none found
+    farmers = await Farmer.find({ ...baseQuery, 'address.pincode': pincode })
       .select('-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc')
       .limit(30).lean();
+
+    if (farmers.length === 0) {
+      farmers = await Farmer.find(baseQuery)
+        .select('-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc')
+        .sort({ 'ratings.average': -1, createdAt: -1 })
+        .limit(50).lean();
+    }
   } else {
-    return res.status(400).json({ success: false, message: 'Provide lat/lng or pincode' });
+    // No location at all — return all
+    farmers = await Farmer.find(baseQuery)
+      .select('-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc')
+      .sort({ 'ratings.average': -1, createdAt: -1 })
+      .limit(50).lean();
   }
 
   res.json({ success: true, farmers });
@@ -80,31 +119,42 @@ exports.getFarmerProducts = async (req, res) => {
 exports.searchNearbyProducts = async (req, res) => {
   const { lat, lng, pincode, category, radius = 10 } = req.query;
   const today = new Date();
+  const baseQ = { verificationStatus: 'approved', isActive: true };
 
-  // Get nearby approved farmer IDs first
-  let nearbyFarmerIds;
+  let farmerIds;
+
   if (lat && lng) {
-    const farmers = await Farmer.find({
-      verificationStatus: 'approved', isActive: true,
-      gpsLocation: {
-        $near: {
-          $geometry: { type: 'Point', coordinates: [parseFloat(lng), parseFloat(lat)] },
-          $maxDistance: parseFloat(radius) * 1000,
-        },
-      },
-    }).select('_id').limit(50).lean();
-    nearbyFarmerIds = farmers.map(f => f._id);
+    const parsedLat = parseFloat(lat), parsedLng = parseFloat(lng);
+    const hasValidGPS = !(parsedLat === 0 && parsedLng === 0);
+    let geoFarmers = [];
+    if (hasValidGPS) {
+      try {
+        geoFarmers = await Farmer.find({
+          ...baseQ,
+          gpsLocation: {
+            $near: {
+              $geometry: { type: 'Point', coordinates: [parsedLng, parsedLat] },
+              $maxDistance: parseFloat(radius) * 1000,
+            },
+          },
+        }).select('_id').limit(50).lean();
+      } catch (_) { geoFarmers = []; }
+    }
+    const fallback = geoFarmers.length === 0
+      ? await Farmer.find(baseQ).select('_id').limit(50).lean()
+      : geoFarmers;
+    farmerIds = fallback.map(f => f._id);
   } else if (pincode) {
-    const farmers = await Farmer.find({
-      verificationStatus: 'approved', isActive: true, 'address.pincode': pincode,
-    }).select('_id').limit(50).lean();
-    nearbyFarmerIds = farmers.map(f => f._id);
+    let pinFarmers = await Farmer.find({ ...baseQ, 'address.pincode': pincode }).select('_id').limit(50).lean();
+    if (pinFarmers.length === 0) pinFarmers = await Farmer.find(baseQ).select('_id').limit(50).lean();
+    farmerIds = pinFarmers.map(f => f._id);
   } else {
-    return res.status(400).json({ success: false, message: 'Provide lat/lng or pincode' });
+    const all = await Farmer.find(baseQ).select('_id').limit(50).lean();
+    farmerIds = all.map(f => f._id);
   }
 
   const productQuery = {
-    farmer: { $in: nearbyFarmerIds },
+    farmer: { $in: farmerIds },
     isActive: true, soldOut: false,
     expiryDate: { $gte: today },
     availableQuantity: { $gt: 0 },
@@ -113,10 +163,34 @@ exports.searchNearbyProducts = async (req, res) => {
 
   const products = await FarmerProduct.find(productQuery)
     .populate('farmer', 'name address ratings deliveryRadius availableNow')
-    .sort({ harvestDate: 1 })
+    .sort({ harvestFrom: 1 })
     .limit(100).lean();
 
   res.json({ success: true, products });
+};
+
+// ── BUYER: Cancel a payment_pending order (restores stock) ───────
+exports.cancelPaymentPendingOrder = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const order = await UzhavarOrder.findOne({ _id: orderId, buyer: req.user._id, status: 'payment_pending' });
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found or cannot be cancelled' });
+
+    // Restore stock
+    for (const it of order.items) {
+      await FarmerProduct.findByIdAndUpdate(it.product, { $inc: { availableQuantity: it.quantity } });
+    }
+
+    order.status = 'cancelled';
+    order.cancelledAt = new Date();
+    order.cancelledBy = 'buyer';
+    order.cancellationReason = 'Payment not completed';
+    await order.save();
+
+    res.json({ success: true, message: 'Order cancelled and stock restored' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 };
 
 // ── BUYER: Create order (after payment) ────────────────────────
@@ -127,21 +201,36 @@ exports.createOrder = async (req, res) => {
 
   // Validate items + calc subtotal
   let subtotal = 0;
+  let totalKg = 0;
   const enrichedItems = [];
   for (const it of items) {
     const prod = await FarmerProduct.findById(it.productId);
     if (!prod || !prod.isActive || prod.soldOut) {
       return res.status(400).json({ success: false, message: `Product ${it.productId} unavailable` });
     }
+    if (it.quantity <= 0) {
+      return res.status(400).json({ success: false, message: `Invalid quantity for ${prod.name}` });
+    }
     if (it.quantity > prod.availableQuantity) {
       return res.status(400).json({ success: false, message: `Only ${prod.availableQuantity} ${prod.unit} available for ${prod.name}` });
     }
+    // Count kg-unit items for minimum order validation
+    if (prod.unit === 'kg') totalKg += it.quantity;
     const line = parseFloat((prod.pricePerUnit * it.quantity).toFixed(2));
     subtotal += line;
     enrichedItems.push({
       product: prod._id, name: prod.name, nameTa: prod.nameTa,
       unit: prod.unit, quantity: it.quantity,
       pricePerUnit: prod.pricePerUnit, lineTotal: line,
+    });
+  }
+
+  // Minimum order: 5 kg total for Uzhavar Fresh
+  const UZHAVAR_MIN_KG = 5;
+  if (totalKg > 0 && totalKg < UZHAVAR_MIN_KG) {
+    return res.status(400).json({
+      success: false,
+      message: `Minimum order quantity for Uzhavar Fresh is ${UZHAVAR_MIN_KG} kg. You have ${totalKg} kg in your cart.`,
     });
   }
 
@@ -238,6 +327,10 @@ exports.buyerConfirmOrder = async (req, res) => {
   if (!order) return res.status(404).json({ success: false, message: 'Order not found or not in farmer_accepted state' });
 
   if (new Date() > order.buyerConfirmDeadline) {
+    // Restore stock on auto-cancel
+    for (const it of order.items) {
+      await FarmerProduct.findByIdAndUpdate(it.product, { $inc: { availableQuantity: it.quantity } });
+    }
     order.status = 'auto_cancelled';
     order.cancelledAt = new Date();
     order.cancelledBy = 'system';

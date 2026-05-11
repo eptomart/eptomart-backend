@@ -10,16 +10,18 @@ const { protectAdmin } = require('../middleware/adminAuth');
 const { uploadDocument } = require('../config/cloudinary');
 
 // ── Public / Buyer ──────────────────────────
+router.get('/farmers/all',             ctrl.getAllFarmers);
 router.get('/farmers/nearby',          ctrl.getNearbyFarmers);
 router.get('/farmers/:farmerId/products', ctrl.getFarmerProducts);
 router.get('/products/search',         ctrl.searchNearbyProducts);
 
 // ── Buyer (auth required) ───────────────────
-router.post('/orders',                 protect, ctrl.createOrder);
-router.post('/orders/payment',         protect, ctrl.createPaymentOrder);
-router.post('/orders/verify-payment',  protect, ctrl.verifyPayment);
-router.post('/orders/:orderId/confirm',protect, ctrl.buyerConfirmOrder);
-router.post('/orders/:orderId/rate',   protect, ctrl.rateOrder);
+router.post('/orders',                   protect, ctrl.createOrder);
+router.post('/orders/payment',           protect, ctrl.createPaymentOrder);
+router.post('/orders/verify-payment',    protect, ctrl.verifyPayment);
+router.post('/orders/:orderId/confirm',  protect, ctrl.buyerConfirmOrder);
+router.post('/orders/:orderId/cancel',   protect, ctrl.cancelPaymentPendingOrder);
+router.post('/orders/:orderId/rate',     protect, ctrl.rateOrder);
 router.get('/my-orders',               protect, async (req, res) => {
   const UzhavarOrder = require('../models/UzhavarOrder');
   const orders = await UzhavarOrder.find({ buyer: req.user._id })

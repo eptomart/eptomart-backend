@@ -13,6 +13,7 @@ const { uploadDocument } = require('../config/cloudinary');
 router.get('/farmers/all',             ctrl.getAllFarmers);
 router.get('/farmers/nearby',          ctrl.getNearbyFarmers);
 router.get('/farmers/:farmerId/products', ctrl.getFarmerProducts);
+router.get('/farmers/:farmerId/profile',  ctrl.getFarmerProfile);
 router.get('/products/search',         ctrl.searchNearbyProducts);
 
 // ── Buyer (auth required) ───────────────────

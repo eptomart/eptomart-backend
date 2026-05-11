@@ -30,10 +30,13 @@ const getFarmerForUser = async (user) => {
   return farmer || null;
 };
 
+// Public fields for buyer-facing farmer lists (no sensitive docs)
+const PUBLIC_FARMER_FIELDS = '-aadhaarNumber -aadhaarDoc -farmProofDoc -bankAccount.accountNumber -bankAccount.ifsc -bankAccount.accountName -fcmToken';
+
 // ── BUYER: Get all approved farmers (default, no geo filter) ──
 exports.getAllFarmers = async (req, res) => {
   const farmers = await Farmer.find({ verificationStatus: 'approved', isActive: true })
-    .select('-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc')
+    .select(PUBLIC_FARMER_FIELDS)
     .sort({ 'ratings.average': -1, createdAt: -1 })
     .limit(50).lean();
   res.json({ success: true, farmers });
@@ -43,7 +46,7 @@ exports.getAllFarmers = async (req, res) => {
 exports.getNearbyFarmers = async (req, res) => {
   const { lat, lng, pincode, district, radius = 10 } = req.query;
   const baseQuery = { verificationStatus: 'approved', isActive: true };
-  const selectFields = '-aadhaarNumber -bankAccount.accountNumber -bankAccount.ifsc';
+  const selectFields = PUBLIC_FARMER_FIELDS;
   let farmers = [];
   let matchType = 'all';
 
@@ -153,6 +156,25 @@ exports.getFarmerProducts = async (req, res) => {
   }).sort({ harvestFrom: 1 }).lean();
 
   res.json({ success: true, products });
+};
+
+// ── BUYER: Get single farmer public profile ────────────────────
+exports.getFarmerProfile = async (req, res) => {
+  const { farmerId } = req.params;
+  const farmer = await Farmer.findOne({ _id: farmerId, verificationStatus: 'approved' })
+    .select(PUBLIC_FARMER_FIELDS).lean();
+  if (!farmer) return res.status(404).json({ success: false, message: 'Farmer not found' });
+
+  const today = new Date();
+  const products = await FarmerProduct.find({
+    farmer: farmerId,
+    isActive: true,
+    soldOut: false,
+    expiryDate: { $gte: today },
+    availableQuantity: { $gt: 0 },
+  }).sort({ harvestFrom: 1 }).lean();
+
+  res.json({ success: true, farmer, products });
 };
 
 // ── BUYER: Search products near location ───────────────────────

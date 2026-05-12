@@ -40,6 +40,7 @@ const farmerSchema = new mongoose.Schema({
     bankName:      String,
     accountName:   String,
     verified:      { type: Boolean, default: false },
+    bankDoc:       String, // Cloudinary URL — passbook or cancelled cheque (mandatory from registration)
   },
 
   // Status

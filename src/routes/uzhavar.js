@@ -81,8 +81,9 @@ router.get('/farmer/me', protect, async (req, res) => {
 });
 
 // ── Admin ───────────────────────────────────
-router.post('/admin/farmers',           ...protectAdmin, ctrl.adminCreateFarmer);
-router.get('/admin/farmers',            ...protectAdmin, ctrl.adminGetFarmers);
+router.post('/admin/farmers',                   ...protectAdmin, ctrl.adminCreateFarmer);
+router.get('/admin/farmers',                    ...protectAdmin, ctrl.adminGetFarmers);
+router.get('/admin/farmers/:farmerId',          ...protectAdmin, ctrl.adminGetFarmerDetail);
 router.patch('/admin/farmers/:farmerId/action', ...protectAdmin, ctrl.adminApproveFarmer);
 router.get('/admin/orders',             ...protectAdmin, ctrl.adminGetOrders);
 router.get('/admin/subscriptions',      ...protectAdmin, ctrl.adminGetSubscriptions);

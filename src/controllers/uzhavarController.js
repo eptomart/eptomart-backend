@@ -273,24 +273,38 @@ exports.cancelPaymentPendingOrder = async (req, res) => {
 
 // ── BUYER: Create order (after payment) ────────────────────────
 exports.createOrder = async (req, res) => {
+  try {
   const { farmerId, items, bookingType, scheduledDate, scheduledSlot,
           deliveryAddress, paymentMethod, subscriptionId } = req.body;
   const buyerId = req.user._id;
 
+  if (!farmerId)  return res.status(400).json({ success: false, message: 'farmerId required' });
+  if (!items || !items.length) return res.status(400).json({ success: false, message: 'No items in order' });
+
+  // Validate farmer exists and is active
+  const farmer = await require('../models/Farmer').findOne({ _id: farmerId, verificationStatus: 'approved', isActive: true });
+  if (!farmer) return res.status(404).json({ success: false, message: 'Farmer not found or not active' });
+
   // Validate items + calc subtotal
+  const today = new Date();
   let subtotal = 0;
   let totalKg = 0;
   const enrichedItems = [];
   for (const it of items) {
+    if (!it.productId) return res.status(400).json({ success: false, message: 'productId missing in items' });
     const prod = await FarmerProduct.findById(it.productId);
     if (!prod || !prod.isActive || prod.soldOut) {
-      return res.status(400).json({ success: false, message: `Product ${it.productId} unavailable` });
+      return res.status(400).json({ success: false, message: `Product unavailable or no longer listed` });
+    }
+    // Expiry check: harvestTo + 3 day grace period
+    if (prod.expiryDate && new Date(prod.expiryDate) < today) {
+      return res.status(400).json({ success: false, message: `${prod.name} harvest period has ended. Remove it from cart and try again.` });
     }
     if (it.quantity <= 0) {
       return res.status(400).json({ success: false, message: `Invalid quantity for ${prod.name}` });
     }
     if (it.quantity > prod.availableQuantity) {
-      return res.status(400).json({ success: false, message: `Only ${prod.availableQuantity} ${prod.unit} available for ${prod.name}` });
+      return res.status(400).json({ success: false, message: `Only ${prod.availableQuantity} ${prod.unit} of ${prod.name} available` });
     }
     // Count kg-unit items for minimum order validation
     if (prod.unit === 'kg') totalKg += it.quantity;
@@ -378,13 +392,21 @@ exports.createOrder = async (req, res) => {
   }
 
   res.status(201).json({ success: true, order });
+
+  } catch (err) {
+    console.error('[Uzhavar] createOrder error:', err);
+    res.status(500).json({ success: false, message: err.message || 'Order creation failed. Please try again.' });
+  }
 };
 
 // ── BUYER: Create Razorpay payment order ───────────────────────
 exports.createPaymentOrder = async (req, res) => {
+  try {
   const { uzhavarOrderId } = req.body;
+  if (!uzhavarOrderId) return res.status(400).json({ success: false, message: 'uzhavarOrderId required' });
+
   const rzp = getRazorpay();
-  if (!rzp) return res.status(503).json({ success: false, message: 'Payment not configured' });
+  if (!rzp) return res.status(503).json({ success: false, message: 'Payment not configured — contact support' });
 
   const order = await UzhavarOrder.findOne({ _id: uzhavarOrderId, buyer: req.user._id });
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
@@ -409,15 +431,20 @@ exports.createPaymentOrder = async (req, res) => {
     amount:      rzpOrder.amount,
     currency:    rzpOrder.currency,
     orderNumber: order.orderNumber,
-    // Also send the split so the frontend can display it clearly
-    bookingFee:            order.bookingFee.total,
-    productSubtotal:       order.subtotal,
+    bookingFee:             order.bookingFee.total,
+    productSubtotal:        order.subtotal,
     balancePayableToFarmer: order.balancePayableToFarmer,
   });
+
+  } catch (err) {
+    console.error('[Uzhavar] createPaymentOrder error:', err);
+    res.status(500).json({ success: false, message: err.message || 'Payment initiation failed. Please try again.' });
+  }
 };
 
 // ── BUYER: Verify payment + activate order ─────────────────────
 exports.verifyPayment = async (req, res) => {
+  try {
   const { uzhavarOrderId, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
 
   const expected = crypto
@@ -435,7 +462,14 @@ exports.verifyPayment = async (req, res) => {
     status: 'pending_farmer',
   }, { new: true });
 
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found during payment verification' });
+
   res.json({ success: true, order });
+
+  } catch (err) {
+    console.error('[Uzhavar] verifyPayment error:', err);
+    res.status(500).json({ success: false, message: err.message || 'Payment verification failed' });
+  }
 };
 
 // ── BUYER: Confirm order after farmer accepts ──────────────────
@@ -693,6 +727,45 @@ exports.adminGetFarmers = async (req, res) => {
   ]);
 
   res.json({ success: true, farmers, total });
+};
+
+// ── ADMIN: Get single farmer full detail + products ───────────
+exports.adminGetFarmerDetail = async (req, res) => {
+  try {
+    const { farmerId } = req.params;
+    // Include sensitive fields for admin view
+    const farmer = await Farmer.findById(farmerId)
+      .select('+aadhaarNumber +bankAccount.accountNumber +bankAccount.ifsc')
+      .lean();
+    if (!farmer) return res.status(404).json({ success: false, message: 'Farmer not found' });
+
+    // All products (including inactive/expired — admin view)
+    const products = await FarmerProduct.find({ farmer: farmerId })
+      .sort({ isActive: -1, createdAt: -1 }).lean();
+
+    // Order stats
+    const totalOrders  = await UzhavarOrder.countDocuments({ farmer: farmerId, paymentStatus: 'paid' });
+    const pendingOrders = await UzhavarOrder.countDocuments({ farmer: farmerId, status: 'pending_farmer' });
+    const revenueResult = await UzhavarOrder.aggregate([
+      { $match: { farmer: require('mongoose').Types.ObjectId.createFromHexString(farmerId), paymentStatus: 'paid' } },
+      { $group: { _id: null, total: { $sum: '$subtotal' } } },
+    ]).catch(() => []);
+    const totalRevenue = revenueResult[0]?.total || 0;
+
+    // Mask sensitive fields
+    if (farmer.aadhaarNumber) {
+      farmer.aadhaarNumberMasked = `XXXX XXXX ${farmer.aadhaarNumber.slice(-4)}`;
+      delete farmer.aadhaarNumber;
+    }
+    if (farmer.bankAccount?.accountNumber) {
+      farmer.bankAccount.accountNumberMasked = `XXXXXXXX${farmer.bankAccount.accountNumber.slice(-4)}`;
+      delete farmer.bankAccount.accountNumber;
+    }
+
+    res.json({ success: true, farmer, products, stats: { totalOrders, pendingOrders, totalRevenue } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 };
 
 exports.adminApproveFarmer = async (req, res) => {

@@ -7,6 +7,7 @@ const UzhavarOrder       = require('../models/UzhavarOrder');
 const UzhavarSubscription = require('../models/UzhavarSubscription');
 const Razorpay           = require('razorpay');
 const crypto             = require('crypto');
+const { sendMetaWhatsApp } = require('../utils/sendWhatsApp');
 
 const getRazorpay = () => {
   if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return null;
@@ -489,11 +490,36 @@ exports.verifyPayment = async (req, res) => {
     razorpayOrderId, razorpayPaymentId,
     paymentStatus: 'paid',
     status: 'pending_farmer',
-  }, { new: true });
+  }, { new: true }).populate('buyer', 'name phone');
 
   if (!order) return res.status(404).json({ success: false, message: 'Order not found during payment verification' });
 
   res.json({ success: true, order });
+
+  // WhatsApp booking confirmation to buyer
+  const buyerPhone = order.buyer?.phone || order.deliveryAddress?.phone;
+  if (buyerPhone) {
+    const itemList = (order.items || []).slice(0, 4).map(i => `• ${i.name} ×${i.quantity} ${i.unit}`).join('\n');
+    const more = order.items?.length > 4 ? `\n...and ${order.items.length - 4} more` : '';
+    const msg =
+`✅ *Uzhavar Fresh Booking Confirmed!*
+
+Hi ${order.buyer?.name || 'there'} 👋
+
+Your fresh produce booking is confirmed with the farmer.
+
+🌾 *Items:*
+${itemList}${more}
+
+💳 Booking fee paid: ₹${order.bookingFee?.total?.toFixed(2) || '24.78'}
+🤝 Balance to pay farmer at delivery: ₹${order.balancePayableToFarmer?.toFixed(2) || order.subtotal?.toFixed(2) || '—'}
+
+The farmer will accept your order shortly. You'll be notified.
+
+Track your order on Uzhavar Fresh 🌱
+— *Team Eptomart*`;
+    sendMetaWhatsApp(buyerPhone, msg).catch(() => {});
+  }
 
   } catch (err) {
     console.error('[Uzhavar] verifyPayment error:', err);

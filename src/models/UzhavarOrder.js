@@ -48,6 +48,9 @@ const uzhavarOrderSchema = new mongoose.Schema({
   subtotal:   Number,
   grandTotal: Number, // subtotal + bookingFee.total
 
+  // Amount buyer pays farmer directly at delivery (= subtotal, NOT collected online)
+  balancePayableToFarmer: Number,
+
   // Payment
   paymentMethod:   { type: String, enum: ['razorpay', 'subscription'], default: 'razorpay' },
   razorpayOrderId: String,

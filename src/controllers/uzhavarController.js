@@ -358,6 +358,8 @@ exports.createOrder = async (req, res) => {
     bookingFee,
     subtotal: parseFloat(subtotal.toFixed(2)),
     grandTotal,
+    // Buyer pays farmer directly at delivery — equal to product subtotal
+    balancePayableToFarmer: parseFloat(subtotal.toFixed(2)),
     paymentMethod,
     subscriptionId: paymentMethod === 'subscription' ? subscriptionId : null,
     status: paymentMethod === 'subscription' ? 'pending_farmer' : 'payment_pending',
@@ -387,8 +389,12 @@ exports.createPaymentOrder = async (req, res) => {
   const order = await UzhavarOrder.findOne({ _id: uzhavarOrderId, buyer: req.user._id });
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
+  // Only charge the platform booking fee (₹24.78). The product amount (subtotal)
+  // is paid directly to the farmer at delivery — it is NOT collected via Razorpay.
+  const chargeAmount = Math.round(order.bookingFee.total * 100); // paise
+
   const rzpOrder = await rzp.orders.create({
-    amount:   Math.round(order.grandTotal * 100),
+    amount:   chargeAmount,
     currency: 'INR',
     receipt:  order.orderNumber,
     notes:    { type: 'uzhavar_fresh', orderId: order._id.toString() },
@@ -397,7 +403,17 @@ exports.createPaymentOrder = async (req, res) => {
   order.razorpayOrderId = rzpOrder.id;
   await order.save();
 
-  res.json({ success: true, rzpOrderId: rzpOrder.id, amount: rzpOrder.amount, currency: rzpOrder.currency, orderNumber: order.orderNumber });
+  res.json({
+    success: true,
+    rzpOrderId:  rzpOrder.id,
+    amount:      rzpOrder.amount,
+    currency:    rzpOrder.currency,
+    orderNumber: order.orderNumber,
+    // Also send the split so the frontend can display it clearly
+    bookingFee:            order.bookingFee.total,
+    productSubtotal:       order.subtotal,
+    balancePayableToFarmer: order.balancePayableToFarmer,
+  });
 };
 
 // ── BUYER: Verify payment + activate order ─────────────────────

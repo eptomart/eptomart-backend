@@ -271,6 +271,27 @@ const updateOrderStatus = async (req, res) => {
     );
   }
 
+  // ── WhatsApp status update to customer (all non-delivered status changes) ──
+  if (status && status !== prevStatus && ['confirmed', 'processing', 'shipped', 'cancelled', 'returned'].includes(status)) {
+    setImmediate(() => {
+      try {
+        const { sendOrderStatusWhatsApp } = require('../utils/sendWhatsApp');
+        const phone = order.shippingAddress?.phone;
+        const name  = order.shippingAddress?.fullName || order.shippingAddress?.name;
+        if (phone) {
+          sendOrderStatusWhatsApp(phone, {
+            status,
+            orderId:        order.orderId,
+            name,
+            trackingNumber: status === 'shipped' ? (trackingNumber || order.trackingNumber) : undefined,
+            refundStatus:   order.refund?.status,
+            note,
+          }).catch(() => {});
+        }
+      } catch (e) { /* non-critical */ }
+    });
+  }
+
   // ── Payout + WhatsApp billing: triggered when order transitions to 'delivered' ──
   if (status === 'delivered' && prevStatus !== 'delivered') {
     try {
@@ -386,6 +407,24 @@ const adminCancelWithRefund = async (req, res) => {
         }
       }
     } catch (e) { console.error('[Notify] Seller cancel notify failed:', e.message); }
+  });
+
+  // ── WhatsApp cancellation notice to customer ──────────────
+  setImmediate(() => {
+    try {
+      const { sendOrderStatusWhatsApp } = require('../utils/sendWhatsApp');
+      const phone = order.shippingAddress?.phone;
+      const name  = order.shippingAddress?.fullName || order.shippingAddress?.name;
+      if (phone) {
+        sendOrderStatusWhatsApp(phone, {
+          status:       'cancelled',
+          orderId:      order.orderId,
+          name,
+          refundStatus: order.refund?.status,
+          note:         reason,
+        }).catch(() => {});
+      }
+    } catch (e) { /* non-critical */ }
   });
 
   res.json({ success: true, message: 'Order cancelled', order, refund: order.refund });
@@ -556,6 +595,22 @@ const createManualShipment = async (req, res) => {
         `Order #${order.orderId}`,
         { awb, courier, shippingCharge: result?.shippingCharge || 0 }
       );
+    }
+
+    // ── WhatsApp shipped notification to customer ──────────
+    if (srOrderId && awb) {
+      setImmediate(() => {
+        try {
+          const { sendOrderStatusWhatsApp } = require('../utils/sendWhatsApp');
+          const phone = order.shippingAddress?.phone;
+          const name  = order.shippingAddress?.fullName || order.shippingAddress?.name;
+          if (phone) {
+            sendOrderStatusWhatsApp(phone, {
+              status: 'shipped', orderId: order.orderId, name, trackingNumber: awb,
+            }).catch(() => {});
+          }
+        } catch (e) { /* non-critical */ }
+      });
     }
 
     res.json({ success: true, shiprocket: { orderId: srOrderId, shipmentId: srShipId, awb, courier, trackingUrl, shippingCharge: result?.shippingCharge || 0 } });

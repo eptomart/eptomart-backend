@@ -460,6 +460,24 @@ const cancelOrder = async (req, res) => {
     ? ' A manual refund will be processed by our team within 2-3 business days.'
     : '';
 
+  // ── WhatsApp cancellation notice to customer ──────────
+  setImmediate(() => {
+    try {
+      const { sendOrderStatusWhatsApp } = require('../utils/sendWhatsApp');
+      const phone = order.shippingAddress?.phone || req.user?.phone;
+      const name  = order.shippingAddress?.fullName || order.shippingAddress?.name || req.user?.name;
+      if (phone) {
+        sendOrderStatusWhatsApp(phone, {
+          status:       'cancelled',
+          orderId:      order.orderId,
+          name,
+          refundStatus: order.refund?.status,
+          note:         reason,
+        }).catch(() => {});
+      }
+    } catch (e) { /* non-critical */ }
+  });
+
   res.json({ success: true, message: `Order cancelled.${refundMsg}`, order, refund: order.refund });
 };
 

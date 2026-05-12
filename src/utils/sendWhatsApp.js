@@ -323,6 +323,34 @@ Thank you for shopping with Eptomart 🙏
   return sendMetaWhatsApp(phone, message);
 };
 
+// ── Order status update — one function for all status changes ──
+// Sends the right message for each order status transition.
+const sendOrderStatusWhatsApp = (phone, { status, orderId, name, trackingNumber, refundStatus, note } = {}) => {
+  if (!phone || !orderId) return Promise.resolve({ success: false });
+
+  const track = trackingNumber ? `\n🚚 Tracking: *${trackingNumber}*\nhttps://shiprocket.co/tracking/${trackingNumber}` : '';
+
+  const messages = {
+    confirmed: `✅ *Order Confirmed — Eptomart!*\n\nHi ${name || 'there'} 👋\n\nYour order *#${orderId}* has been confirmed and is being prepared.\n\n📦 Track: eptomart.com/orders\n— *Team Eptomart*`,
+
+    processing: `⚙️ *Order Being Processed — Eptomart!*\n\nHi ${name || 'there'} 👋\n\nYour order *#${orderId}* is now being processed and packed.\n\nWe'll notify you once it's shipped! 📦\n— *Team Eptomart*`,
+
+    shipped: `🚚 *Your Eptomart Order is Shipped!*\n\nHi ${name || 'there'} 👋\n\nGreat news! Order *#${orderId}* is on its way to you.${track}\n\nExpected delivery in 3–5 business days.\n— *Team Eptomart*`,
+
+    cancelled: `❌ *Order Cancelled — Eptomart*\n\nHi ${name || 'there'},\n\nYour order *#${orderId}* has been cancelled.${note ? `\nReason: ${note}` : ''}${
+      refundStatus === 'initiated' ? '\n\n💰 *Refund initiated* — will credit in 5-7 business days.' :
+      refundStatus === 'manual_required' ? '\n\n💰 Refund will be processed manually by our team within 2-3 business days.' :
+      refundStatus === 'not_applicable' ? '' : ''
+    }\n\nFor help: eptomart.com/orders\n— *Team Eptomart*`,
+
+    returned: `🔄 *Return Acknowledged — Eptomart*\n\nHi ${name || 'there'},\n\nYour return for order *#${orderId}* has been received and is being processed.\n\nRefund will be credited once inspection is complete.\n— *Team Eptomart*`,
+  };
+
+  const msg = messages[status];
+  if (!msg) return Promise.resolve({ success: false, error: 'No message for this status' });
+  return sendMetaWhatsApp(phone, msg);
+};
+
 // ── OTP via WhatsApp ────────────────────────────────────
 // Used to replace Firebase phone auth (no CAPTCHA, fully backend-controlled).
 const sendOtpWhatsApp = (phone, code) => {

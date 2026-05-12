@@ -272,10 +272,19 @@ exports.cancelPaymentPendingOrder = async (req, res) => {
 };
 
 // ── BUYER: Create order (after payment) ────────────────────────
+// ── Haversine distance (km) ──────────────────────────────────────
+function haversineKm(lat1, lng1, lat2, lng2) {
+  const R = 6371, toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
 exports.createOrder = async (req, res) => {
   try {
   const { farmerId, items, bookingType, scheduledDate, scheduledSlot,
-          deliveryAddress, paymentMethod, subscriptionId } = req.body;
+          deliveryAddress, paymentMethod, subscriptionId,
+          buyerLat, buyerLng } = req.body;
   const buyerId = req.user._id;
 
   if (!farmerId)  return res.status(400).json({ success: false, message: 'farmerId required' });
@@ -284,6 +293,11 @@ exports.createOrder = async (req, res) => {
   // Validate farmer exists and is active
   const farmer = await require('../models/Farmer').findOne({ _id: farmerId, verificationStatus: 'approved', isActive: true });
   if (!farmer) return res.status(404).json({ success: false, message: 'Farmer not found or not active' });
+
+  // Availability check: block instant if farmer is not available now
+  if (bookingType === 'instant' && !farmer.availableNow) {
+    return res.status(400).json({ success: false, message: 'Farmer is not available for instant delivery right now. Please choose a scheduled date.' });
+  }
 
   // Validate items + calc subtotal
   const today = new Date();
@@ -324,6 +338,21 @@ exports.createOrder = async (req, res) => {
       success: false,
       message: `Minimum order quantity for Uzhavar Fresh is ${UZHAVAR_MIN_KG} kg. You have ${totalKg} kg in your cart.`,
     });
+  }
+
+  // Distance check: fresh produce cannot be ordered beyond 10 km from farmer
+  const hasFreshItems = enrichedItems.some(i => {
+    const originalItem = items.find(it => String(it.productId) === String(i.product));
+    return originalItem?.productType === 'fresh';
+  });
+  if (hasFreshItems && buyerLat && buyerLng) {
+    const farmerCoords = farmer.gpsLocation?.coordinates;
+    if (farmerCoords && (farmerCoords[0] !== 0 || farmerCoords[1] !== 0)) {
+      const dist = haversineKm(farmerCoords[1], farmerCoords[0], parseFloat(buyerLat), parseFloat(buyerLng));
+      if (dist > 10) {
+        return res.status(400).json({ success: false, message: 'Farmer is not closer to you. This fresh item cannot be shipped.' });
+      }
+    }
   }
 
   // FIX 3 & 4: For scheduled orders, validate each product's harvest window

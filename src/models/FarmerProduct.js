@@ -26,6 +26,10 @@ const farmerProductSchema = new mongoose.Schema({
   expiryDate:   { type: Date }, // auto: harvestTo + 3 days (grace period)
   deliveryType: { type: String, enum: ['instant', 'scheduled', 'both'], default: 'both' },
 
+  // Shipping classification
+  productType: { type: String, enum: ['fresh', 'dry'], default: 'fresh' },
+  canShip:     { type: Boolean, default: false }, // only relevant for dry products
+
   // Delivery slots (day-level: "morning", "evening")
   deliverySlots: [{
     date:  Date,

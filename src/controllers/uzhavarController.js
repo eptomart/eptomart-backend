@@ -781,15 +781,7 @@ exports.adminGetFarmerDetail = async (req, res) => {
     ]).catch(() => []);
     const totalRevenue = revenueResult[0]?.total || 0;
 
-    // Mask sensitive fields
-    if (farmer.aadhaarNumber) {
-      farmer.aadhaarNumberMasked = `XXXX XXXX ${farmer.aadhaarNumber.slice(-4)}`;
-      delete farmer.aadhaarNumber;
-    }
-    if (farmer.bankAccount?.accountNumber) {
-      farmer.bankAccount.accountNumberMasked = `XXXXXXXX${farmer.bankAccount.accountNumber.slice(-4)}`;
-      delete farmer.bankAccount.accountNumber;
-    }
+    // Admin sees full unmasked details — no masking applied
 
     res.json({ success: true, farmer, products, stats: { totalOrders, pendingOrders, totalRevenue } });
   } catch (err) {

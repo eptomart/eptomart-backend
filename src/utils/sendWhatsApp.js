@@ -51,16 +51,32 @@ const _postToMeta = (phoneId, token, payload) => {
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
+          console.log(`[WhatsApp] ✅ Sent → ${payload.to}`);
           resolve({ success: true, raw: data });
         } else {
-          console.error('[WhatsApp] Meta API error:', res.statusCode, data);
-          resolve({ success: false, error: data, statusCode: res.statusCode });
+          // Parse Meta error for actionable diagnosis
+          let parsed = {};
+          try { parsed = JSON.parse(data); } catch {}
+          const code    = parsed?.error?.code;
+          const subcode = parsed?.error?.error_subcode;
+          const msg     = parsed?.error?.message || data;
+
+          const hint =
+            code === 190  ? '⚠️  TOKEN EXPIRED — generate a new permanent System User token in Meta Business Settings → System Users.' :
+            code === 131030 ? '⚠️  PHONE NUMBER not registered on WhatsApp or not in E.164 format.' :
+            code === 131047 ? '⚠️  FREE-TEXT blocked — customer has not messaged in 24h. Use a Meta-approved template instead.' :
+            code === 132000 ? '⚠️  TEMPLATE not found or not approved yet. Check WhatsApp Manager → Message Templates.' :
+            '';
+
+          console.error(`[WhatsApp] ❌ Meta error ${res.statusCode} | code=${code} subcode=${subcode} | ${msg}`);
+          if (hint) console.error(`[WhatsApp] ${hint}`);
+          resolve({ success: false, error: msg, statusCode: res.statusCode, code });
         }
       });
     });
 
     req.on('error', (err) => {
-      console.error('[WhatsApp] Request error:', err.message);
+      console.error('[WhatsApp] ❌ Network error:', err.message);
       resolve({ success: false, error: err.message });
     });
 

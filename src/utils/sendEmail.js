@@ -208,7 +208,11 @@ const sendOrderConfirmation = async (to, order, opts = {}) => {
 };
 
 // ── Seller New Order Email ───────────────────
-const sendSellerNewOrderEmail = async (to, { businessName, orderId, items = [], total = 0 }) => {
+const sendSellerNewOrderEmail = async (to, {
+  businessName, orderId, items = [], total = 0,
+  buyerName = '', buyerPhone = '', buyerAddress = '',
+  paymentMethod = '', paymentStatus = 'pending',
+}) => {
   const itemRows = items.map(i => `
     <tr>
       <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;color:#333">${i.name}</td>
@@ -216,6 +220,10 @@ const sendSellerNewOrderEmail = async (to, { businessName, orderId, items = [], 
       <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0;text-align:right;font-weight:600;color:#333">₹${((i.price || 0) * i.qty).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
     </tr>
   `).join('');
+
+  const payBadge = paymentStatus === 'paid'
+    ? `<span style="background:#d1fae5;color:#065f46;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:700">✓ PAID</span>`
+    : `<span style="background:#fef3c7;color:#92400e;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:700">⏳ ${paymentStatus.toUpperCase()}</span>`;
 
   const html = `
     <!DOCTYPE html><html><head><meta charset="utf-8"></head>
@@ -228,6 +236,16 @@ const sendSellerNewOrderEmail = async (to, { businessName, orderId, items = [], 
         <div style="padding:30px">
           <h2 style="color:#333;margin-top:0">Hello, ${businessName}!</h2>
           <p style="color:#555;font-size:15px;line-height:1.6">You have a new order <strong style="color:#1d4ed8">#${orderId}</strong> waiting for confirmation.</p>
+
+          ${buyerName ? `
+          <div style="background:#f8faff;border:1px solid #dbeafe;border-radius:10px;padding:14px 16px;margin-bottom:20px;font-size:13px">
+            <p style="margin:0 0 6px;font-weight:700;color:#1e40af">📦 Delivery Details</p>
+            <p style="margin:2px 0;color:#333"><strong>Buyer:</strong> ${buyerName}</p>
+            ${buyerPhone ? `<p style="margin:2px 0;color:#333"><strong>Phone:</strong> ${buyerPhone}</p>` : ''}
+            ${buyerAddress ? `<p style="margin:2px 0;color:#333"><strong>Address:</strong> ${buyerAddress}</p>` : ''}
+            <p style="margin:6px 0 0;color:#333"><strong>Payment:</strong> ${paymentMethod} &nbsp; ${payBadge}</p>
+          </div>` : ''}
+
           <table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:14px">
             <thead><tr style="background:#1d4ed8">
               <th style="padding:10px 12px;text-align:left;color:white">Product</th>

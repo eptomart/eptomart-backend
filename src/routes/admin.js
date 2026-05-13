@@ -10,6 +10,7 @@ const {
   getSellerOrders, markSellerOrdersSettled,
   setAdminShippingCharge, uploadShiprocketBill,
   getPendingPaymentOrders,
+  getNewOrdersCount, updateItemStatus,
 } = require('../controllers/adminController');
 const { uploadBill } = require('../config/cloudinary');
 const { acknowledgePickup } = require('../controllers/sellerController');
@@ -47,6 +48,11 @@ router.get('/admins',                      ...protectSuperAdmin, listAdmins);
 router.post('/admins',                     ...protectSuperAdmin, createAdmin);
 router.patch('/admins/:id/permissions',    ...protectSuperAdmin, updateAdminPermissions);
 router.delete('/admins/:id',               ...protectSuperAdmin, deleteAdmin);
+
+// ── New orders count (polling) ──────────────────────────────
+router.get('/orders/new-count',               ...protectAdmin, getNewOrdersCount);
+// ── Per-item status update ──────────────────────────────────
+router.patch('/orders/:id/items/:itemId/status', ...protectAdmin, updateItemStatus);
 
 // ── WhatsApp test — GET /api/admin/test-whatsapp?phone=91XXXXXXXXXX ──
 router.get('/test-whatsapp', ...protectAdmin, async (req, res) => {

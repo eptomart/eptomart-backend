@@ -1124,6 +1124,58 @@ const getPendingPaymentOrders = async (req, res) => {
   res.json({ success: true, orders, total, totalPages: Math.ceil(total / Number(limit)) });
 };
 
+// ── GET /api/admin/orders/new-count ─────────────────────────
+// Returns count of new 'placed' orders since a given timestamp.
+// Used by admin frontend for real-time new order polling.
+const getNewOrdersCount = async (req, res) => {
+  const since = req.query.since ? new Date(req.query.since) : new Date(Date.now() - 30000);
+  const count = await Order.countDocuments({ orderStatus: 'placed', createdAt: { $gt: since } });
+  const latest = await Order.findOne({ orderStatus: 'placed' }).sort('-createdAt')
+    .populate('user', 'name').select('orderId pricing user createdAt items').lean();
+  res.json({ success: true, count, latest });
+};
+
+// ── PATCH /api/admin/orders/:id/items/:itemId/status ────────
+// Update per-item status. Also recomputes overall orderStatus.
+const updateItemStatus = async (req, res) => {
+  const { status } = req.body;
+  const VALID = ['pending', 'packed', 'shipped', 'delivered', 'cancelled'];
+  if (!VALID.includes(status)) {
+    return res.status(400).json({ success: false, message: `Invalid item status. Must be one of: ${VALID.join(', ')}` });
+  }
+
+  const order = await Order.findById(req.params.id);
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  const item = order.items.id(req.params.itemId);
+  if (!item) return res.status(404).json({ success: false, message: 'Item not found in order' });
+
+  item.itemStatus = status;
+
+  // Derive overall orderStatus from item statuses
+  const statuses = order.items.map(i => i.itemStatus);
+  const allDelivered   = statuses.every(s => s === 'delivered');
+  const someDelivered  = statuses.some(s => s === 'delivered');
+  const allCancelled   = statuses.every(s => s === 'cancelled');
+  const allShipped     = statuses.every(s => s === 'shipped' || s === 'delivered');
+  const someCancelled  = statuses.some(s => s === 'cancelled');
+
+  if (allDelivered)                                    order.orderStatus = 'delivered';
+  else if (someDelivered && !allDelivered)             order.orderStatus = 'partially_delivered';
+  else if (allCancelled)                               order.orderStatus = 'cancelled';
+  else if (allShipped)                                 order.orderStatus = 'shipped';
+  // else leave unchanged
+
+  order.statusHistory.push({
+    status:    order.orderStatus,
+    note:      `Item "${item.name}" → ${status}`,
+    updatedBy: 'admin',
+  });
+
+  await order.save();
+  res.json({ success: true, message: 'Item status updated', order });
+};
+
 module.exports = {
   getDashboard, getUsers, getUserLoginHistory, toggleUserStatus, updateUser, deleteUser,
   getAllOrders, updateOrderStatus, adminCancelWithRefund,
@@ -1133,4 +1185,5 @@ module.exports = {
   getSellerOrders, markSellerOrdersSettled,
   setAdminShippingCharge, uploadShiprocketBill,
   getPendingPaymentOrders,
+  getNewOrdersCount, updateItemStatus,
 };

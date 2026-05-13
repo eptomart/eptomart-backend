@@ -4,12 +4,19 @@
 const mongoose = require('mongoose');
 
 const orderItemSchema = new mongoose.Schema({
-  product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
-  name: String,
-  image: String,
-  price: { type: Number, required: true },
-  quantity: { type: Number, required: true, min: 1 },
-}, { _id: false });
+  product:     { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+  name:        String,
+  image:       String,
+  price:       { type: Number, required: true },
+  quantity:    { type: Number, required: true, min: 1 },
+  variantLabel: String,
+  // Per-item fulfilment status (for multi-item / multi-seller orders)
+  itemStatus: {
+    type:    String,
+    enum:    ['pending', 'packed', 'shipped', 'delivered', 'cancelled'],
+    default: 'pending',
+  },
+}, { _id: true });
 
 const orderSchema = new mongoose.Schema({
   orderId: {
@@ -45,7 +52,7 @@ const orderSchema = new mongoose.Schema({
   },
   paymentStatus: {
     type: String,
-    enum: ['pending', 'paid', 'failed', 'refunded'],
+    enum: ['pending', 'paid', 'partially_paid', 'failed', 'refunded'],
     default: 'pending',
   },
   paymentDetails: {
@@ -56,7 +63,7 @@ const orderSchema = new mongoose.Schema({
   },
   orderStatus: {
     type: String,
-    enum: ['placed', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'returned'],
+    enum: ['placed', 'confirmed', 'processing', 'shipped', 'partially_delivered', 'delivered', 'cancelled', 'returned'],
     default: 'placed',
   },
   statusHistory: [{

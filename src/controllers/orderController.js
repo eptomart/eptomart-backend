@@ -125,32 +125,63 @@ const processRefund = async (order) => {
 // ── Notify seller of new order (async, fire-and-forget) ──
 const notifySeller = async (order) => {
   try {
+    // Populate buyer info for the email
+    const User = require('../models/User');
+    const buyer = await User.findById(order.user).select('name email phone').lean();
+
+    // Full shipping address string
+    const addr = order.shippingAddress;
+    const fullAddress = [
+      addr?.addressLine1,
+      addr?.addressLine2,
+      addr?.city,
+      addr?.state,
+      addr?.pincode,
+    ].filter(Boolean).join(', ');
+
     // Group items by seller
     const sellerMap = {};
     for (const item of order.items) {
       const product = await Product.findById(item.product)
         .populate('seller', 'contact businessName user')
         .lean();
-      if (!product?.seller) continue;
+      if (!product?.seller) {
+        console.warn(`[Notify Seller] Product ${item.product} has no seller — skipping`);
+        continue;
+      }
       const sid = product.seller._id.toString();
       if (!sellerMap[sid]) sellerMap[sid] = { seller: product.seller, items: [] };
       sellerMap[sid].items.push({ name: item.name, qty: item.quantity, price: item.price });
     }
 
+    const sellerCount = Object.keys(sellerMap).length;
+    console.log(`[Notify Seller] Order #${order.orderId} — notifying ${sellerCount} seller(s)`);
+
     for (const { seller, items } of Object.values(sellerMap)) {
       const total = items.reduce((s, i) => s + (i.price || 0) * i.qty, 0);
 
-      // Email notification (proper seller order email, not OTP template)
+      // Email with full buyer details + address
       if (seller?.contact?.email) {
         sendSellerNewOrderEmail(seller.contact.email, {
-          businessName: seller.businessName,
-          orderId:      order.orderId,
+          businessName:  seller.businessName,
+          orderId:       order.orderId,
           items,
           total,
-        }).catch(() => {});
+          buyerName:     buyer?.name || addr?.fullName || 'Customer',
+          buyerPhone:    addr?.phone || buyer?.phone || '—',
+          buyerAddress:  fullAddress || '—',
+          paymentMethod: order.paymentMethod?.toUpperCase() || '—',
+          paymentStatus: order.paymentStatus || 'pending',
+        }).then(() => {
+          console.log(`[Notify Seller] ✅ Email sent to ${seller.contact.email} for order #${order.orderId}`);
+        }).catch(err => {
+          console.error(`[Notify Seller] ❌ Email failed for ${seller.contact.email}:`, err.message);
+        });
+      } else {
+        console.warn(`[Notify Seller] Seller ${seller.businessName} has no contact email — push only`);
       }
 
-      // In-app push notification to seller's browser
+      // In-app push notification
       if (seller?.user) {
         notifyUser(seller.user, {
           title: `📦 New Order #${order.orderId}`,
@@ -158,11 +189,11 @@ const notifySeller = async (order) => {
           icon:  '/icons/icon-192x192.png',
           url:   '/seller/orders',
           tag:   `order-${order.orderId}`,
-        }).catch(() => {});
+        }).catch(err => console.error('[Notify Seller] Push failed:', err.message));
       }
     }
   } catch (err) {
-    console.error('[Order Notify Seller] Error:', err.message);
+    console.error('[Notify Seller] Fatal error:', err.message);
   }
 };
 
@@ -171,6 +202,12 @@ const placeOrder = async (req, res) => {
   const { items, shippingAddress, paymentMethod, notes, shipping: clientShipping } = req.body;
   if (!items?.length) {
     return res.status(400).json({ success: false, message: 'Order items are required' });
+  }
+
+  // ── Buyer name mandatory ─────────────────────────────────
+  const buyerName = shippingAddress?.fullName?.trim() || req.user?.name?.trim();
+  if (!buyerName) {
+    return res.status(400).json({ success: false, message: 'Your full name is required before placing an order. Please update your profile or enter your name at checkout.' });
   }
 
   const buyerState = shippingAddress?.state || business.state;

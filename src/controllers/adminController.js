@@ -1147,7 +1147,9 @@ const updateItemStatus = async (req, res) => {
   const order = await Order.findById(req.params.id);
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
-  const item = order.items.id(req.params.itemId);
+  // Support both: item._id (new orders) and product ObjectId (old orders without _id on items)
+  const item = order.items.id(req.params.itemId)
+    || order.items.find(i => i.product?.toString() === req.params.itemId);
   if (!item) return res.status(404).json({ success: false, message: 'Item not found in order' });
 
   item.itemStatus = status;

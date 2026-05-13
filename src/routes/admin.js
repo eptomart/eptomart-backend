@@ -48,4 +48,13 @@ router.post('/admins',                     ...protectSuperAdmin, createAdmin);
 router.patch('/admins/:id/permissions',    ...protectSuperAdmin, updateAdminPermissions);
 router.delete('/admins/:id',               ...protectSuperAdmin, deleteAdmin);
 
+// ── WhatsApp test — GET /api/admin/test-whatsapp?phone=91XXXXXXXXXX ──
+router.get('/test-whatsapp', ...protectAdmin, async (req, res) => {
+  const { sendMetaWhatsApp } = require('../utils/sendWhatsApp');
+  const phone = req.query.phone || process.env.ADMIN_WHATSAPP_PHONE;
+  if (!phone) return res.status(400).json({ success: false, message: 'Provide ?phone=91XXXXXXXXXX' });
+  const result = await sendMetaWhatsApp(phone, '✅ Eptomart WhatsApp test message — if you see this, WhatsApp is working!');
+  res.json({ success: result.success, phone, result });
+});
+
 module.exports = router;

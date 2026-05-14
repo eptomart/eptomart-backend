@@ -357,6 +357,38 @@ Start: eptomart.com/seller/products
   return sendMetaWhatsApp(phone, message);
 };
 
+// ── Seller: new order received ──────────────────────────────
+// Sent to each seller's contact phone when a new order arrives containing their products.
+// Uses free-text (same as admin alert — seller is running a business and usually has the
+// business WhatsApp linked, so the 24h window is often open. If Meta blocks it, the log
+// will show error code 131047 and you can create a seller-specific template).
+const sendSellerNewOrderWhatsApp = (phone, { businessName, orderId, items = [], total, buyerName, paymentMethod }) => {
+  if (!phone) return Promise.resolve({ success: false, error: 'No phone' });
+
+  const itemLines = items
+    .map(i => `  • ${i.name} × ${i.qty} — ₹${Number((i.price || 0) * i.qty).toLocaleString('en-IN')}`)
+    .join('\n');
+
+  const message =
+`📦 *New Order on Eptomart!*
+
+Order: *#${orderId}*
+Buyer: ${buyerName || 'Customer'}
+Payment: ${(paymentMethod || '—').toUpperCase()}
+
+*Your Items:*
+${itemLines}
+
+*Your Total: ₹${Number(total).toLocaleString('en-IN')}*
+
+Go to your seller dashboard to confirm:
+eptomart.com/seller/orders
+
+— *Team Eptomart*`;
+
+  return sendMetaWhatsApp(phone, message);
+};
+
 // ── OTP via WhatsApp ────────────────────────────────────────
 // Authentication templates are auto-approved by Meta — fastest to set up.
 // Template body (Category: Authentication):
@@ -395,6 +427,7 @@ module.exports = {
   sendAdminNewOrderAlert,
   sendSellerWelcomeWhatsApp,
   sendSellerActivatedWhatsApp,
+  sendSellerNewOrderWhatsApp,
   sendOrderShippedWhatsApp,
   sendOrderStatusWhatsApp,
   sendOtpWhatsApp,

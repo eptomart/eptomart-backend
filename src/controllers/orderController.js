@@ -5,7 +5,7 @@ const Invoice = require('../models/Invoice');
 const Cart    = require('../models/Cart');
 const { sendOrderConfirmation, sendSellerNewOrderEmail } = require('../utils/sendEmail');
 const { notifyUser, notifications } = require('../utils/pushNotification');
-const { sendOrderPlacedWhatsApp, sendAdminNewOrderAlert } = require('../utils/sendWhatsApp');
+const { sendOrderPlacedWhatsApp, sendAdminNewOrderAlert, sendSellerNewOrderWhatsApp } = require('../utils/sendWhatsApp');
 const { calcOrderGst, extractBasePrice } = require('../utils/gstCalculator');
 const { generateInvoicePDF, uploadInvoicePDF } = require('../utils/generateInvoicePDF');
 const { generateInvoiceNumber } = require('../utils/invoiceNumber');
@@ -191,6 +191,21 @@ const notifySeller = async (order) => {
         });
       } else {
         console.warn(`[Notify Seller] Seller ${seller.businessName} has no contact email — push only`);
+      }
+
+      // WhatsApp notification to seller
+      if (seller?.contact?.phone) {
+        sendSellerNewOrderWhatsApp(seller.contact.phone, {
+          businessName:  seller.businessName,
+          orderId:       order.orderId,
+          items,
+          total,
+          buyerName:     buyer?.name || addr?.fullName || 'Customer',
+          paymentMethod: order.paymentMethod,
+        }).then(r => {
+          if (r.success) console.log(`[Notify Seller] ✅ WhatsApp sent to ${seller.contact.phone} for order #${order.orderId}`);
+          else           console.warn(`[Notify Seller] ⚠️  WhatsApp not sent to ${seller.contact.phone}:`, r.error || 'unknown');
+        }).catch(err => console.error('[Notify Seller] WhatsApp error:', err.message));
       }
 
       // In-app push notification

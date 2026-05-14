@@ -371,34 +371,53 @@ const updateOrderStatus = async (req, res) => {
 
   res.json({ success: true, message: 'Order updated', order });
 
-  // ── Customer email: paymentStatus → paid ───────────────────────────
+  // ── Customer WhatsApp + email: paymentStatus → paid ──────────────────
   if (paymentStatus === 'paid' && prevPaymentStatus !== 'paid') {
     setImmediate(async () => {
       try {
-        const NotificationLog = require('../models/NotificationLog');
-        const buyer = await User.findById(order.user).select('name firstName lastName email').lean();
-        const existing = buyer?.email ? await NotificationLog.findOne({ orderId: order._id, type: 'customer_paid', sentTo: buyer.email }) : null;
-        if (!existing && buyer?.email) {
-          {
+        const buyer = await User.findById(order.user).select('name firstName lastName email phone').lean();
+        const buyerName = buyer?.firstName
+          ? `${buyer.firstName} ${buyer.lastName || ''}`.trim()
+          : (buyer?.name && buyer.name !== 'New User' ? buyer.name : order.shippingAddress?.fullName || 'Customer');
+
+        // WhatsApp
+        const phone = order.shippingAddress?.phone || buyer?.phone;
+        if (phone) {
+          const { sendOrderPaidWhatsApp } = require('../utils/sendWhatsApp');
+          const waResult = await sendOrderPaidWhatsApp(phone, {
+            name:    buyerName,
+            orderId: order.orderId,
+            total:   order.pricing?.total || 0,
+          });
+          if (waResult.success) {
+            console.log(`[WhatsApp] ✅ Payment confirmed sent for order ${order.orderId} → ${phone}`);
+          } else {
+            console.error(`[WhatsApp] ❌ Payment confirmed FAILED for order ${order.orderId}: ${waResult.error || 'unknown'}`);
+          }
+        } else {
+          console.warn(`[WhatsApp] ⚠️  No phone for order ${order.orderId} — paid message skipped`);
+        }
+
+        // Email
+        if (buyer?.email) {
+          const NotificationLog = require('../models/NotificationLog');
+          const existing = await NotificationLog.findOne({ orderId: order._id, type: 'customer_paid', sentTo: buyer.email });
+          if (!existing) {
             const { sendCustomerPaidEmail } = require('../utils/sendEmail');
             const result = await sendCustomerPaidEmail(buyer.email, {
-              userName:      buyer.firstName ? `${buyer.firstName} ${buyer.lastName || ''}`.trim() : buyer.name,
+              userName:      buyerName,
               orderId:       order.orderId,
               total:         order.pricing?.total || 0,
               paymentMethod: order.paymentMethod || '',
             });
             await NotificationLog.create({
-              orderId: order._id,
-              userId:  order.user,
-              type:    'customer_paid',
-              sentTo:  buyer.email,
-              status:  result.success ? 'sent' : 'failed',
-              error:   result.error || undefined,
+              orderId: order._id, userId: order.user, type: 'customer_paid',
+              sentTo: buyer.email, status: result.success ? 'sent' : 'failed', error: result.error || undefined,
             }).catch(() => {});
             console.log(`[Email] customer_paid → ${buyer.email} for order ${order.orderId}: ${result.success ? '✅' : '❌'}`);
           }
         }
-      } catch (e) { console.error('[Email] customer_paid failed:', e.message); }
+      } catch (e) { console.error('[Notify] customer_paid failed:', e.message); }
     });
   }
 

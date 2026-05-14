@@ -186,19 +186,40 @@ const sendOrderPlacedWhatsApp = (phone, { orderId, total, paymentMethod, items }
 };
 
 // ── Customer: payment confirmed ─────────────────────────────
-// Template body:
+// Primary template (META_WHATSAPP_PAID_TEMPLATE):
 //   "Hi {{1}}! Payment of ₹{{2}} received for order #{{3}} on Eptomart. We're preparing your order 📦"
+//
+// Fallback: uses META_WHATSAPP_STATUS_TEMPLATE with status "Payment Received ✅"
 const sendOrderPaidWhatsApp = (phone, { orderId, total, name }) => {
-  return _sendWithTemplate(
-    phone,
-    'META_WHATSAPP_PAID_TEMPLATE',
-    [
-      name || 'Customer',
-      Number(total).toLocaleString('en-IN'),
-      String(orderId),
-    ],
-    `Payment confirmed for order #${orderId}`
-  );
+  const paidTemplate   = process.env.META_WHATSAPP_PAID_TEMPLATE;
+  const statusTemplate = process.env.META_WHATSAPP_STATUS_TEMPLATE;
+
+  if (paidTemplate) {
+    console.log(`[WhatsApp] Sending paid template "${paidTemplate}" → ${phone}`);
+    return sendTemplateWhatsApp(phone, paidTemplate, [
+      { type: 'body', parameters: [
+        { type: 'text', text: name || 'Customer' },
+        { type: 'text', text: Number(total).toLocaleString('en-IN') },
+        { type: 'text', text: String(orderId) },
+      ]},
+    ]);
+  }
+
+  // Fallback: use status template
+  if (statusTemplate) {
+    console.log(`[WhatsApp] META_WHATSAPP_PAID_TEMPLATE not set — falling back to status template for order ${orderId}`);
+    return sendTemplateWhatsApp(phone, statusTemplate, [
+      { type: 'body', parameters: [
+        { type: 'text', text: name || 'Customer' },
+        { type: 'text', text: String(orderId) },
+        { type: 'text', text: 'Payment Received ✅' },
+        { type: 'text', text: `Amount: ₹${Number(total).toLocaleString('en-IN')}. We are preparing your order 📦` },
+      ]},
+    ]);
+  }
+
+  console.warn(`[WhatsApp] ⚠️  Neither META_WHATSAPP_PAID_TEMPLATE nor META_WHATSAPP_STATUS_TEMPLATE is set — paid message NOT sent for order ${orderId}.`);
+  return Promise.resolve({ success: false, error: 'No template configured for paid notification' });
 };
 
 // ── Customer: order delivered — billing summary ─────────────

@@ -1236,6 +1236,8 @@ const updateItemStatus = async (req, res) => {
   const allShipped     = statuses.every(s => s === 'shipped' || s === 'delivered');
   const someCancelled  = statuses.some(s => s === 'cancelled');
 
+  const prevOrderStatus = order.orderStatus;
+
   if (allDelivered)                                    order.orderStatus = 'delivered';
   else if (someDelivered && !allDelivered)             order.orderStatus = 'partially_delivered';
   else if (allCancelled)                               order.orderStatus = 'cancelled';
@@ -1250,6 +1252,49 @@ const updateItemStatus = async (req, res) => {
 
   await order.save();
   res.json({ success: true, message: 'Item status updated', order });
+
+  // ── When all items delivered → fire WhatsApp + customer email (same as updateOrderStatus) ──
+  if (allDelivered && prevOrderStatus !== 'delivered') {
+    setImmediate(async () => {
+      try {
+        const buyer = await User.findById(order.user).select('name firstName lastName email phone').lean();
+        const waName = buyer?.firstName
+          ? `${buyer.firstName} ${buyer.lastName || ''}`.trim()
+          : (buyer?.name && buyer.name !== 'New User' ? buyer.name : order.shippingAddress?.fullName);
+        const phone = order.shippingAddress?.phone || buyer?.phone;
+
+        // WhatsApp
+        if (phone) {
+          const { sendOrderDeliveredWhatsApp } = require('../utils/sendWhatsApp');
+          sendOrderDeliveredWhatsApp(phone, {
+            name:    waName || 'Customer',
+            orderId: order.orderId,
+            pricing: order.pricing || {},
+          }).catch(() => {});
+        }
+
+        // Customer email
+        if (buyer?.email) {
+          const NotificationLog = require('../models/NotificationLog');
+          const already = await NotificationLog.findOne({ orderId: order._id, type: 'customer_delivered', sentTo: buyer.email });
+          if (!already) {
+            const { sendCustomerDeliveredEmail } = require('../utils/sendEmail');
+            const result = await sendCustomerDeliveredEmail(buyer.email, {
+              userName: waName || buyer.name,
+              orderId:  order.orderId,
+              items:    order.items || [],
+              total:    order.pricing?.total || 0,
+            });
+            await NotificationLog.create({
+              orderId: order._id, userId: order.user, type: 'customer_delivered',
+              sentTo: buyer.email, status: result.success ? 'sent' : 'failed', error: result.error || undefined,
+            }).catch(() => {});
+            console.log(`[Email] customer_delivered (item-trigger) → ${buyer.email} for order ${order.orderId}: ${result.success ? '✅' : '❌'}`);
+          }
+        }
+      } catch (e) { console.error('[Delivery notify] item-trigger failed:', e.message); }
+    });
+  }
 };
 
 module.exports = {

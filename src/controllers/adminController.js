@@ -246,6 +246,7 @@ const updateOrderStatus = async (req, res) => {
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
   const prevStatus = order.orderStatus;
+  const prevPaymentStatus = order.paymentStatus;
 
   if (status) order.orderStatus = status;
   if (paymentStatus) order.paymentStatus = paymentStatus;
@@ -273,16 +274,23 @@ const updateOrderStatus = async (req, res) => {
 
   // ── WhatsApp status update to customer (all non-delivered status changes) ──
   if (status && status !== prevStatus && ['confirmed', 'processing', 'shipped', 'cancelled', 'returned'].includes(status)) {
-    setImmediate(() => {
+    setImmediate(async () => {
       try {
         const { sendOrderStatusWhatsApp } = require('../utils/sendWhatsApp');
         const phone = order.shippingAddress?.phone;
-        const name  = order.shippingAddress?.fullName || order.shippingAddress?.name;
+        // Prefer full name from User record (firstName + lastName) over shipping address
+        let name = order.shippingAddress?.fullName || order.shippingAddress?.name;
+        const buyerDoc = await User.findById(order.user).select('name firstName lastName').lean().catch(() => null);
+        if (buyerDoc) {
+          name = buyerDoc.firstName
+            ? `${buyerDoc.firstName} ${buyerDoc.lastName || ''}`.trim()
+            : (buyerDoc.name && buyerDoc.name !== 'New User' ? buyerDoc.name : name);
+        }
         if (phone) {
           sendOrderStatusWhatsApp(phone, {
             status,
             orderId:        order.orderId,
-            name,
+            name:           name || 'Customer',
             trackingNumber: status === 'shipped' ? (trackingNumber || order.trackingNumber) : undefined,
             refundStatus:   order.refund?.status,
             note,
@@ -317,9 +325,13 @@ const updateOrderStatus = async (req, res) => {
       try {
         const { sendOrderDeliveredWhatsApp } = require('../utils/sendWhatsApp');
         const phone = order.shippingAddress?.phone;
+        const buyerForWA = await User.findById(order.user).select('name firstName lastName').lean().catch(() => null);
+        const waName = buyerForWA?.firstName
+          ? `${buyerForWA.firstName} ${buyerForWA.lastName || ''}`.trim()
+          : (buyerForWA?.name && buyerForWA.name !== 'New User' ? buyerForWA.name : order.shippingAddress?.fullName);
         if (phone) {
           await sendOrderDeliveredWhatsApp(phone, {
-            name:          order.shippingAddress?.fullName,
+            name:          waName || 'Customer',
             orderId:       order.orderId,
             items:         order.items || [],
             pricing:       order.pricing || {},
@@ -355,6 +367,68 @@ const updateOrderStatus = async (req, res) => {
   }
 
   res.json({ success: true, message: 'Order updated', order });
+
+  // ── Customer email: paymentStatus → paid ───────────────────────────
+  if (paymentStatus === 'paid' && prevPaymentStatus !== 'paid') {
+    setImmediate(async () => {
+      try {
+        const NotificationLog = require('../models/NotificationLog');
+        const buyer = await User.findById(order.user).select('name firstName lastName email').lean();
+        const existing = buyer?.email ? await NotificationLog.findOne({ orderId: order._id, type: 'customer_paid', sentTo: buyer.email }) : null;
+        if (!existing && buyer?.email) {
+          {
+            const { sendCustomerPaidEmail } = require('../utils/sendEmail');
+            const result = await sendCustomerPaidEmail(buyer.email, {
+              userName:      buyer.firstName ? `${buyer.firstName} ${buyer.lastName || ''}`.trim() : buyer.name,
+              orderId:       order.orderId,
+              total:         order.pricing?.total || 0,
+              paymentMethod: order.paymentMethod || '',
+            });
+            await NotificationLog.create({
+              orderId: order._id,
+              userId:  order.user,
+              type:    'customer_paid',
+              sentTo:  buyer.email,
+              status:  result.success ? 'sent' : 'failed',
+              error:   result.error || undefined,
+            }).catch(() => {});
+            console.log(`[Email] customer_paid → ${buyer.email} for order ${order.orderId}: ${result.success ? '✅' : '❌'}`);
+          }
+        }
+      } catch (e) { console.error('[Email] customer_paid failed:', e.message); }
+    });
+  }
+
+  // ── Customer email: orderStatus → delivered ────────────────────────
+  if (status === 'delivered' && prevStatus !== 'delivered') {
+    setImmediate(async () => {
+      try {
+        const NotificationLog = require('../models/NotificationLog');
+        const buyer = await User.findById(order.user).select('name firstName lastName email').lean();
+        const existing = buyer?.email ? await NotificationLog.findOne({ orderId: order._id, type: 'customer_delivered', sentTo: buyer.email }) : null;
+        if (!existing && buyer?.email) {
+          {
+            const { sendCustomerDeliveredEmail } = require('../utils/sendEmail');
+            const result = await sendCustomerDeliveredEmail(buyer.email, {
+              userName: buyer.firstName ? `${buyer.firstName} ${buyer.lastName || ''}`.trim() : buyer.name,
+              orderId:  order.orderId,
+              items:    order.items || [],
+              total:    order.pricing?.total || 0,
+            });
+            await NotificationLog.create({
+              orderId: order._id,
+              userId:  order.user,
+              type:    'customer_delivered',
+              sentTo:  buyer.email,
+              status:  result.success ? 'sent' : 'failed',
+              error:   result.error || undefined,
+            }).catch(() => {});
+            console.log(`[Email] customer_delivered → ${buyer.email} for order ${order.orderId}: ${result.success ? '✅' : '❌'}`);
+          }
+        }
+      } catch (e) { console.error('[Email] customer_delivered failed:', e.message); }
+    });
+  }
 };
 
 /**

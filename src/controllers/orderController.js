@@ -172,10 +172,22 @@ const notifySeller = async (order) => {
           buyerAddress:  fullAddress || '—',
           paymentMethod: order.paymentMethod?.toUpperCase() || '—',
           paymentStatus: order.paymentStatus || 'pending',
-        }).then(() => {
+        }).then(async (result) => {
           console.log(`[Notify Seller] ✅ Email sent to ${seller.contact.email} for order #${order.orderId}`);
-        }).catch(err => {
+          const NotificationLog = require('../models/NotificationLog');
+          await NotificationLog.findOneAndUpdate(
+            { orderId: order._id, type: 'seller_new_order', sentTo: seller.contact.email },
+            { $setOnInsert: { orderId: order._id, userId: order.user, type: 'seller_new_order', sentTo: seller.contact.email, status: result.success ? 'sent' : 'failed' } },
+            { upsert: true, new: true }
+          ).catch(() => {});
+        }).catch(async err => {
           console.error(`[Notify Seller] ❌ Email failed for ${seller.contact.email}:`, err.message);
+          // Log failure — use a separate key per seller to allow multiple sellers per order
+          const NotificationLog = require('../models/NotificationLog');
+          await NotificationLog.create({
+            orderId: order._id, userId: order.user, type: 'seller_new_order',
+            sentTo: seller.contact.email, status: 'failed', error: err.message,
+          }).catch(() => {});
         });
       } else {
         console.warn(`[Notify Seller] Seller ${seller.businessName} has no contact email — push only`);

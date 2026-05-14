@@ -200,7 +200,8 @@ const verifyOtp = async (req, res) => {
     }
   });
 
-  sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!', { isNewUser });
+  const needsProfile = !user.firstName || user.name === 'New User';
+  sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!', { isNewUser, needsProfile });
 };
 
 /**
@@ -265,9 +266,17 @@ const getMe = async (req, res) => {
  * @access  Private
  */
 const updateProfile = async (req, res) => {
-  const { name, email, phone, address } = req.body;
+  const { name, firstName, lastName, email, phone, address } = req.body;
   const updates = {};
-  if (name) updates.name = name;
+
+  // firstName + lastName → derive name
+  if (firstName) {
+    updates.firstName = firstName.trim();
+    updates.lastName  = (lastName || '').trim();
+    updates.name      = `${firstName.trim()} ${(lastName || '').trim()}`.trim() || firstName.trim();
+  } else if (name) {
+    updates.name = name;
+  }
 
   // Check email uniqueness before updating
   if (email) {
@@ -401,7 +410,8 @@ const verifyFirebasePhone = async (req, res) => {
     }
   });
 
-  sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!', { isNewUser });
+  const needsProfile2 = !user.firstName || user.name === 'New User';
+  sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!', { isNewUser, needsProfile: needsProfile2 });
 };
 
 const addAddress = async (req, res) => {

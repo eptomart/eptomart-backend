@@ -44,6 +44,7 @@ const activityRoutes      = require('./src/routes/activity');
 const aiRoutes            = require('./src/routes/ai');
 const conversationRoutes  = require('./src/routes/conversations');
 const uzhavarRoutes       = require('./src/routes/uzhavar');
+const koyambeduRoutes     = require('./src/routes/koyambedu');
 
 const app = express();
 
@@ -166,6 +167,7 @@ app.use('/api/activity',  activityRoutes);
 app.use('/api/ai',            aiRoutes);
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/uzhavar',       uzhavarRoutes);
+app.use('/api/koyambedu',     koyambeduRoutes);
 app.use('/',             sitemapRoutes);  // /sitemap.xml and /robots.txt
 
 // ─── Health Check ────────────────────────────

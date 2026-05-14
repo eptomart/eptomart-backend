@@ -1,0 +1,999 @@
+// ============================================
+// KOYAMBEDU DAILY — Combined Controller
+// Roles: superAdmin > admin > koyambeduSeller > buyer (user)
+//
+// SECURITY RULE: seller NEVER sees buyer address/phone.
+// Only admin/superAdmin can see full buyer details.
+// ============================================
+'use strict';
+
+const KoyambeduSeller       = require('../models/KoyambeduSeller');
+const KoyambeduCategory     = require('../models/KoyambeduCategory');
+const KoyambeduProduct      = require('../models/KoyambeduProduct');
+const KoyambeduCart         = require('../models/KoyambeduCart');
+const KoyambeduOrder        = require('../models/KoyambeduOrder');
+const KoyambeduDeliverySlot = require('../models/KoyambeduDeliverySlot');
+const User                  = require('../models/User');
+const Razorpay              = require('razorpay');
+const crypto                = require('crypto');
+const {
+  sendTemplateWhatsApp,
+  sendOrderStatusWhatsApp,
+} = require('../utils/sendWhatsApp');
+
+const getRazorpay = () => {
+  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return null;
+  return new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
+};
+
+// ── WhatsApp helpers (fire-and-forget) ──────
+const waSend = (phone, params) => {
+  const tpl = process.env.META_WHATSAPP_STATUS_TEMPLATE;
+  if (!tpl || !phone) return;
+  sendTemplateWhatsApp(phone, tpl, [
+    { type: 'body', parameters: params.map(t => ({ type: 'text', text: String(t) })) },
+  ]).then(r => {
+    if (!r.success) console.warn('[KBD WA] Failed to', phone, r.error);
+  }).catch(() => {});
+};
+
+// ─── Mask buyer details for seller view ─────
+const maskOrder = (order) => {
+  const o = order.toObject ? order.toObject() : { ...order };
+  // Remove buyer identity fields
+  delete o.buyer;
+  delete o.shippingAddress;
+  delete o.deliveryPersonPhone;
+  delete o.paymentDetails;
+  // Keep only safe item fields
+  o.items = (o.items || []).map(it => ({
+    _id:         it._id,
+    name:        it.name,
+    unit:        it.unit,
+    unitLabel:   it.unitLabel,
+    quantity:    it.quantity,
+    deliveryType:it.deliveryType,
+    orderedPrice:it.orderedPrice,
+    finalPrice:  it.finalPrice,
+    priceRevised:it.priceRevised,
+    sellerPayout:it.sellerPayout,
+    seller:      it.seller,
+  }));
+  return o;
+};
+
+// ══════════════════════════════════════════════
+// SECTION 1 — PUBLIC / BUYER ROUTES
+// ══════════════════════════════════════════════
+
+/** GET /api/koyambedu/categories */
+const getCategories = async (req, res) => {
+  const cats = await KoyambeduCategory.find({ status: 'approved', isActive: true })
+    .sort({ sortOrder: 1, name: 1 }).lean();
+  // Build tree: root categories + their children
+  const roots    = cats.filter(c => !c.parent);
+  const children = cats.filter(c => c.parent);
+  const tree = roots.map(r => ({
+    ...r,
+    subcategories: children.filter(c => String(c.parent) === String(r._id)),
+  }));
+  res.json({ success: true, categories: tree });
+};
+
+/** GET /api/koyambedu/products?category=&search=&deliveryType=&page= */
+const getProducts = async (req, res) => {
+  const { category, search, deliveryType, page = 1, limit = 20, sort = 'default' } = req.query;
+
+  const filter = { isActive: true, isAvailable: true };
+  if (category) filter.category = category;
+  if (deliveryType === 'today')    filter.isSameDay = true;
+  if (deliveryType === 'tomorrow') filter.isNextDay = true;
+  if (search) filter.$text = { $search: search };
+
+  const sortMap = {
+    price_asc:  { currentPrice: 1 },
+    price_desc: { currentPrice: -1 },
+    fresh:      { freshArrivalDate: -1 },
+    popular:    { totalOrders: -1 },
+    default:    { freshArrivalDate: -1, totalOrders: -1 },
+  };
+
+  const skip = (Number(page) - 1) * Number(limit);
+  const [products, total] = await Promise.all([
+    KoyambeduProduct.find(filter)
+      .populate('seller', 'businessName stallNumber marketSection rating')
+      .populate('category', 'name icon')
+      .sort(sortMap[sort] || sortMap.default)
+      .skip(skip)
+      .limit(Number(limit))
+      .lean(),
+    KoyambeduProduct.countDocuments(filter),
+  ]);
+  res.json({ success: true, products, total, page: Number(page), pages: Math.ceil(total / limit) });
+};
+
+/** GET /api/koyambedu/products/featured — home page sections */
+const getFeaturedProducts = async (req, res) => {
+  const base = { isActive: true, isAvailable: true };
+
+  const [freshArrivals, deals, flowers, bulk, seasonal] = await Promise.all([
+    KoyambeduProduct.find({ ...base, badges: 'fresh_arrival' })
+      .populate('category', 'name icon').sort({ freshArrivalDate: -1 }).limit(8).lean(),
+    KoyambeduProduct.find({ ...base, badges: 'best_seller' })
+      .populate('category', 'name icon').sort({ totalOrders: -1 }).limit(8).lean(),
+    KoyambeduProduct.find({ ...base, category: { $exists: true } })
+      .populate('category', 'name icon slug')
+      .sort({ totalOrders: -1 }).limit(8)
+      .lean()
+      .then(prods => prods.filter(p => p.category?.name?.toLowerCase().includes('flower') || p.category?.slug?.includes('flower'))),
+    KoyambeduProduct.find({ ...base, isBulkAvailable: true })
+      .populate('category', 'name icon').sort({ totalOrders: -1 }).limit(6).lean(),
+    KoyambeduProduct.find({ ...base, badges: 'seasonal' })
+      .populate('category', 'name icon').sort({ freshArrivalDate: -1 }).limit(6).lean(),
+  ]);
+
+  res.json({ success: true, sections: { freshArrivals, deals, flowers, bulk, seasonal } });
+};
+
+/** GET /api/koyambedu/products/:productId */
+const getProductDetail = async (req, res) => {
+  const product = await KoyambeduProduct.findOne({ _id: req.params.productId, isActive: true })
+    .populate('seller', 'businessName stallNumber marketSection rating ratingCount offersSameDay offersNextDay sameDayCutoff')
+    .populate('category', 'name nameTamil icon slug')
+    .lean();
+  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+  res.json({ success: true, product });
+};
+
+/** GET /api/koyambedu/slots */
+const getDeliverySlots = async (req, res) => {
+  await KoyambeduDeliverySlot.seedDefaults();
+  const now   = new Date();
+  const hhmm  = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+  const slots = await KoyambeduDeliverySlot.find({ isActive: true }).sort({ sortOrder: 1 }).lean();
+  // Mark today slots as expired if past cutoff
+  const enriched = slots.map(s => ({
+    ...s,
+    available: s.type === 'tomorrow' ? true : (hhmm <= s.cutoffTime),
+  }));
+  res.json({ success: true, slots: enriched });
+};
+
+// ══════════════════════════════════════════════
+// SECTION 2 — CART (authenticated buyer)
+// ══════════════════════════════════════════════
+
+/** GET /api/koyambedu/cart */
+const getCart = async (req, res) => {
+  let cart = await KoyambeduCart.findOne({ user: req.user._id })
+    .populate({
+      path: 'items.product',
+      select: 'name nameTamil currentPrice unit unitLabel minQty maxQty qtyStep isAvailable isActive isSameDay isNextDay images',
+      populate: { path: 'seller', select: 'businessName isActive isApproved' },
+    }).lean();
+  if (!cart) cart = { items: [] };
+  // Filter out unavailable items (product deleted/deactivated)
+  if (cart.items) {
+    cart.items = cart.items.filter(it => it.product?.isActive && it.product?.isAvailable && it.product?.seller?.isActive);
+  }
+  res.json({ success: true, cart });
+};
+
+/** POST /api/koyambedu/cart — add or update item */
+const updateCart = async (req, res) => {
+  const { productId, quantity, deliveryType = 'tomorrow' } = req.body;
+
+  const product = await KoyambeduProduct.findOne({ _id: productId, isActive: true, isAvailable: true })
+    .populate('seller', '_id isApproved isActive');
+  if (!product) return res.status(404).json({ success: false, message: 'Product not found or unavailable' });
+  if (!product.seller?.isApproved || !product.seller?.isActive) {
+    return res.status(400).json({ success: false, message: 'Seller not available' });
+  }
+  if (deliveryType === 'today' && !product.isSameDay) {
+    return res.status(400).json({ success: false, message: 'Same-day delivery not available for this product' });
+  }
+  if (deliveryType === 'tomorrow' && !product.isNextDay) {
+    return res.status(400).json({ success: false, message: 'Next-day delivery not available for this product' });
+  }
+
+  let cart = await KoyambeduCart.findOne({ user: req.user._id });
+  if (!cart) cart = new KoyambeduCart({ user: req.user._id, items: [] });
+
+  const idx = cart.items.findIndex(i => String(i.product) === String(productId));
+
+  if (quantity <= 0) {
+    if (idx > -1) cart.items.splice(idx, 1);
+  } else {
+    const qty = Math.max(product.minQty, Math.min(product.maxQty, Number(quantity)));
+    const itemData = {
+      product:     product._id,
+      seller:      product.seller._id,
+      name:        product.name,
+      unitPrice:   product.currentPrice,
+      unit:        product.unit,
+      unitLabel:   product.unitLabel,
+      quantity:    qty,
+      deliveryType,
+    };
+    if (idx > -1) { Object.assign(cart.items[idx], itemData); }
+    else          { cart.items.push(itemData); }
+  }
+
+  await cart.save();
+  res.json({ success: true, cart });
+};
+
+/** DELETE /api/koyambedu/cart/clear */
+const clearCart = async (req, res) => {
+  await KoyambeduCart.findOneAndUpdate({ user: req.user._id }, { items: [] });
+  res.json({ success: true });
+};
+
+// ══════════════════════════════════════════════
+// SECTION 3 — ORDERS (buyer)
+// ══════════════════════════════════════════════
+
+/** POST /api/koyambedu/orders — place order (COD) */
+const placeOrder = async (req, res) => {
+  const { shippingAddress, paymentMethod = 'razorpay', deliverySlot, notes } = req.body;
+
+  if (!shippingAddress?.fullName || !shippingAddress?.addressLine1 || !shippingAddress?.pincode) {
+    return res.status(400).json({ success: false, message: 'Full shipping address required' });
+  }
+
+  const cart = await KoyambeduCart.findOne({ user: req.user._id })
+    .populate({
+      path: 'items.product',
+      populate: { path: 'seller', select: 'isApproved isActive commissionRate contact businessName notifyWhatsApp' },
+    });
+
+  if (!cart || !cart.items.length) {
+    return res.status(400).json({ success: false, message: 'Cart is empty' });
+  }
+
+  // Build order items + pricing
+  let subtotal = 0;
+  const orderItems = [];
+  const deliveryTypes = new Set();
+
+  for (const ci of cart.items) {
+    const p  = ci.product;
+    const sl = p.seller;
+    if (!p?.isActive || !p?.isAvailable || !sl?.isApproved || !sl?.isActive) {
+      return res.status(400).json({ success: false, message: `"${p?.name || 'A product'}" is currently unavailable` });
+    }
+    const lineTotal    = p.currentPrice * ci.quantity;
+    const commission   = (sl.commissionRate || 8) / 100;
+    const sellerPayout = lineTotal * (1 - commission);
+    subtotal += lineTotal;
+    deliveryTypes.add(ci.deliveryType);
+    orderItems.push({
+      product:      p._id,
+      seller:       sl._id,
+      name:         p.name,
+      unit:         p.unit,
+      unitLabel:    p.unitLabel,
+      quantity:     ci.quantity,
+      deliveryType: ci.deliveryType,
+      orderedPrice: p.currentPrice,
+      finalPrice:   p.currentPrice,
+      sellerPayout: Math.round(sellerPayout * 100) / 100,
+    });
+  }
+
+  const deliveryCharge = subtotal >= 499 ? 0 : 40;
+  const serviceFee     = 10;
+  const total          = subtotal + deliveryCharge + serviceFee;
+  const deliveryType   = deliveryTypes.size > 1 ? 'mixed' : [...deliveryTypes][0];
+
+  const order = new KoyambeduOrder({
+    buyer:           req.user._id,
+    shippingAddress,
+    items:           orderItems,
+    deliveryType,
+    deliverySlot:    deliverySlot || '7 AM – 11 AM',
+    paymentMethod,
+    paymentStatus:   paymentMethod === 'cod' ? 'pending' : 'pending',
+    orderStatus:     'placed',
+    pricing:         { subtotal, deliveryCharge, serviceFee, total },
+    adminNotes:      notes || '',
+  });
+  await order.save();
+
+  // Clear cart
+  await KoyambeduCart.findOneAndUpdate({ user: req.user._id }, { items: [] });
+
+  if (paymentMethod === 'cod') {
+    order.orderStatus = 'pending_confirmation';
+    await order.save();
+    setImmediate(() => _notifySellerNewOrder(order).catch(() => {}));
+  }
+
+  res.status(201).json({ success: true, order: { _id: order._id, orderId: order.orderId, total, paymentMethod } });
+};
+
+/** POST /api/koyambedu/orders/create-razorpay — initiate Razorpay payment */
+const createRazorpayOrder = async (req, res) => {
+  const { orderId } = req.body;
+  const razorpay = getRazorpay();
+  if (!razorpay) return res.status(503).json({ success: false, message: 'Payment gateway not configured' });
+
+  const order = await KoyambeduOrder.findOne({ _id: orderId, buyer: req.user._id });
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  const rzpOrder = await razorpay.orders.create({
+    amount:   Math.round(order.pricing.total * 100),
+    currency: 'INR',
+    receipt:  order.orderId,
+    notes:    { kbdOrderId: String(order._id) },
+  });
+
+  order.paymentDetails.razorpayOrderId = rzpOrder.id;
+  await order.save();
+
+  res.json({ success: true, rzpOrderId: rzpOrder.id, amount: order.pricing.total, currency: 'INR', orderId: order._id });
+};
+
+/** POST /api/koyambedu/orders/verify-payment */
+const verifyPayment = async (req, res) => {
+  const { orderId, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
+  const order = await KoyambeduOrder.findOne({ _id: orderId, buyer: req.user._id });
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  const secret = process.env.RAZORPAY_KEY_SECRET;
+  const body   = `${razorpayOrderId}|${razorpayPaymentId}`;
+  const expectedSig = crypto.createHmac('sha256', secret).update(body).digest('hex');
+  if (expectedSig !== razorpaySignature) {
+    return res.status(400).json({ success: false, message: 'Payment verification failed' });
+  }
+
+  order.paymentStatus = 'paid';
+  order.orderStatus   = 'pending_confirmation';
+  order.paymentDetails.razorpayOrderId   = razorpayOrderId;
+  order.paymentDetails.razorpayPaymentId = razorpayPaymentId;
+  order.paymentDetails.razorpaySignature = razorpaySignature;
+  order.paymentDetails.paidAt = new Date();
+  await order.save();
+
+  setImmediate(() => _notifySellerNewOrder(order).catch(() => {}));
+
+  res.json({ success: true, message: 'Payment confirmed!', orderId: order.orderId });
+};
+
+/** GET /api/koyambedu/my-orders */
+const getMyOrders = async (req, res) => {
+  const orders = await KoyambeduOrder.find({ buyer: req.user._id })
+    .select('-buyer -shippingAddress.phone -deliveryPersonPhone')
+    .populate('items.product', 'name images unit')
+    .sort({ createdAt: -1 })
+    .lean();
+  res.json({ success: true, orders });
+};
+
+/** GET /api/koyambedu/my-orders/:orderId */
+const getMyOrder = async (req, res) => {
+  const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id })
+    .populate('items.product', 'name images unit currentPrice')
+    .lean();
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+  res.json({ success: true, order });
+};
+
+/** POST /api/koyambedu/orders/:orderId/approve-revision — buyer approves price revision */
+const approveRevision = async (req, res) => {
+  const { approve } = req.body; // true or false
+  const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+  if (order.orderStatus !== 'price_revision_pending') {
+    return res.status(400).json({ success: false, message: 'No pending price revision for this order' });
+  }
+
+  if (approve) {
+    order.priceRevision.buyerResponse = 'approved';
+    order.priceRevision.respondedAt   = new Date();
+    order.pricing.revisedTotal        = order.priceRevision.revisedTotal;
+    order.orderStatus                 = 'confirmed';
+    // Update finalPrice on each revised item
+    for (const rev of order.priceRevision.revisedItems) {
+      const item = order.items.find(i => String(i.product) === String(rev.productId));
+      if (item) { item.finalPrice = rev.revisedPrice; item.priceRevised = true; }
+    }
+    await order.save();
+
+    // Notify admin
+    console.log(`[KBD] Buyer approved price revision for order ${order.orderId}`);
+    res.json({ success: true, message: 'Price revision approved. Your order is now confirmed!', order });
+  } else {
+    order.priceRevision.buyerResponse = 'rejected';
+    order.priceRevision.respondedAt   = new Date();
+    order.orderStatus  = 'cancelled';
+    order.cancelReason = 'Buyer rejected revised pricing';
+    await order.save();
+
+    // Initiate refund if online payment
+    if (order.paymentStatus === 'paid' && order.paymentMethod === 'razorpay') {
+      setImmediate(() => _refundOrder(order).catch(() => {}));
+    }
+    res.json({ success: true, message: 'Order cancelled. Refund will be initiated shortly.' });
+  }
+};
+
+/** POST /api/koyambedu/orders/:orderId/cancel — buyer cancel */
+const cancelOrder = async (req, res) => {
+  const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+  if (['dispatched','delivered','cancelled'].includes(order.orderStatus)) {
+    return res.status(400).json({ success: false, message: 'Order cannot be cancelled at this stage' });
+  }
+  order.orderStatus  = 'cancelled';
+  order.cancelReason = req.body.reason || 'Cancelled by buyer';
+  await order.save();
+  if (order.paymentStatus === 'paid' && order.paymentMethod === 'razorpay') {
+    setImmediate(() => _refundOrder(order).catch(() => {}));
+  }
+  res.json({ success: true, message: 'Order cancelled' });
+};
+
+// ══════════════════════════════════════════════
+// SECTION 4 — SELLER ROUTES
+// ══════════════════════════════════════════════
+
+/** POST /api/koyambedu/seller/register */
+const sellerRegister = async (req, res) => {
+  const existing = await KoyambeduSeller.findOne({ user: req.user._id });
+  if (existing) return res.status(400).json({ success: false, message: 'You already have a Koyambedu seller account' });
+
+  const {
+    businessName, ownerName, stallNumber, marketSection,
+    contactPhone, contactEmail, productTypes, description,
+    bankAccountName, bankAccountNumber, bankIfsc, bankName, bankUpi,
+  } = req.body;
+
+  if (!businessName || !ownerName || !contactPhone) {
+    return res.status(400).json({ success: false, message: 'Business name, owner name and phone are required' });
+  }
+
+  const seller = await KoyambeduSeller.create({
+    user: req.user._id,
+    businessName, ownerName, stallNumber, marketSection, description,
+    contact: { phone: contactPhone, email: contactEmail },
+    productTypes: productTypes || [],
+    bankDetails: {
+      accountName: bankAccountName,
+      accountNumber: bankAccountNumber,
+      ifsc: bankIfsc,
+      bankName: bankName,
+      upiId: bankUpi,
+    },
+  });
+
+  res.status(201).json({ success: true, message: 'Registration submitted. Awaiting admin approval.', seller });
+};
+
+/** GET /api/koyambedu/seller/profile */
+const getSellerProfile = async (req, res) => {
+  const seller = await KoyambeduSeller.findOne({ user: req.user._id });
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller profile not found' });
+  res.json({ success: true, seller });
+};
+
+/** PUT /api/koyambedu/seller/profile */
+const updateSellerProfile = async (req, res) => {
+  const seller = await KoyambeduSeller.findOne({ user: req.user._id });
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller profile not found' });
+  const { businessName, ownerName, stallNumber, marketSection, description,
+    offersSameDay, offersNextDay, sameDayCutoff, notifyWhatsApp } = req.body;
+  Object.assign(seller, {
+    ...(businessName  && { businessName }),
+    ...(ownerName     && { ownerName }),
+    ...(stallNumber   !== undefined && { stallNumber }),
+    ...(marketSection !== undefined && { marketSection }),
+    ...(description   !== undefined && { description }),
+    ...(offersSameDay !== undefined && { offersSameDay }),
+    ...(offersNextDay !== undefined && { offersNextDay }),
+    ...(sameDayCutoff && { sameDayCutoff }),
+    ...(notifyWhatsApp!== undefined && { notifyWhatsApp }),
+  });
+  await seller.save();
+  res.json({ success: true, seller });
+};
+
+// ── SELLER PRODUCTS ──────────────────────────
+
+/** GET /api/koyambedu/seller/products */
+const getSellerProducts = async (req, res) => {
+  const seller = await KoyambeduSeller.findOne({ user: req.user._id });
+  if (!seller) return res.status(403).json({ success: false, message: 'Seller profile not found' });
+  const products = await KoyambeduProduct.find({ seller: seller._id })
+    .populate('category', 'name icon').sort({ createdAt: -1 }).lean();
+  res.json({ success: true, products });
+};
+
+/** POST /api/koyambedu/seller/products */
+const createSellerProduct = async (req, res) => {
+  const seller = await KoyambeduSeller.findOne({ user: req.user._id, isApproved: true, isActive: true });
+  if (!seller) return res.status(403).json({ success: false, message: 'Seller not approved' });
+
+  const {
+    categoryId, name, nameTamil, description, unit, unitLabel,
+    minQty, maxQty, qtyStep, marketPriceMin, marketPriceMax, currentPrice,
+    stockQty, freshArrivalTime, isSameDay, isNextDay, sameDayCutoff,
+    badges, tags, isBulkAvailable, bulkMinQty, bulkPricePerUnit, isRecurringAllowed,
+  } = req.body;
+
+  if (!categoryId || !name || !currentPrice) {
+    return res.status(400).json({ success: false, message: 'Category, name and price are required' });
+  }
+
+  const category = await KoyambeduCategory.findOne({ _id: categoryId, status: 'approved', isActive: true });
+  if (!category) return res.status(400).json({ success: false, message: 'Invalid or unapproved category' });
+
+  const product = await KoyambeduProduct.create({
+    seller: seller._id, category: category._id,
+    name, nameTamil, description, unit: unit || 'kg', unitLabel: unitLabel || unit || 'kg',
+    minQty: minQty || 0.5, maxQty: maxQty || 50, qtyStep: qtyStep || 0.5,
+    marketPriceMin, marketPriceMax, currentPrice: Number(currentPrice),
+    stockQty: stockQty || 0,
+    freshArrivalTime: freshArrivalTime || '',
+    freshArrivalDate: freshArrivalTime ? new Date() : undefined,
+    isSameDay: isSameDay !== false, isNextDay: isNextDay !== false,
+    sameDayCutoff: sameDayCutoff || seller.sameDayCutoff,
+    badges: badges || [], tags: tags || [],
+    isBulkAvailable: isBulkAvailable || false, bulkMinQty, bulkPricePerUnit,
+    isRecurringAllowed: isRecurringAllowed || false,
+  });
+
+  res.status(201).json({ success: true, product });
+};
+
+/** PUT /api/koyambedu/seller/products/:productId */
+const updateSellerProduct = async (req, res) => {
+  const seller  = await KoyambeduSeller.findOne({ user: req.user._id });
+  if (!seller) return res.status(403).json({ success: false, message: 'Not a seller' });
+  const product = await KoyambeduProduct.findOne({ _id: req.params.productId, seller: seller._id });
+  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+
+  const allowed = ['name','nameTamil','description','unit','unitLabel','minQty','maxQty','qtyStep',
+    'marketPriceMin','marketPriceMax','currentPrice','stockQty','freshArrivalTime',
+    'isSameDay','isNextDay','sameDayCutoff','badges','tags','isActive','isAvailable',
+    'isBulkAvailable','bulkMinQty','bulkPricePerUnit','isRecurringAllowed'];
+
+  for (const k of allowed) {
+    if (req.body[k] !== undefined) product[k] = req.body[k];
+  }
+  if (req.body.freshArrivalTime) product.freshArrivalDate = new Date();
+  if (req.body.currentPrice)     product.priceUpdatedAt   = new Date();
+  await product.save();
+
+  res.json({ success: true, product });
+};
+
+/** PATCH /api/koyambedu/seller/products/:productId/toggle */
+const toggleProductAvailability = async (req, res) => {
+  const seller  = await KoyambeduSeller.findOne({ user: req.user._id });
+  if (!seller) return res.status(403).json({ success: false, message: 'Not a seller' });
+  const product = await KoyambeduProduct.findOne({ _id: req.params.productId, seller: seller._id });
+  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+  product.isAvailable = !product.isAvailable;
+  await product.save();
+  res.json({ success: true, isAvailable: product.isAvailable });
+};
+
+/** DELETE /api/koyambedu/seller/products/:productId */
+const deleteSellerProduct = async (req, res) => {
+  const seller = await KoyambeduSeller.findOne({ user: req.user._id });
+  if (!seller) return res.status(403).json({ success: false, message: 'Not a seller' });
+  const product = await KoyambeduProduct.findOneAndDelete({ _id: req.params.productId, seller: seller._id });
+  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+  res.json({ success: true, message: 'Product deleted' });
+};
+
+// ── SELLER ORDERS (masked — no buyer info) ──────
+
+/** GET /api/koyambedu/seller/orders */
+const getSellerOrders = async (req, res) => {
+  const seller = await KoyambeduSeller.findOne({ user: req.user._id });
+  if (!seller) return res.status(403).json({ success: false, message: 'Not a seller' });
+
+  const orders = await KoyambeduOrder.find({
+    'items.seller': seller._id,
+    orderStatus: { $nin: ['placed'] }, // only show after payment confirmed
+  }).sort({ createdAt: -1 }).lean();
+
+  // Filter items per this seller only + mask buyer details
+  const masked = orders.map(o => {
+    const sellerItems = o.items.filter(i => String(i.seller) === String(seller._id));
+    const payout = sellerItems.reduce((s, i) => s + (i.sellerPayout || 0) * i.quantity, 0);
+    return {
+      _id:          o._id,
+      orderId:      o.orderId,
+      orderStatus:  o.orderStatus,
+      deliveryType: o.deliveryType,
+      deliverySlot: o.deliverySlot,
+      deliveryDate: o.deliveryDate,
+      items:        sellerItems,
+      estimatedPayout: Math.round(payout * 100) / 100,
+      priceRevision:  o.priceRevision?.requested ? {
+        requested:    true,
+        buyerResponse:o.priceRevision.buyerResponse,
+      } : { requested: false },
+      placedAt:     o.placedAt,
+      createdAt:    o.createdAt,
+    };
+  });
+
+  res.json({ success: true, orders: masked });
+};
+
+/** POST /api/koyambedu/seller/orders/:orderId/confirm-stock */
+const confirmStock = async (req, res) => {
+  const seller = await KoyambeduSeller.findOne({ user: req.user._id });
+  if (!seller) return res.status(403).json({ success: false, message: 'Not a seller' });
+
+  const order = await KoyambeduOrder.findOne({
+    _id: req.params.orderId,
+    'items.seller': seller._id,
+    orderStatus: 'pending_confirmation',
+  });
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  order.orderStatus = 'confirmed';
+  order.confirmedAt = new Date();
+  await order.save();
+
+  // Notify buyer: order confirmed
+  _notifyBuyer(order, 'confirmed');
+
+  res.json({ success: true, message: 'Stock confirmed. Order is now processing.' });
+};
+
+/** POST /api/koyambedu/seller/orders/:orderId/request-price-revision */
+const requestPriceRevision = async (req, res) => {
+  const seller = await KoyambeduSeller.findOne({ user: req.user._id });
+  if (!seller) return res.status(403).json({ success: false, message: 'Not a seller' });
+
+  const { revisedItems } = req.body; // [{ productId, revisedPrice }]
+  if (!revisedItems?.length) return res.status(400).json({ success: false, message: 'Revised items required' });
+
+  const order = await KoyambeduOrder.findOne({
+    _id: req.params.orderId,
+    'items.seller': seller._id,
+    orderStatus: { $in: ['pending_confirmation', 'confirmed'] },
+  });
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  // Build revision detail
+  const revisedItemDetails = [];
+  let   newTotal = order.pricing.subtotal;
+
+  for (const rev of revisedItems) {
+    const item = order.items.find(i => String(i.product) === String(rev.productId));
+    if (!item) continue;
+    const diff = (rev.revisedPrice - item.orderedPrice) * item.quantity;
+    newTotal += diff;
+    revisedItemDetails.push({
+      productId:     item.product,
+      name:          item.name,
+      originalPrice: item.orderedPrice,
+      revisedPrice:  Number(rev.revisedPrice),
+    });
+  }
+
+  order.priceRevision = {
+    requested:    true,
+    requestedAt:  new Date(),
+    requestedBy:  seller._id,
+    revisedItems: revisedItemDetails,
+    revisedTotal: newTotal + order.pricing.deliveryCharge + order.pricing.serviceFee,
+    buyerResponse:'pending',
+  };
+  order.orderStatus = 'price_revision_pending';
+  await order.save();
+
+  // Notify buyer for approval
+  _notifyBuyerPriceRevision(order);
+
+  res.json({ success: true, message: 'Price revision request sent to buyer.' });
+};
+
+// ── SELLER CATEGORIES ────────────────────────
+
+/** POST /api/koyambedu/seller/categories */
+const createSellerCategory = async (req, res) => {
+  const seller = await KoyambeduSeller.findOne({ user: req.user._id, isApproved: true });
+  if (!seller) return res.status(403).json({ success: false, message: 'Seller not approved' });
+  const { name, nameTamil, icon, parentId, description } = req.body;
+  if (!name) return res.status(400).json({ success: false, message: 'Category name required' });
+  const cat = await KoyambeduCategory.create({
+    name, nameTamil, icon, description,
+    parent: parentId || null,
+    createdBy: seller._id,
+    status: 'pending', // requires admin approval
+  });
+  res.status(201).json({ success: true, message: 'Category submitted for admin approval', category: cat });
+};
+
+// ══════════════════════════════════════════════
+// SECTION 5 — ADMIN ROUTES
+// ══════════════════════════════════════════════
+
+/** GET /api/koyambedu/admin/dashboard */
+const adminDashboard = async (req, res) => {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+
+  const [
+    todayOrders, pendingDispatch, delivered, revenue,
+    pendingRevisions, sellers, pendingCategories,
+  ] = await Promise.all([
+    KoyambeduOrder.countDocuments({ createdAt: { $gte: today } }),
+    KoyambeduOrder.countDocuments({ orderStatus: { $in: ['confirmed','packing'] } }),
+    KoyambeduOrder.countDocuments({ orderStatus: 'delivered', deliveredAt: { $gte: today } }),
+    KoyambeduOrder.aggregate([
+      { $match: { paymentStatus: 'paid', createdAt: { $gte: today } } },
+      { $group: { _id: null, total: { $sum: '$pricing.total' } } },
+    ]),
+    KoyambeduOrder.countDocuments({ orderStatus: 'price_revision_pending' }),
+    KoyambeduSeller.countDocuments({ isApproved: true, isActive: true }),
+    KoyambeduCategory.countDocuments({ status: 'pending' }),
+  ]);
+
+  res.json({ success: true, stats: {
+    todayOrders, pendingDispatch, delivered,
+    todayRevenue: revenue[0]?.total || 0,
+    pendingRevisions, activeSellers: sellers, pendingCategories,
+  }});
+};
+
+/** GET /api/koyambedu/admin/orders */
+const adminGetOrders = async (req, res) => {
+  const { status, page = 1, limit = 20, deliveryType, search } = req.query;
+  const filter = {};
+  if (status) filter.orderStatus = status;
+  if (deliveryType) filter.deliveryType = deliveryType;
+  if (search) filter.orderId = { $regex: search, $options: 'i' };
+
+  const skip = (Number(page) - 1) * Number(limit);
+  const [orders, total] = await Promise.all([
+    KoyambeduOrder.find(filter)
+      .populate('buyer', 'name email phone')
+      .populate('items.seller', 'businessName stallNumber contact')
+      .sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+    KoyambeduOrder.countDocuments(filter),
+  ]);
+  res.json({ success: true, orders, total, page: Number(page), pages: Math.ceil(total / limit) });
+};
+
+/** PATCH /api/koyambedu/admin/orders/:orderId/status */
+const adminUpdateOrderStatus = async (req, res) => {
+  const { status, deliveryPartner, deliveryPersonPhone, adminNotes } = req.body;
+  const order = await KoyambeduOrder.findById(req.params.orderId)
+    .populate('buyer', 'email phone name');
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  const prev = order.orderStatus;
+  order.orderStatus = status;
+  if (adminNotes)         order.adminNotes         = adminNotes;
+  if (deliveryPartner)    order.deliveryPartner     = deliveryPartner;
+  if (deliveryPersonPhone)order.deliveryPersonPhone = deliveryPersonPhone;
+  if (status === 'dispatched') order.dispatchedAt = new Date();
+  if (status === 'delivered')  order.deliveredAt  = new Date();
+  await order.save();
+
+  // Notify buyer of dispatch / delivery
+  if (['dispatched','delivered','confirmed'].includes(status)) {
+    _notifyBuyer(order, status);
+  }
+
+  res.json({ success: true, order });
+};
+
+/** GET /api/koyambedu/admin/sellers */
+const adminGetSellers = async (req, res) => {
+  const { approved, page = 1, limit = 20 } = req.query;
+  const filter = {};
+  if (approved === 'true')  filter.isApproved = true;
+  if (approved === 'false') filter.isApproved = false;
+  const skip = (Number(page) - 1) * Number(limit);
+  const [sellers, total] = await Promise.all([
+    KoyambeduSeller.find(filter).populate('user','name email').sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+    KoyambeduSeller.countDocuments(filter),
+  ]);
+  res.json({ success: true, sellers, total });
+};
+
+/** PATCH /api/koyambedu/admin/sellers/:sellerId/approve */
+const adminApproveSeller = async (req, res) => {
+  const { approve, reason } = req.body;
+  const seller = await KoyambeduSeller.findById(req.params.sellerId).populate('user','name email');
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+  seller.isApproved    = !!approve;
+  seller.approvedBy    = req.user._id;
+  seller.approvedAt    = approve ? new Date() : undefined;
+  seller.rejectedReason= !approve ? reason : undefined;
+  await seller.save();
+  res.json({ success: true, seller });
+};
+
+/** PATCH /api/koyambedu/admin/sellers/:sellerId/toggle */
+const adminToggleSeller = async (req, res) => {
+  const seller = await KoyambeduSeller.findById(req.params.sellerId);
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+  seller.isActive = !seller.isActive;
+  await seller.save();
+  // Deactivate all their products too
+  if (!seller.isActive) {
+    await KoyambeduProduct.updateMany({ seller: seller._id }, { isActive: false });
+  }
+  res.json({ success: true, isActive: seller.isActive });
+};
+
+/** GET /api/koyambedu/admin/categories */
+const adminGetCategories = async (req, res) => {
+  const { status } = req.query;
+  const filter = status ? { status } : {};
+  const cats = await KoyambeduCategory.find(filter)
+    .populate('createdBy','businessName').sort({ createdAt: -1 }).lean();
+  res.json({ success: true, categories: cats });
+};
+
+/** PATCH /api/koyambedu/admin/categories/:catId/approve */
+const adminApproveCategory = async (req, res) => {
+  const { approve, reason } = req.body;
+  const cat = await KoyambeduCategory.findById(req.params.catId);
+  if (!cat) return res.status(404).json({ success: false, message: 'Category not found' });
+  cat.status         = approve ? 'approved' : 'rejected';
+  cat.approvedBy     = req.user._id;
+  cat.approvedAt     = approve ? new Date() : undefined;
+  cat.rejectedReason = !approve ? reason : undefined;
+  await cat.save();
+  res.json({ success: true, category: cat });
+};
+
+/** GET /api/koyambedu/admin/analytics */
+const adminAnalytics = async (req, res) => {
+  const { days = 7 } = req.query;
+  const since = new Date(Date.now() - Number(days) * 24 * 3600 * 1000);
+
+  const [revenueByDay, topProducts, ordersByStatus, categoryPerf] = await Promise.all([
+    KoyambeduOrder.aggregate([
+      { $match: { paymentStatus: 'paid', createdAt: { $gte: since } } },
+      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, revenue: { $sum: '$pricing.total' }, orders: { $sum: 1 } } },
+      { $sort: { _id: 1 } },
+    ]),
+    KoyambeduOrder.aggregate([
+      { $match: { createdAt: { $gte: since } } },
+      { $unwind: '$items' },
+      { $group: { _id: '$items.product', name: { $first: '$items.name' }, totalQty: { $sum: '$items.quantity' }, totalRevenue: { $sum: { $multiply: ['$items.finalPrice','$items.quantity'] } } } },
+      { $sort: { totalRevenue: -1 } },
+      { $limit: 10 },
+    ]),
+    KoyambeduOrder.aggregate([
+      { $match: { createdAt: { $gte: since } } },
+      { $group: { _id: '$orderStatus', count: { $sum: 1 } } },
+    ]),
+    KoyambeduOrder.aggregate([
+      { $match: { createdAt: { $gte: since } } },
+      { $unwind: '$items' },
+      { $lookup: { from: 'koyambedupromducts', localField: 'items.product', foreignField: '_id', as: 'prod' } },
+      { $group: { _id: '$prod.category', revenue: { $sum: { $multiply: ['$items.finalPrice','$items.quantity'] } } } },
+      { $sort: { revenue: -1 } },
+      { $limit: 8 },
+    ]),
+  ]);
+
+  res.json({ success: true, analytics: { revenueByDay, topProducts, ordersByStatus, categoryPerf } });
+};
+
+// ══════════════════════════════════════════════
+// SECTION 6 — INTERNAL HELPERS
+// ══════════════════════════════════════════════
+
+const _notifySellerNewOrder = async (order) => {
+  try {
+    const fullOrder = await KoyambeduOrder.findById(order._id).populate('items.seller');
+    const sellerIds = [...new Set(fullOrder.items.map(i => String(i.seller?._id || i.seller)))];
+
+    for (const sid of sellerIds) {
+      const seller = await KoyambeduSeller.findById(sid);
+      if (!seller || !seller.contact?.phone || !seller.notifyWhatsApp) continue;
+
+      const sellerItems = fullOrder.items.filter(i => String(i.seller?._id || i.seller) === sid);
+      const total = sellerItems.reduce((s, i) => s + (i.finalPrice || i.orderedPrice || 0) * i.quantity, 0);
+      const itemSummary = sellerItems.map(i => `${i.name} ×${i.quantity}${i.unitLabel || i.unit}`).join(', ');
+
+      waSend(seller.contact.phone, [
+        seller.businessName,
+        fullOrder.orderId,
+        'New Order Received 📦',
+        `${itemSummary}. Est. payout: ₹${Math.round(total * 0.92).toLocaleString('en-IN')}. Confirm at eptomart.com/koyambedu/seller`,
+      ]);
+    }
+  } catch (err) {
+    console.error('[KBD] Seller notify error:', err.message);
+  }
+};
+
+const _notifyBuyer = async (order, event) => {
+  try {
+    const buyer = await User.findById(order.buyer).select('phone email name').lean();
+    if (!buyer?.phone) return;
+    const messages = {
+      confirmed:  ['Your Order is Confirmed ✅', `Order #${order.orderId} confirmed. We're preparing your fresh produce!`],
+      dispatched: ['Your Order is On the Way 🚚', `Order #${order.orderId} is dispatched. Expected: ${order.deliverySlot}.`],
+      delivered:  ['Order Delivered! 🎉', `Order #${order.orderId} delivered. Thank you for choosing Koyambedu Daily!`],
+    };
+    const [status, detail] = messages[event] || [event, ''];
+    waSend(buyer.phone, [buyer.name || 'Customer', order.orderId, status, detail]);
+  } catch (err) {
+    console.error('[KBD] Buyer notify error:', err.message);
+  }
+};
+
+const _notifyBuyerPriceRevision = async (order) => {
+  try {
+    const buyer = await User.findById(order.buyer).select('phone name').lean();
+    if (!buyer?.phone) return;
+    const revisedTotal = order.priceRevision?.revisedTotal || 0;
+    waSend(buyer.phone, [
+      buyer.name || 'Customer',
+      order.orderId,
+      'Price Revision Requested ⚠️',
+      `Market price for some items in order #${order.orderId} has changed. New total: ₹${revisedTotal.toLocaleString('en-IN')}. Login to approve or cancel: eptomart.com/koyambedu/orders`,
+    ]);
+  } catch (err) {
+    console.error('[KBD] Price revision notify error:', err.message);
+  }
+};
+
+const _refundOrder = async (order) => {
+  try {
+    const rzpKeyId     = process.env.RAZORPAY_KEY_ID;
+    const rzpKeySecret = process.env.RAZORPAY_KEY_SECRET;
+    const paymentId    = order.paymentDetails?.razorpayPaymentId;
+    if (!rzpKeyId || !paymentId) return;
+    const https  = require('https');
+    const amount = Math.round(order.pricing.total * 100);
+    const body   = JSON.stringify({ amount, speed: 'normal' });
+    const auth   = Buffer.from(`${rzpKeyId}:${rzpKeySecret}`).toString('base64');
+    await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: 'api.razorpay.com',
+        path:     `/v1/payments/${paymentId}/refund`,
+        method:   'POST',
+        headers:  { 'Content-Type': 'application/json', 'Authorization': `Basic ${auth}`, 'Content-Length': Buffer.byteLength(body) },
+      }, (res) => {
+        let d = ''; res.on('data', c => d += c);
+        res.on('end', () => resolve(JSON.parse(d || '{}')));
+      });
+      req.on('error', reject);
+      req.write(body); req.end();
+    });
+    order.paymentStatus    = 'refunded';
+    order.refund           = { status: 'initiated', amount: order.pricing.total, initiatedAt: new Date() };
+    await order.save();
+    console.log(`[KBD] Refund initiated for order ${order.orderId}`);
+  } catch (err) {
+    console.error('[KBD] Refund error:', err.message);
+  }
+};
+
+// ══════════════════════════════════════════════
+module.exports = {
+  // Public
+  getCategories, getProducts, getFeaturedProducts, getProductDetail, getDeliverySlots,
+  // Cart
+  getCart, updateCart, clearCart,
+  // Buyer orders
+  placeOrder, createRazorpayOrder, verifyPayment,
+  getMyOrders, getMyOrder, approveRevision, cancelOrder,
+  // Seller
+  sellerRegister, getSellerProfile, updateSellerProfile,
+  getSellerProducts, createSellerProduct, updateSellerProduct,
+  toggleProductAvailability, deleteSellerProduct,
+  getSellerOrders, confirmStock, requestPriceRevision, createSellerCategory,
+  // Admin
+  adminDashboard, adminGetOrders, adminUpdateOrderStatus,
+  adminGetSellers, adminApproveSeller, adminToggleSeller,
+  adminGetCategories, adminApproveCategory, adminAnalytics,
+};

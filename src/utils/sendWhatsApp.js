@@ -358,35 +358,54 @@ Start: eptomart.com/seller/products
 };
 
 // ── Seller: new order received ──────────────────────────────
-// Sent to each seller's contact phone when a new order arrives containing their products.
-// Uses free-text (same as admin alert — seller is running a business and usually has the
-// business WhatsApp linked, so the 24h window is often open. If Meta blocks it, the log
-// will show error code 131047 and you can create a seller-specific template).
+//
+// ⚠️  WHY FREE-TEXT FAILS FOR SELLERS:
+//   Meta blocks ALL business-initiated free-text. Sellers have NOT messaged our
+//   business WhatsApp number, so the 24h window is never open for them.
+//   Solution: use templates only.
+//
+// TEMPLATE ENV VARS (set in Render after Meta approves):
+//   META_WHATSAPP_SELLER_ORDER_TEMPLATE  → e.g. seller_new_order
+//     Template body (Category: Utility):
+//     "Hi {{1}}, new order #{{2}} on Eptomart! Amount: ₹{{3}} | Payment: {{4}}. Confirm: eptomart.com/seller/orders 📦"
+//
+//   Fallback: META_WHATSAPP_STATUS_TEMPLATE (already approved) with seller details.
+//
 const sendSellerNewOrderWhatsApp = (phone, { businessName, orderId, items = [], total, buyerName, paymentMethod }) => {
   if (!phone) return Promise.resolve({ success: false, error: 'No phone' });
 
-  const itemLines = items
-    .map(i => `  • ${i.name} × ${i.qty} — ₹${Number((i.price || 0) * i.qty).toLocaleString('en-IN')}`)
-    .join('\n');
+  const sellerTemplate = process.env.META_WHATSAPP_SELLER_ORDER_TEMPLATE;
+  const statusTemplate = process.env.META_WHATSAPP_STATUS_TEMPLATE;
 
-  const message =
-`📦 *New Order on Eptomart!*
+  // Option 1: dedicated seller order template
+  if (sellerTemplate) {
+    console.log(`[WhatsApp] Sending seller order template "${sellerTemplate}" → ${phone}`);
+    return sendTemplateWhatsApp(phone, sellerTemplate, [
+      { type: 'body', parameters: [
+        { type: 'text', text: businessName || 'Seller' },
+        { type: 'text', text: String(orderId) },
+        { type: 'text', text: Number(total).toLocaleString('en-IN') },
+        { type: 'text', text: (paymentMethod || 'ONLINE').toUpperCase() },
+      ]},
+    ]);
+  }
 
-Order: *#${orderId}*
-Buyer: ${buyerName || 'Customer'}
-Payment: ${(paymentMethod || '—').toUpperCase()}
+  // Option 2: fallback to status template — reuse with seller-friendly wording
+  if (statusTemplate) {
+    console.log(`[WhatsApp] META_WHATSAPP_SELLER_ORDER_TEMPLATE not set — falling back to status template for seller order #${orderId}`);
+    return sendTemplateWhatsApp(phone, statusTemplate, [
+      { type: 'body', parameters: [
+        { type: 'text', text: businessName || 'Seller' },
+        { type: 'text', text: String(orderId) },
+        { type: 'text', text: 'New Order Received 📦' },
+        { type: 'text', text: `Amount: ₹${Number(total).toLocaleString('en-IN')} | ${(paymentMethod || 'ONLINE').toUpperCase()}. Confirm at eptomart.com/seller/orders` },
+      ]},
+    ]);
+  }
 
-*Your Items:*
-${itemLines}
-
-*Your Total: ₹${Number(total).toLocaleString('en-IN')}*
-
-Go to your seller dashboard to confirm:
-eptomart.com/seller/orders
-
-— *Team Eptomart*`;
-
-  return sendMetaWhatsApp(phone, message);
+  // Option 3: no template at all — log clearly so you know to set one up
+  console.warn(`[WhatsApp] ⚠️  Neither META_WHATSAPP_SELLER_ORDER_TEMPLATE nor META_WHATSAPP_STATUS_TEMPLATE is set. Seller order WhatsApp NOT sent for order #${orderId}. Create a Meta-approved template and add to Render env vars.`);
+  return Promise.resolve({ success: false, error: 'No template configured for seller order notification' });
 };
 
 // ── OTP via WhatsApp ────────────────────────────────────────

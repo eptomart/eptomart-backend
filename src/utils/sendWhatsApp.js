@@ -202,19 +202,45 @@ const sendOrderPaidWhatsApp = (phone, { orderId, total, name }) => {
 };
 
 // ── Customer: order delivered — billing summary ─────────────
-// Template body:
+// Primary template (META_WHATSAPP_DELIVERED_TEMPLATE):
 //   "Hi {{1}}, your Eptomart order #{{2}} has been delivered! Total paid: ₹{{3}}. Rate us at eptomart.com/orders 🌟"
+//
+// Fallback: if delivered template not set, uses META_WHATSAPP_STATUS_TEMPLATE with status "Delivered 🎉"
+//   so at least one message always goes out when any status template is configured.
 const sendOrderDeliveredWhatsApp = (phone, { name, orderId, pricing = {} }) => {
-  return _sendWithTemplate(
-    phone,
-    'META_WHATSAPP_DELIVERED_TEMPLATE',
-    [
-      name || 'Customer',
-      String(orderId),
-      Number(pricing.total || 0).toLocaleString('en-IN'),
-    ],
-    `Order #${orderId} delivered`
-  );
+  const deliveredTemplate = process.env.META_WHATSAPP_DELIVERED_TEMPLATE;
+  const statusTemplate    = process.env.META_WHATSAPP_STATUS_TEMPLATE;
+
+  if (deliveredTemplate) {
+    console.log(`[WhatsApp] Sending delivered template "${deliveredTemplate}" → ${phone}`);
+    return _sendWithTemplate(
+      phone,
+      'META_WHATSAPP_DELIVERED_TEMPLATE',
+      [
+        name || 'Customer',
+        String(orderId),
+        Number(pricing.total || 0).toLocaleString('en-IN'),
+      ],
+      `Order #${orderId} delivered`
+    );
+  }
+
+  // Fallback: use status template with "Delivered" status
+  if (statusTemplate) {
+    const total = Number(pricing.total || 0).toLocaleString('en-IN');
+    console.log(`[WhatsApp] META_WHATSAPP_DELIVERED_TEMPLATE not set — falling back to status template for order ${orderId}`);
+    return sendTemplateWhatsApp(phone, statusTemplate, [
+      { type: 'body', parameters: [
+        { type: 'text', text: name || 'Customer' },
+        { type: 'text', text: String(orderId) },
+        { type: 'text', text: 'Delivered 🎉' },
+        { type: 'text', text: `Total paid: ₹${total}. Rate us at eptomart.com/orders 🌟` },
+      ]},
+    ]);
+  }
+
+  console.warn(`[WhatsApp] ⚠️  Neither META_WHATSAPP_DELIVERED_TEMPLATE nor META_WHATSAPP_STATUS_TEMPLATE is set — delivery message NOT sent for order ${orderId}.`);
+  return Promise.resolve({ success: false, error: 'No template configured for delivered notification' });
 };
 
 // ── Customer: all other status changes ─────────────────────

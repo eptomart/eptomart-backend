@@ -330,15 +330,18 @@ const updateOrderStatus = async (req, res) => {
           ? `${buyerForWA.firstName} ${buyerForWA.lastName || ''}`.trim()
           : (buyerForWA?.name && buyerForWA.name !== 'New User' ? buyerForWA.name : order.shippingAddress?.fullName);
         if (phone) {
-          await sendOrderDeliveredWhatsApp(phone, {
-            name:          waName || 'Customer',
-            orderId:       order.orderId,
-            items:         order.items || [],
-            pricing:       order.pricing || {},
-            paymentMethod: order.paymentMethod,
-            deliveredAt:   new Date(),
+          const waResult = await sendOrderDeliveredWhatsApp(phone, {
+            name:    waName || 'Customer',
+            orderId: order.orderId,
+            pricing: order.pricing || {},
           });
-          console.log(`[WhatsApp] Delivery billing sent for order ${order.orderId} → ${phone}`);
+          if (waResult.success) {
+            console.log(`[WhatsApp] ✅ Delivered message sent for order ${order.orderId} → ${phone}`);
+          } else {
+            console.error(`[WhatsApp] ❌ Delivered message FAILED for order ${order.orderId} → ${phone}: ${waResult.error || 'unknown'}`);
+          }
+        } else {
+          console.warn(`[WhatsApp] ⚠️  No phone for order ${order.orderId} — delivery message skipped`);
         }
       } catch (waErr) {
         console.error('[WhatsApp] Delivery billing failed for order', order.orderId, ':', waErr.message);
@@ -1266,11 +1269,18 @@ const updateItemStatus = async (req, res) => {
         // WhatsApp
         if (phone) {
           const { sendOrderDeliveredWhatsApp } = require('../utils/sendWhatsApp');
-          sendOrderDeliveredWhatsApp(phone, {
+          const waResult = await sendOrderDeliveredWhatsApp(phone, {
             name:    waName || 'Customer',
             orderId: order.orderId,
             pricing: order.pricing || {},
-          }).catch(() => {});
+          });
+          if (waResult.success) {
+            console.log(`[WhatsApp] ✅ Delivered (item-trigger) sent for order ${order.orderId} → ${phone}`);
+          } else {
+            console.error(`[WhatsApp] ❌ Delivered (item-trigger) FAILED for order ${order.orderId}: ${waResult.error || 'unknown'}`);
+          }
+        } else {
+          console.warn(`[WhatsApp] ⚠️  No phone for order ${order.orderId} (item-trigger) — delivery message skipped`);
         }
 
         // Customer email

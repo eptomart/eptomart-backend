@@ -994,6 +994,20 @@ const adminToggleSeller = async (req, res) => {
 // SECTION 5B — SELLER ADMIN ROUTES (SuperAdmin only)
 // ══════════════════════════════════════════════
 
+/** GET /api/koyambedu/admin/user-search?q=email_or_phone — find an Eptomart user */
+const adminUserSearch = async (req, res) => {
+  const { q } = req.query;
+  if (!q || q.trim().length < 3) return res.json({ success: true, users: [] });
+  const User = require('../models/User');
+  const regex = new RegExp(q.trim(), 'i');
+  const users = await User.find({
+    $or: [{ email: regex }, { phone: regex }, { name: regex }],
+    role: 'user',
+    isActive: true,
+  }).select('_id name email phone').limit(8).lean();
+  res.json({ success: true, users });
+};
+
 /** POST /api/koyambedu/admin/seller-admins — create a SellerAdmin */
 const adminCreateSellerAdmin = async (req, res) => {
   const { userId, name, businessName, contactPhone, contactEmail, notes } = req.body;
@@ -1301,7 +1315,7 @@ module.exports = {
   adminGetSellers, adminApproveSeller, adminToggleSeller,
   adminGetCategories, adminApproveCategory, adminAnalytics,
   // Admin — seller admins (SuperAdmin only)
-  adminCreateSellerAdmin, adminGetSellerAdmins, adminApproveSellerAdmin,
+  adminUserSearch, adminCreateSellerAdmin, adminGetSellerAdmins, adminApproveSellerAdmin,
   // SellerAdmin portal
   sellerAdminGetProfile, sellerAdminGetSellers, sellerAdminCreateSeller,
   sellerAdminGetProducts, sellerAdminUpdateProduct,

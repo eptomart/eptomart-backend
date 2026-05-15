@@ -98,6 +98,7 @@ router.patch('/admin/categories/:catId/approve',  protectAdmin, ctrl.adminApprov
 router.get  ('/admin/analytics',                  protectAdmin, ctrl.adminAnalytics);
 
 // SellerAdmin management — superAdmin only
+router.get  ('/admin/user-search',                protectSuperAdmin, ctrl.adminUserSearch);
 router.post ('/admin/seller-admins',              protectSuperAdmin, ctrl.adminCreateSellerAdmin);
 router.get  ('/admin/seller-admins',              protectSuperAdmin, ctrl.adminGetSellerAdmins);
 router.patch('/admin/seller-admins/:saId/approve',protectSuperAdmin, ctrl.adminApproveSellerAdmin);

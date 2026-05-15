@@ -8,8 +8,8 @@ const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
 const koyambeduSellerSchema = new Schema({
-  // Linked Eptomart user account
-  user: { type: Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
+  // Linked Eptomart user account (optional — seller may not have an Eptomart account yet)
+  user: { type: Schema.Types.ObjectId, ref: 'User', default: null, sparse: true },
 
   // Business identity
   businessName:   { type: String, required: true, trim: true },

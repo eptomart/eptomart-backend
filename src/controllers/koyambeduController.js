@@ -1082,20 +1082,21 @@ const sellerAdminCreateSeller = async (req, res) => {
   if (!sa) return res.status(403).json({ success: false, message: 'SellerAdmin not approved' });
 
   const {
-    userId, businessName, ownerName, stallNumber, marketSection,
+    businessName, ownerName, stallNumber, marketSection,
     contactPhone, contactEmail, productTypes, description,
     bankAccountName, bankAccountNumber, bankIfsc, bankName, bankUpi,
   } = req.body;
 
-  if (!userId || !businessName || !ownerName || !contactPhone) {
-    return res.status(400).json({ success: false, message: 'userId, businessName, ownerName and phone are required' });
+  if (!businessName || !ownerName || !contactPhone) {
+    return res.status(400).json({ success: false, message: 'businessName, ownerName and contactPhone are required' });
   }
 
-  const existing = await KoyambeduSeller.findOne({ user: userId });
-  if (existing) return res.status(400).json({ success: false, message: 'This user already has a Koyambedu seller account' });
+  // Check duplicate by phone to avoid accidental duplicates
+  const existing = await KoyambeduSeller.findOne({ 'contact.phone': contactPhone });
+  if (existing) return res.status(400).json({ success: false, message: 'A seller with this phone number already exists' });
 
   const seller = await KoyambeduSeller.create({
-    user: userId, businessName, ownerName, stallNumber, marketSection, description,
+    businessName, ownerName, stallNumber, marketSection, description,
     contact: { phone: contactPhone, email: contactEmail },
     productTypes: productTypes || [],
     bankDetails: {

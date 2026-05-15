@@ -1085,6 +1085,8 @@ const sellerAdminCreateSeller = async (req, res) => {
     businessName, ownerName, stallNumber, marketSection,
     contactPhone, contactEmail, productTypes, description,
     bankAccountName, bankAccountNumber, bankIfsc, bankName, bankUpi,
+    // optional Eptomart account creation
+    createAccount, accountPhone, accountEmail,
   } = req.body;
 
   if (!businessName || !ownerName || !contactPhone) {
@@ -1095,7 +1097,27 @@ const sellerAdminCreateSeller = async (req, res) => {
   const existing = await KoyambeduSeller.findOne({ 'contact.phone': contactPhone });
   if (existing) return res.status(400).json({ success: false, message: 'A seller with this phone number already exists' });
 
+  // Optionally create / link an Eptomart account so the seller can log in later
+  let linkedUserId = null;
+  if (createAccount && (accountPhone || accountEmail)) {
+    const orQuery = [];
+    if (accountPhone) orQuery.push({ phone: accountPhone });
+    if (accountEmail) orQuery.push({ email: accountEmail.toLowerCase() });
+    let linkedUser = await User.findOne({ $or: orQuery });
+    if (!linkedUser) {
+      linkedUser = await User.create({
+        name:     ownerName,
+        phone:    accountPhone  || undefined,
+        email:    accountEmail ? accountEmail.toLowerCase() : undefined,
+        role:     'user',
+        isActive: true,
+      });
+    }
+    linkedUserId = linkedUser._id;
+  }
+
   const seller = await KoyambeduSeller.create({
+    ...(linkedUserId && { user: linkedUserId }),
     businessName, ownerName, stallNumber, marketSection, description,
     contact: { phone: contactPhone, email: contactEmail },
     productTypes: productTypes || [],
@@ -1104,11 +1126,76 @@ const sellerAdminCreateSeller = async (req, res) => {
       accountNumber: bankAccountNumber,
       ifsc: bankIfsc, bankName, upiId: bankUpi,
     },
-    status:               'pending_review', // MUST go through SuperAdmin approval
+    status:               'pending_review',
     createdBySellerAdmin: sa._id,
   });
 
   res.status(201).json({ success: true, message: 'Seller registered. Awaiting SuperAdmin approval.', seller });
+};
+
+// ── Shared product-creation helper ──────────────────────────────────────────
+const _createProductForSeller = async (seller, body) => {
+  const {
+    categoryId, name, nameTamil, description, unit, unitLabel,
+    minQty, maxQty, qtyStep, marketPriceMin, marketPriceMax, currentPrice,
+    stockQty, freshArrivalTime, isSameDay, isNextDay, sameDayCutoff,
+    badges, tags, isBulkAvailable, bulkMinQty, bulkPricePerUnit, weightKg,
+  } = body;
+
+  if (!categoryId || !name || currentPrice == null) {
+    throw Object.assign(new Error('Category, name and price are required'), { statusCode: 400 });
+  }
+
+  const category = await KoyambeduCategory.findOne({ _id: categoryId, isActive: true });
+  if (!category) throw Object.assign(new Error('Invalid or inactive category'), { statusCode: 400 });
+
+  return KoyambeduProduct.create({
+    seller:   seller._id,
+    category: category._id,
+    name, nameTamil, description,
+    unit:      unit      || 'kg',
+    unitLabel: unitLabel || unit || 'kg',
+    minQty:    minQty    || 0.5,
+    maxQty:    maxQty    || 50,
+    qtyStep:   qtyStep   || 0.5,
+    weightKg:  weightKg  != null ? Number(weightKg) : (unit === 'g' ? 0.001 : 1),
+    marketPriceMin, marketPriceMax,
+    currentPrice: Number(currentPrice),
+    stockQty:     stockQty || 0,
+    freshArrivalTime: freshArrivalTime || '',
+    freshArrivalDate: freshArrivalTime ? new Date() : undefined,
+    isSameDay:    isSameDay    !== false,
+    isNextDay:    isNextDay    !== false,
+    sameDayCutoff: sameDayCutoff || seller.sameDayCutoff || '10:00',
+    badges: badges || [],
+    tags:   tags   || [],
+    isBulkAvailable: isBulkAvailable || false,
+    bulkMinQty, bulkPricePerUnit,
+  });
+};
+
+/** POST /api/koyambedu/seller-admin/sellers/:sellerId/products — SA adds product for their seller */
+const sellerAdminCreateProduct = async (req, res) => {
+  const sa = await KoyambeduSellerAdmin.findOne({ user: req.user._id, status: 'approved' });
+  if (!sa) return res.status(403).json({ success: false, message: 'SellerAdmin not approved' });
+
+  const seller = await KoyambeduSeller.findOne({ _id: req.params.sellerId, createdBySellerAdmin: sa._id });
+  if (!seller) return res.status(403).json({ success: false, message: 'Seller not managed by this SellerAdmin' });
+  if (seller.status !== 'approved') {
+    return res.status(400).json({ success: false, message: 'Seller must be approved before adding products' });
+  }
+
+  const product = await _createProductForSeller(seller, req.body);
+  res.status(201).json({ success: true, product });
+};
+
+/** POST /api/koyambedu/admin/sellers/:sellerId/products — admin adds product for any seller */
+const adminCreateProduct = async (req, res) => {
+  const seller = await KoyambeduSeller.findById(req.params.sellerId);
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+  const product = await _createProductForSeller(seller, req.body);
+  res.status(201).json({ success: true, product });
 };
 
 /** PUT /api/koyambedu/seller-admin/sellers/:sellerId/products/:productId — update product (no buyer info) */
@@ -1319,5 +1406,7 @@ module.exports = {
   adminUserSearch, adminCreateSellerAdmin, adminGetSellerAdmins, adminApproveSellerAdmin,
   // SellerAdmin portal
   sellerAdminGetProfile, sellerAdminGetSellers, sellerAdminCreateSeller,
-  sellerAdminGetProducts, sellerAdminUpdateProduct,
+  sellerAdminGetProducts, sellerAdminUpdateProduct, sellerAdminCreateProduct,
+  // Admin product creation
+  adminCreateProduct,
 };

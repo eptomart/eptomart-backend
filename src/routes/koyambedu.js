@@ -81,7 +81,8 @@ router.post ('/seller/orders/:orderId/request-price-revision',  protectSeller, c
 router.get ('/seller-admin/profile',                             protectSellerAdmin, ctrl.sellerAdminGetProfile);
 router.get ('/seller-admin/sellers',                             protectSellerAdmin, ctrl.sellerAdminGetSellers);
 router.post('/seller-admin/sellers',                             protectSellerAdmin, ctrl.sellerAdminCreateSeller);
-router.get ('/seller-admin/sellers/:sellerId/products',          protectSellerAdmin, ctrl.sellerAdminGetProducts);
+router.get ('/seller-admin/sellers/:sellerId/products',            protectSellerAdmin, ctrl.sellerAdminGetProducts);
+router.post('/seller-admin/sellers/:sellerId/products',            protectSellerAdmin, ctrl.sellerAdminCreateProduct);
 router.put ('/seller-admin/sellers/:sellerId/products/:productId', protectSellerAdmin, ctrl.sellerAdminUpdateProduct);
 
 // ══════════════════════════════════════════════
@@ -96,6 +97,7 @@ router.patch('/admin/sellers/:sellerId/toggle',   protectAdmin, ctrl.adminToggle
 router.get  ('/admin/categories',                 protectAdmin, ctrl.adminGetCategories);
 router.patch('/admin/categories/:catId/approve',  protectAdmin, ctrl.adminApproveCategory);
 router.get  ('/admin/analytics',                  protectAdmin, ctrl.adminAnalytics);
+router.post ('/admin/sellers/:sellerId/products', protectAdmin, ctrl.adminCreateProduct);
 
 // SellerAdmin management
 router.get  ('/admin/user-search',                protectAdmin,      ctrl.adminUserSearch);          // any admin can search users

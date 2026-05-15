@@ -97,10 +97,10 @@ router.get  ('/admin/categories',                 protectAdmin, ctrl.adminGetCat
 router.patch('/admin/categories/:catId/approve',  protectAdmin, ctrl.adminApproveCategory);
 router.get  ('/admin/analytics',                  protectAdmin, ctrl.adminAnalytics);
 
-// SellerAdmin management — superAdmin only
-router.get  ('/admin/user-search',                protectSuperAdmin, ctrl.adminUserSearch);
-router.post ('/admin/seller-admins',              protectSuperAdmin, ctrl.adminCreateSellerAdmin);
-router.get  ('/admin/seller-admins',              protectSuperAdmin, ctrl.adminGetSellerAdmins);
-router.patch('/admin/seller-admins/:saId/approve',protectSuperAdmin, ctrl.adminApproveSellerAdmin);
+// SellerAdmin management
+router.get  ('/admin/user-search',                protectAdmin,      ctrl.adminUserSearch);          // any admin can search users
+router.post ('/admin/seller-admins',              protectAdmin,      ctrl.adminCreateSellerAdmin);   // any admin can create
+router.get  ('/admin/seller-admins',              protectAdmin,      ctrl.adminGetSellerAdmins);     // any admin can list
+router.patch('/admin/seller-admins/:saId/approve',protectSuperAdmin, ctrl.adminApproveSellerAdmin); // superAdmin only to approve/reject
 
 module.exports = router;

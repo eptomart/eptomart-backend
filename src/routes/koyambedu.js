@@ -83,9 +83,10 @@ router.get ('/seller-admin/sellers',                             protectSellerAd
 router.post('/seller-admin/sellers',                             protectSellerAdmin, ctrl.sellerAdminCreateSeller);
 router.get ('/seller-admin/categories',                            protectSellerAdmin, ctrl.sellerAdminGetCategories);
 router.post('/seller-admin/categories',                            protectSellerAdmin, ctrl.sellerAdminCreateCategory);
-router.get ('/seller-admin/sellers/:sellerId/products',            protectSellerAdmin, ctrl.sellerAdminGetProducts);
-router.post('/seller-admin/sellers/:sellerId/products',            protectSellerAdmin, ctrl.sellerAdminCreateProduct);
-router.put ('/seller-admin/sellers/:sellerId/products/:productId', protectSellerAdmin, ctrl.sellerAdminUpdateProduct);
+router.get  ('/seller-admin/sellers/:sellerId/products',            protectSellerAdmin, ctrl.sellerAdminGetProducts);
+router.post ('/seller-admin/sellers/:sellerId/products',            protectSellerAdmin, ctrl.sellerAdminCreateProduct);
+router.put  ('/seller-admin/sellers/:sellerId/products/:productId', protectSellerAdmin, ctrl.sellerAdminUpdateProduct);
+router.patch('/seller-admin/sellers/:sellerId/edit-request',        protectSellerAdmin, ctrl.sellerAdminRequestEdit);
 
 // ══════════════════════════════════════════════
 // ADMIN — admin or superAdmin
@@ -94,14 +95,16 @@ router.get  ('/admin/dashboard',                  protectAdmin, ctrl.adminDashbo
 router.get  ('/admin/orders',                     protectAdmin, ctrl.adminGetOrders);
 router.patch('/admin/orders/:orderId/status',     protectAdmin, ctrl.adminUpdateOrderStatus);
 router.get  ('/admin/sellers',                    protectAdmin, ctrl.adminGetSellers);
-router.patch('/admin/sellers/:sellerId/approve',  protectAdmin, ctrl.adminApproveSeller);
-router.patch('/admin/sellers/:sellerId/toggle',   protectAdmin, ctrl.adminToggleSeller);
+router.patch('/admin/sellers/:sellerId/approve',  protectAdmin,      ctrl.adminApproveSeller);
+router.patch('/admin/sellers/:sellerId/toggle',   protectAdmin,      ctrl.adminToggleSeller);
+router.patch('/admin/sellers/:sellerId/contact',  protectSuperAdmin, ctrl.adminEditSellerContact);
 router.get  ('/admin/categories',                 protectAdmin, ctrl.adminGetCategories);
 router.patch('/admin/categories/:catId/approve',  protectAdmin, ctrl.adminApproveCategory);
 router.get  ('/admin/analytics',                  protectAdmin, ctrl.adminAnalytics);
 router.post ('/admin/sellers/:sellerId/products', protectAdmin, ctrl.adminCreateProduct);
 
 // SellerAdmin management
+router.post ('/admin/sellers/:sellerId/review-edit', protectSuperAdmin, ctrl.adminReviewSellerEdit); // SuperAdmin approves/rejects SA edit request
 router.get  ('/admin/user-search',                protectAdmin,      ctrl.adminUserSearch);          // any admin can search users
 router.post ('/admin/seller-admins',              protectAdmin,      ctrl.adminCreateSellerAdmin);   // any admin can create
 router.get  ('/admin/seller-admins',              protectAdmin,      ctrl.adminGetSellerAdmins);     // any admin can list

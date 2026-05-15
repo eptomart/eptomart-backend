@@ -978,6 +978,40 @@ const adminApproveSeller = async (req, res) => {
   res.json({ success: true, seller });
 };
 
+/** PATCH /api/koyambedu/admin/sellers/:sellerId/contact — SuperAdmin edits seller details */
+const adminEditSellerContact = async (req, res) => {
+  const seller = await KoyambeduSeller.findById(req.params.sellerId).populate('user', '_id name email phone');
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+  const {
+    ownerName, businessName, stallNumber, marketSection, description,
+    contactPhone, contactEmail, syncToAccount,
+  } = req.body;
+
+  if (ownerName     !== undefined) seller.ownerName     = ownerName;
+  if (businessName  !== undefined) seller.businessName  = businessName;
+  if (stallNumber   !== undefined) seller.stallNumber   = stallNumber;
+  if (marketSection !== undefined) seller.marketSection = marketSection;
+  if (description   !== undefined) seller.description   = description;
+  if (contactPhone  !== undefined) seller.contact.phone = contactPhone;
+  if (contactEmail  !== undefined) seller.contact.email = contactEmail ? contactEmail.toLowerCase() : '';
+
+  await seller.save();
+
+  // Optionally sync phone/email to the linked Eptomart account
+  if (syncToAccount && seller.user) {
+    const updates = {};
+    if (contactPhone !== undefined) updates.phone = contactPhone;
+    if (contactEmail !== undefined) updates.email = contactEmail ? contactEmail.toLowerCase() : '';
+    if (Object.keys(updates).length) {
+      await User.findByIdAndUpdate(seller.user._id || seller.user, updates);
+    }
+  }
+
+  const updated = await KoyambeduSeller.findById(seller._id).populate('user', 'name email phone').lean();
+  res.json({ success: true, seller: updated });
+};
+
 /** PATCH /api/koyambedu/admin/sellers/:sellerId/toggle — admin toggle active */
 const adminToggleSeller = async (req, res) => {
   const seller = await KoyambeduSeller.findById(req.params.sellerId);
@@ -1264,6 +1298,97 @@ const sellerAdminGetProducts = async (req, res) => {
   res.json({ success: true, products });
 };
 
+/** PATCH /api/koyambedu/seller-admin/sellers/:sellerId/edit-request
+ *  SA submits proposed edits for a seller — stored in pendingEdit, not live yet
+ */
+const sellerAdminRequestEdit = async (req, res) => {
+  const sa = await KoyambeduSellerAdmin.findOne({ user: req.user._id, status: 'approved' });
+  if (!sa) return res.status(403).json({ success: false, message: 'SellerAdmin not approved' });
+
+  const seller = await KoyambeduSeller.findOne({ _id: req.params.sellerId, createdBySellerAdmin: sa._id });
+  if (!seller) return res.status(403).json({ success: false, message: 'Seller not managed by this SellerAdmin' });
+
+  // Reject if there is already a pending edit awaiting review
+  if (seller.pendingEdit && seller.pendingEdit.submittedAt) {
+    return res.status(400).json({ success: false, message: 'There is already a pending edit awaiting admin review' });
+  }
+
+  const {
+    ownerName, businessName, stallNumber, marketSection, description,
+    contactPhone, contactEmail, contactAltPhone,
+  } = req.body;
+
+  // Build pendingEdit — only include fields that were actually sent
+  const pendingEdit = {
+    submittedAt: new Date(),
+    submittedBy: sa._id,
+  };
+  if (ownerName     !== undefined) pendingEdit.ownerName     = ownerName;
+  if (businessName  !== undefined) pendingEdit.businessName  = businessName;
+  if (stallNumber   !== undefined) pendingEdit.stallNumber   = stallNumber;
+  if (marketSection !== undefined) pendingEdit.marketSection = marketSection;
+  if (description   !== undefined) pendingEdit.description   = description;
+  if (contactPhone  !== undefined || contactEmail !== undefined || contactAltPhone !== undefined) {
+    pendingEdit.contact = {};
+    if (contactPhone    !== undefined) pendingEdit.contact.phone    = contactPhone;
+    if (contactEmail    !== undefined) pendingEdit.contact.email    = contactEmail?.toLowerCase() || '';
+    if (contactAltPhone !== undefined) pendingEdit.contact.altPhone = contactAltPhone;
+  }
+
+  seller.pendingEdit = pendingEdit;
+  await seller.save();
+
+  res.json({ success: true, message: 'Edit request submitted for SuperAdmin review', seller });
+};
+
+/** POST /api/koyambedu/admin/sellers/:sellerId/review-edit
+ *  SuperAdmin approves or rejects a pending edit from a SellerAdmin
+ */
+const adminReviewSellerEdit = async (req, res) => {
+  const { approve, rejectReason } = req.body;
+  const seller = await KoyambeduSeller.findById(req.params.sellerId).populate('user', '_id');
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+  if (!seller.pendingEdit || !seller.pendingEdit.submittedAt) {
+    return res.status(400).json({ success: false, message: 'No pending edit found for this seller' });
+  }
+
+  if (approve) {
+    const pe = seller.pendingEdit;
+    // Apply the pending changes to the live fields
+    if (pe.ownerName     !== undefined) seller.ownerName     = pe.ownerName;
+    if (pe.businessName  !== undefined) seller.businessName  = pe.businessName;
+    if (pe.stallNumber   !== undefined) seller.stallNumber   = pe.stallNumber;
+    if (pe.marketSection !== undefined) seller.marketSection = pe.marketSection;
+    if (pe.description   !== undefined) seller.description   = pe.description;
+    if (pe.contact) {
+      if (!seller.contact) seller.contact = {};
+      if (pe.contact.phone    !== undefined) seller.contact.phone    = pe.contact.phone;
+      if (pe.contact.email    !== undefined) seller.contact.email    = pe.contact.email;
+      if (pe.contact.altPhone !== undefined) seller.contact.altPhone = pe.contact.altPhone;
+
+      // Sync to linked Eptomart user account so OTP login keeps working
+      if (seller.user) {
+        const userUpdates = {};
+        if (pe.contact.phone !== undefined) userUpdates.phone = pe.contact.phone;
+        if (pe.contact.email !== undefined) userUpdates.email = pe.contact.email;
+        if (Object.keys(userUpdates).length) {
+          await User.findByIdAndUpdate(seller.user._id || seller.user, userUpdates);
+        }
+      }
+    }
+  }
+
+  // Clear pending edit regardless of approve/reject
+  seller.pendingEdit = undefined;
+  await seller.save();
+
+  res.json({
+    success: true,
+    message: approve ? 'Edit approved and applied' : `Edit rejected: ${rejectReason || 'No reason given'}`,
+    seller,
+  });
+};
+
 /** GET /api/koyambedu/admin/categories */
 const adminGetCategories = async (req, res) => {
   const { status } = req.query;
@@ -1431,7 +1556,7 @@ module.exports = {
   getSellerOrders, confirmStock, requestPriceRevision, createSellerCategory,
   // Admin — sellers
   adminDashboard, adminGetOrders, adminUpdateOrderStatus,
-  adminGetSellers, adminApproveSeller, adminToggleSeller,
+  adminGetSellers, adminApproveSeller, adminToggleSeller, adminEditSellerContact,
   adminGetCategories, adminApproveCategory, adminAnalytics,
   // Admin — seller admins (SuperAdmin only)
   adminUserSearch, adminCreateSellerAdmin, adminGetSellerAdmins, adminApproveSellerAdmin,
@@ -1439,6 +1564,9 @@ module.exports = {
   sellerAdminGetProfile, sellerAdminGetSellers, sellerAdminCreateSeller,
   sellerAdminGetProducts, sellerAdminUpdateProduct, sellerAdminCreateProduct,
   sellerAdminCreateCategory, sellerAdminGetCategories,
+  sellerAdminRequestEdit,
   // Admin product creation
   adminCreateProduct,
+  // Admin seller-edit review (SuperAdmin only)
+  adminReviewSellerEdit,
 };

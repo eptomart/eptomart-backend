@@ -75,6 +75,23 @@ const koyambeduSellerSchema = new Schema({
   // WhatsApp notification preference
   notifyWhatsApp: { type: Boolean, default: true },
 
+  // ── Pending edit submitted by SellerAdmin ─────────────────
+  // SellerAdmin proposes changes; SuperAdmin approves/rejects before going live
+  pendingEdit: {
+    ownerName:     String,
+    businessName:  String,
+    stallNumber:   String,
+    marketSection: String,
+    description:   String,
+    contact: {
+      phone:    String,
+      email:    String,
+      altPhone: String,
+    },
+    submittedAt: Date,
+    submittedBy: { type: Schema.Types.ObjectId, ref: 'KoyambeduSellerAdmin' },
+  },
+
 }, { timestamps: true });
 
 // Convenience virtual — allows `seller.isApproved` in non-lean code

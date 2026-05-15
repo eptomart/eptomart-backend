@@ -187,6 +187,17 @@ const updateSeller = async (req, res) => {
   }
 
   await seller.save();
+
+  // Sync email/phone to the linked User account so OTP login keeps working
+  if (req.body.contact && seller.user) {
+    const userUpdates = {};
+    if (req.body.contact.email !== undefined) userUpdates.email = req.body.contact.email?.toLowerCase() || undefined;
+    if (req.body.contact.phone !== undefined) userUpdates.phone = req.body.contact.phone || undefined;
+    if (Object.keys(userUpdates).length) {
+      await User.findByIdAndUpdate(seller.user, userUpdates);
+    }
+  }
+
   res.json({ success: true, seller });
 };
 

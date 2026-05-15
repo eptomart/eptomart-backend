@@ -6,13 +6,14 @@ const rateLimit = require('express-rate-limit');
 // General API rate limiter
 const rateLimiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
-  max: parseInt(process.env.RATE_LIMIT_MAX) || 100,
+  max: parseInt(process.env.RATE_LIMIT_MAX) || 600,  // 600 per 15 min (~40/min) — enough for active shoppers
   message: {
     success: false,
     message: 'Too many requests from this IP. Please try again later.',
   },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.path.startsWith('/products') || req.path.startsWith('/categories'), // public browse never blocked
 });
 
 // Strict limiter for auth endpoints (prevent OTP spam)

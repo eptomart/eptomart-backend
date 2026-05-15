@@ -145,6 +145,20 @@ app.use('/api/', rateLimiter);
 // ─── Visitor Tracking ─────────────────────────
 app.use('/api/', trackVisitor);
 
+// ─── Digital Asset Links (TWA / Play Store) ───
+app.get('/.well-known/assetlinks.json', (req, res) => {
+  res.json([{
+    relation: ['delegate_permission/common.handle_all_urls'],
+    target: {
+      namespace: 'android_app',
+      package_name: 'in.eptomart.app',
+      sha256_cert_fingerprints: [
+        '69:3B:C6:14:C7:C4:1F:A9:3B:E9:4E:29:9C:B8:A3:0E:18:77:F3:C2:EB:93:61:B1:91:61:52:A6:43:11:78:15',
+      ],
+    },
+  }]);
+});
+
 // ─── API Routes ───────────────────────────────
 app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);

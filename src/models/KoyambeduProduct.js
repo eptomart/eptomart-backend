@@ -63,6 +63,11 @@ const koyambeduProductSchema = new Schema({
     isPrimary: { type: Boolean, default: false },
   }],
 
+  // Weight (used for delivery charge calculation)
+  // weightKg = weight per 1 unit in kg
+  // kg products: default 1, g products: default 0.001, piece/bunch/etc: seller sets this
+  weightKg: { type: Number, default: 1 },
+
   // Smart features
   isBulkAvailable:   { type: Boolean, default: false },
   bulkMinQty:        Number,

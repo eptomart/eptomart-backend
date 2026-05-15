@@ -13,6 +13,16 @@ const koyambeduOrderSchema = new Schema({
 
   // Buyer — PRIVATE, never exposed to seller
   buyer:           { type: Schema.Types.ObjectId, ref: 'User', required: true },
+
+  // Buyer GPS location (captured at checkout — private, admin only)
+  buyerLocation: {
+    lat:        Number,
+    lng:        Number,
+    city:       String,
+    pincode:    String,
+    distanceKm: Number, // distance from Koyambedu market at time of order
+  },
+
   shippingAddress: {
     fullName:     String,
     phone:        String,  // PRIVATE

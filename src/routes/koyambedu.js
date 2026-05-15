@@ -17,14 +17,29 @@ const protectSeller = [protect, async (req, res, next) => {
   next();
 }];
 
+// ── SellerAdmin guard middleware ─────────────
+const protectSellerAdmin = [protect, async (req, res, next) => {
+  const KoyambeduSellerAdmin = require('../models/KoyambeduSellerAdmin');
+  const sa = await KoyambeduSellerAdmin.findOne({ user: req.user._id });
+  if (!sa) return res.status(403).json({ success: false, message: 'Koyambedu SellerAdmin account required' });
+  if (sa.status !== 'approved') return res.status(403).json({ success: false, message: 'SellerAdmin account not yet approved' });
+  req.kbdSellerAdmin = sa;
+  next();
+}];
+
 // ══════════════════════════════════════════════
 // PUBLIC — no auth required
 // ══════════════════════════════════════════════
-router.get('/categories',             ctrl.getCategories);
-router.get('/products',               ctrl.getProducts);
-router.get('/products/featured',      ctrl.getFeaturedProducts);
-router.get('/products/:productId',    ctrl.getProductDetail);
-router.get('/slots',                  ctrl.getDeliverySlots);
+router.get ('/categories',             ctrl.getCategories);
+router.get ('/products',               ctrl.getProducts);
+router.get ('/products/featured',      ctrl.getFeaturedProducts);
+router.get ('/products/:productId',    ctrl.getProductDetail);
+router.get ('/slots',                  ctrl.getDeliverySlots);
+
+// ══════════════════════════════════════════════
+// DELIVERY CHECK — auth optional (returns weight-based charge if logged in)
+// ══════════════════════════════════════════════
+router.post('/check-delivery', optionalAuth, ctrl.checkDeliveryAvailability);
 
 // ══════════════════════════════════════════════
 // BUYER — auth required
@@ -61,6 +76,15 @@ router.post ('/seller/orders/:orderId/confirm-stock',           protectSeller, c
 router.post ('/seller/orders/:orderId/request-price-revision',  protectSeller, ctrl.requestPriceRevision);
 
 // ══════════════════════════════════════════════
+// SELLER ADMIN PORTAL
+// ══════════════════════════════════════════════
+router.get ('/seller-admin/profile',                             protectSellerAdmin, ctrl.sellerAdminGetProfile);
+router.get ('/seller-admin/sellers',                             protectSellerAdmin, ctrl.sellerAdminGetSellers);
+router.post('/seller-admin/sellers',                             protectSellerAdmin, ctrl.sellerAdminCreateSeller);
+router.get ('/seller-admin/sellers/:sellerId/products',          protectSellerAdmin, ctrl.sellerAdminGetProducts);
+router.put ('/seller-admin/sellers/:sellerId/products/:productId', protectSellerAdmin, ctrl.sellerAdminUpdateProduct);
+
+// ══════════════════════════════════════════════
 // ADMIN — admin or superAdmin
 // ══════════════════════════════════════════════
 router.get  ('/admin/dashboard',                  protectAdmin, ctrl.adminDashboard);
@@ -72,5 +96,10 @@ router.patch('/admin/sellers/:sellerId/toggle',   protectAdmin, ctrl.adminToggle
 router.get  ('/admin/categories',                 protectAdmin, ctrl.adminGetCategories);
 router.patch('/admin/categories/:catId/approve',  protectAdmin, ctrl.adminApproveCategory);
 router.get  ('/admin/analytics',                  protectAdmin, ctrl.adminAnalytics);
+
+// SellerAdmin management — superAdmin only
+router.post ('/admin/seller-admins',              protectSuperAdmin, ctrl.adminCreateSellerAdmin);
+router.get  ('/admin/seller-admins',              protectSuperAdmin, ctrl.adminGetSellerAdmins);
+router.patch('/admin/seller-admins/:saId/approve',protectSuperAdmin, ctrl.adminApproveSellerAdmin);
 
 module.exports = router;

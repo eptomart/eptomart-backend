@@ -146,4 +146,84 @@ const updateEnquiry = async (req, res) => {
   res.json({ success: true, enquiry });
 };
 
-module.exports = { getSettings, updateSettings, contactUs, getEnquiries, updateEnquiry };
+// ── POST /api/settings/product-inquiry  — public ───────────────
+// Buyer searched for a product not found on Eptomart.
+// Saves an enquiry, emails SuperAdmin, confirms to buyer.
+const productInquiry = async (req, res) => {
+  const { query, name, email, phone } = req.body;
+  if (!query?.trim()) return res.status(400).json({ success: false, message: 'Search query required' });
+
+  const safeName = name?.trim() || 'Anonymous';
+
+  const enquiry = await Enquiry.create({
+    name:    safeName,
+    email:   email?.trim() || undefined,
+    phone:   phone?.trim() || undefined,
+    subject: `🔍 Product Inquiry: "${query.trim()}"`,
+    message: `Buyer searched for "${query.trim()}" but this product was not found on Eptomart. Please source or add this product.\n\nBuyer: ${safeName}${email ? ` | ${email}` : ''}${phone ? ` | ${phone}` : ''}`,
+    ip:        req.ip || req.headers['x-forwarded-for'] || '',
+    userAgent: req.headers['user-agent'] || '',
+  });
+
+  const adminEmail = process.env.ADMIN_EMAIL || process.env.CONTACT_EMAIL || business.email || 'eptosicare@gmail.com';
+
+  // Notify SuperAdmin
+  sendEmail({
+    to: adminEmail,
+    subject: `🔍 Product Inquiry — "${query.trim()}" not found`,
+    html: `
+      <div style="font-family:sans-serif;max-width:600px;margin:0 auto;background:#fff;padding:24px;border-radius:12px">
+        <div style="background:linear-gradient(135deg,#ea580c,#f97316);padding:16px;border-radius:8px;margin-bottom:20px">
+          <h2 style="color:#fff;margin:0;font-size:18px">🔍 Product Inquiry from Buyer</h2>
+        </div>
+        <table style="width:100%;border-collapse:collapse">
+          <tr style="background:#fff7ed"><td style="padding:10px;font-weight:bold;width:130px">Searched For</td><td style="padding:10px;color:#ea580c;font-weight:bold;font-size:16px">"${query.trim()}"</td></tr>
+          <tr><td style="padding:10px;font-weight:bold">Buyer Name</td><td style="padding:10px">${safeName}</td></tr>
+          <tr style="background:#fff7ed"><td style="padding:10px;font-weight:bold">Email</td><td style="padding:10px">${email || '—'}</td></tr>
+          <tr><td style="padding:10px;font-weight:bold">Phone</td><td style="padding:10px">${phone || '—'}</td></tr>
+        </table>
+        <div style="margin-top:20px;padding:12px;background:#fef9c3;border-radius:8px;border-left:4px solid #eab308">
+          <strong>Action Required:</strong> Please source this product or add it to the catalogue. If you want to follow up, reply to this email or contact the buyer directly.
+        </div>
+        <p style="color:#999;font-size:11px;margin-top:16px">
+          Enquiry ID: ${enquiry._id} · ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST ·
+          <a href="${process.env.FRONTEND_URL || 'https://eptomart.com'}/admin/enquiries">View in Admin Panel</a>
+        </p>
+      </div>
+    `,
+  }).catch(() => {});
+
+  // Confirm to buyer
+  if (email?.trim()) {
+    sendEmail({
+      to: email.trim(),
+      subject: `We've noted your interest — Eptomart`,
+      html: `
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;background:#fff;padding:24px;border-radius:12px">
+          <div style="background:linear-gradient(135deg,#ea580c,#f97316);padding:16px;border-radius:8px;margin-bottom:20px">
+            <h2 style="color:#fff;margin:0;font-size:18px">✅ We've Made a Note!</h2>
+          </div>
+          <p>Hi ${safeName},</p>
+          <p>You searched for <strong style="color:#ea580c">"${query.trim()}"</strong> on Eptomart, and while we don't carry it right now — we've noted your interest!</p>
+          <div style="background:#fff7ed;border-left:4px solid #ea580c;padding:14px;border-radius:6px;margin:16px 0">
+            <p style="margin:0;font-weight:bold">What happens next?</p>
+            <ul style="margin:8px 0 0 0;padding-left:20px;color:#555">
+              <li>Our team will try to source "${query.trim()}" from verified sellers</li>
+              <li>We'll notify you as soon as it becomes available</li>
+              <li>You can also browse similar products in our catalogue</li>
+            </ul>
+          </div>
+          <a href="${process.env.FRONTEND_URL || 'https://eptomart.com'}/shop?search=${encodeURIComponent(query.trim())}"
+            style="display:inline-block;background:#ea580c;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;margin-top:8px">
+            Browse Similar Products →
+          </a>
+          <p style="color:#999;font-size:11px;margin-top:20px">— Team Eptomart | <a href="https://eptomart.com">eptomart.com</a></p>
+        </div>
+      `,
+    }).catch(() => {});
+  }
+
+  res.status(201).json({ success: true, message: 'Inquiry noted. We\'ll get back to you soon!' });
+};
+
+module.exports = { getSettings, updateSettings, contactUs, getEnquiries, updateEnquiry, productInquiry };

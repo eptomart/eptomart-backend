@@ -81,6 +81,8 @@ router.post ('/seller/orders/:orderId/request-price-revision',  protectSeller, c
 router.get ('/seller-admin/profile',                             protectSellerAdmin, ctrl.sellerAdminGetProfile);
 router.get ('/seller-admin/sellers',                             protectSellerAdmin, ctrl.sellerAdminGetSellers);
 router.post('/seller-admin/sellers',                             protectSellerAdmin, ctrl.sellerAdminCreateSeller);
+router.get ('/seller-admin/categories',                            protectSellerAdmin, ctrl.sellerAdminGetCategories);
+router.post('/seller-admin/categories',                            protectSellerAdmin, ctrl.sellerAdminCreateCategory);
 router.get ('/seller-admin/sellers/:sellerId/products',            protectSellerAdmin, ctrl.sellerAdminGetProducts);
 router.post('/seller-admin/sellers/:sellerId/products',            protectSellerAdmin, ctrl.sellerAdminCreateProduct);
 router.put ('/seller-admin/sellers/:sellerId/products/:productId', protectSellerAdmin, ctrl.sellerAdminUpdateProduct);

@@ -1189,6 +1189,37 @@ const sellerAdminCreateProduct = async (req, res) => {
   res.status(201).json({ success: true, product });
 };
 
+/** POST /api/koyambedu/seller-admin/categories — SA submits a new category for admin approval */
+const sellerAdminCreateCategory = async (req, res) => {
+  const sa = await KoyambeduSellerAdmin.findOne({ user: req.user._id, status: 'approved' });
+  if (!sa) return res.status(403).json({ success: false, message: 'SellerAdmin not approved' });
+
+  const { name, nameTamil, icon, parentId, description } = req.body;
+  if (!name) return res.status(400).json({ success: false, message: 'Category name is required' });
+
+  // Check for duplicate name (case-insensitive)
+  const existing = await KoyambeduCategory.findOne({ name: new RegExp(`^${name.trim()}$`, 'i') });
+  if (existing) return res.status(400).json({ success: false, message: 'A category with this name already exists' });
+
+  const cat = await KoyambeduCategory.create({
+    name: name.trim(), nameTamil, icon: icon || '🌿', description,
+    parent: parentId || null,
+    status: 'pending', // must be approved by admin
+    // createdBy is KoyambeduSeller ref — leave null for SA-created categories
+  });
+
+  res.status(201).json({ success: true, message: 'Category submitted for admin approval', category: cat });
+};
+
+/** GET /api/koyambedu/seller-admin/categories — list categories (for product form dropdowns) */
+const sellerAdminGetCategories = async (req, res) => {
+  const { status } = req.query;
+  const filter = { isActive: true };
+  if (status) filter.status = status; // e.g. ?status=pending to list SA's pending ones
+  const cats = await KoyambeduCategory.find(filter).sort({ name: 1 }).lean();
+  res.json({ success: true, categories: cats });
+};
+
 /** POST /api/koyambedu/admin/sellers/:sellerId/products — admin adds product for any seller */
 const adminCreateProduct = async (req, res) => {
   const seller = await KoyambeduSeller.findById(req.params.sellerId);
@@ -1407,6 +1438,7 @@ module.exports = {
   // SellerAdmin portal
   sellerAdminGetProfile, sellerAdminGetSellers, sellerAdminCreateSeller,
   sellerAdminGetProducts, sellerAdminUpdateProduct, sellerAdminCreateProduct,
+  sellerAdminCreateCategory, sellerAdminGetCategories,
   // Admin product creation
   adminCreateProduct,
 };

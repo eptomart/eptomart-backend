@@ -29,8 +29,8 @@ const getProducts = async (req, res) => {
     inStock,
   } = req.query;
 
-  // Show all approved products (including inactive/deactivated seller products — they appear greyed out on frontend)
-  const filter = { approvalStatus: 'approved' };
+  // Show products that are approved OR active (covers legacy data without approvalStatus field)
+  const filter = { $or: [{ approvalStatus: 'approved' }, { isActive: true }] };
 
   if (subCategory) {
     filter.subCategory = subCategory; // subcategory filter takes precedence

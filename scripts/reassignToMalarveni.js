@@ -1,5 +1,5 @@
 // =============================================================================
-// REASSIGN ALL PRODUCTS → MALARVENI ENTERPRISES
+// REASSIGN ALL PRODUCTS → PLATFORM SELLER
 // Skips products already owned by "Mary enterprises"
 // =============================================================================
 // Usage:
@@ -26,12 +26,12 @@ async function run() {
   await mongoose.connect(MONGO_URI);
   console.log('✅  Connected to MongoDB\n');
 
-  // ── 1. Find Malarveni Enterprises ─────────────────────────────────────────
-  const malarveni = await Seller.findOne({ businessName: { $regex: 'malarveni', $options: 'i' } });
+  // ── 1. Find Platform seller ───────────────────────────────────────────────
+  const malarveni = await Seller.findOne({ businessName: { $regex: 'platform', $options: 'i' } });
   if (!malarveni) {
     // List all sellers so user can verify the name
     const all = await Seller.find({}).select('businessName').lean();
-    console.error('❌  "Malarveni Enterprises" not found. Sellers in DB:');
+    console.error('❌  "Platform" seller not found. Sellers in DB:');
     all.forEach(s => console.log(`   • "${s.businessName}"  (${s._id})`));
     process.exit(1);
   }

@@ -36,12 +36,12 @@ async function run() {
   }
   console.log(`✅  Target seller : ${malarveni.businessName}  (${malarveni._id})`);
 
-  // ── 2. Find Platform seller (skip their products) ──────────────────────────
-  const mary = await Seller.findOne({ businessName: { $regex: 'platform', $options: 'i' } });
+  // ── 2. Find Mary Enterprises (skip their products) ────────────────────────
+  const mary = await Seller.findOne({ businessName: { $regex: 'mary', $options: 'i' } });
   if (mary) {
     console.log(`⏭️   Skip seller  : ${mary.businessName}  (${mary._id})`);
   } else {
-    console.log('ℹ️   "Platform" seller not found — no products will be excluded.\n');
+    console.log('ℹ️   "Mary enterprises" not found — no products will be excluded.\n');
   }
 
   // ── 3. Count ───────────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ async function run() {
   console.log(`✅  Done!`);
   console.log(`   → ${result.modifiedCount} product(s) assigned to "${malarveni.businessName}"`);
   console.log(`   → approvalStatus set to "approved", isActive = true`);
-  if (mary) console.log(`   → ${maryCount} Platform product(s) untouched`);
+  if (mary) console.log(`   → ${maryCount} Mary enterprises product(s) untouched`);
 
   await mongoose.disconnect();
   console.log('\n🔌  Disconnected.');

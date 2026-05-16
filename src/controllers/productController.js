@@ -29,8 +29,9 @@ const getProducts = async (req, res) => {
     inStock,
   } = req.query;
 
-  // Show products that are approved OR active (covers legacy data without approvalStatus field)
-  const filter = { $or: [{ approvalStatus: 'approved' }, { isActive: true }] };
+  // Public store: show all products except those explicitly rejected or pending-without-activation
+  // This covers: approved products, legacy imports, admin-created products
+  const filter = { approvalStatus: { $nin: ['rejected', 'pending'] } };
 
   if (subCategory) {
     filter.subCategory = subCategory; // subcategory filter takes precedence

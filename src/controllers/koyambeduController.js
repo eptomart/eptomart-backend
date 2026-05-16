@@ -147,25 +147,43 @@ const getProducts = async (req, res) => {
 
 /** GET /api/koyambedu/products/featured — home page sections */
 const getFeaturedProducts = async (req, res) => {
-  const base = { isActive: true, isAvailable: true };
+  try {
+    const base = { isActive: true };   // removed isAvailable check so empty DB returns [] not 500
 
-  const [freshArrivals, deals, flowers, bulk, seasonal] = await Promise.all([
-    KoyambeduProduct.find({ ...base, badges: 'fresh_arrival' })
-      .populate('category', 'name icon').sort({ freshArrivalDate: -1 }).limit(8).lean(),
-    KoyambeduProduct.find({ ...base, badges: 'best_seller' })
-      .populate('category', 'name icon').sort({ totalOrders: -1 }).limit(8).lean(),
-    KoyambeduProduct.find({ ...base, category: { $exists: true } })
-      .populate('category', 'name icon slug')
-      .sort({ totalOrders: -1 }).limit(8)
-      .lean()
-      .then(prods => prods.filter(p => p.category?.name?.toLowerCase().includes('flower') || p.category?.slug?.includes('flower'))),
-    KoyambeduProduct.find({ ...base, isBulkAvailable: true })
-      .populate('category', 'name icon').sort({ totalOrders: -1 }).limit(6).lean(),
-    KoyambeduProduct.find({ ...base, badges: 'seasonal' })
-      .populate('category', 'name icon').sort({ freshArrivalDate: -1 }).limit(6).lean(),
-  ]);
+    const safeFind = (query) => query.catch(() => []);
 
-  res.json({ success: true, sections: { freshArrivals, deals, flowers, bulk, seasonal } });
+    const [freshArrivals, deals, flowers, bulk, seasonal, anyProducts] = await Promise.all([
+      safeFind(KoyambeduProduct.find({ ...base, badges: 'fresh_arrival' })
+        .populate('category', 'name icon').sort({ freshArrivalDate: -1 }).limit(8).lean()),
+      safeFind(KoyambeduProduct.find({ ...base, badges: 'best_seller' })
+        .populate('category', 'name icon').sort({ totalOrders: -1 }).limit(8).lean()),
+      safeFind(KoyambeduProduct.find({ ...base, category: { $exists: true } })
+        .populate('category', 'name icon slug').sort({ totalOrders: -1 }).limit(8).lean()
+        .then(prods => prods.filter(p => p.category?.name?.toLowerCase().includes('flower') || p.category?.slug?.includes('flower')))),
+      safeFind(KoyambeduProduct.find({ ...base, isBulkAvailable: true })
+        .populate('category', 'name icon').sort({ totalOrders: -1 }).limit(6).lean()),
+      safeFind(KoyambeduProduct.find({ ...base, badges: 'seasonal' })
+        .populate('category', 'name icon').sort({ freshArrivalDate: -1 }).limit(6).lean()),
+      safeFind(KoyambeduProduct.find(base)
+        .populate('category', 'name icon').sort({ createdAt: -1 }).limit(8).lean()),
+    ]);
+
+    // Fallback: if specific badge sections are empty, use any available products
+    const fallback = anyProducts || [];
+    res.json({
+      success: true,
+      sections: {
+        freshArrivals: freshArrivals.length ? freshArrivals : fallback,
+        deals:         deals.length         ? deals         : fallback,
+        flowers,
+        bulk,
+        seasonal:      seasonal.length      ? seasonal      : fallback,
+      },
+    });
+  } catch (err) {
+    // Never crash the Koyambedu home page — return empty sections
+    res.json({ success: true, sections: { freshArrivals: [], deals: [], flowers: [], bulk: [], seasonal: [] } });
+  }
 };
 
 /** GET /api/koyambedu/products/:productId */

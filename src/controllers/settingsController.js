@@ -1,5 +1,6 @@
 const BusinessSettings = require('../models/BusinessSettings');
 const Enquiry          = require('../models/Enquiry');
+const SearchMiss       = require('../models/SearchMiss');
 const { sendEmail }    = require('../utils/sendEmail');
 const business         = require('../../config/business');
 
@@ -223,7 +224,31 @@ const productInquiry = async (req, res) => {
     }).catch(() => {});
   }
 
+  // ── Track in SearchMiss for admin widget (silent) ──────────
+  const userId = req.user?._id || null;
+  const city   = req.body.city?.trim() || '';
+  SearchMiss.findOneAndUpdate(
+    { keyword: query.trim().toLowerCase() },
+    {
+      $inc: { count: 1 },
+      $set: { lastSearchedAt: new Date(), ...(city ? { city } : {}) },
+      ...(userId ? { $addToSet: { userIds: userId } } : {}),
+    },
+    { upsert: true, new: true }
+  ).catch(() => {});
+
   res.status(201).json({ success: true, message: 'Inquiry noted. We\'ll get back to you soon!' });
 };
 
-module.exports = { getSettings, updateSettings, contactUs, getEnquiries, updateEnquiry, productInquiry };
+// ── GET /api/settings/search-misses  — admin only ──────────
+// Returns the most frequently searched-for unavailable products
+const getSearchMisses = async (req, res) => {
+  const { limit = 20 } = req.query;
+  const misses = await SearchMiss.find()
+    .sort('-count')
+    .limit(Number(limit))
+    .select('keyword count lastSearchedAt city userIds');
+  res.json({ success: true, misses, total: misses.length });
+};
+
+module.exports = { getSettings, updateSettings, contactUs, getEnquiries, updateEnquiry, productInquiry, getSearchMisses };

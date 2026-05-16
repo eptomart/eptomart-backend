@@ -1,7 +1,7 @@
 const express = require('express');
 const router  = express.Router();
 const {
-  getSettings, updateSettings, contactUs, getEnquiries, updateEnquiry, productInquiry,
+  getSettings, updateSettings, contactUs, getEnquiries, updateEnquiry, productInquiry, getSearchMisses,
 } = require('../controllers/settingsController');
 const { protectSuperAdmin } = require('../middleware/adminAuth');
 const { protect }           = require('../middleware/auth');
@@ -15,6 +15,9 @@ router.post('/product-inquiry',  productInquiry);  // Search not found — notif
 // ── Admin: enquiry management ─────────────────────────────
 router.get('/enquiries',         ...protectAdmin, getEnquiries);
 router.patch('/enquiries/:id',   ...protectAdmin, updateEnquiry);
+
+// ── Admin: search miss analytics ─────────────────────────
+router.get('/search-misses', ...protectAdmin, getSearchMisses);
 
 // ── SuperAdmin: business settings ─────────────────────────
 router.put('/', ...protectSuperAdmin, updateSettings);

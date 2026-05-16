@@ -24,8 +24,19 @@ const categorySchema = new mongoose.Schema({
     url: String,
     publicId: String,
   },
-  icon:  String, // Emoji or icon class (kept for backward compat)
+  icon:  String, // Emoji or icon class
   color: String, // Hex color for the icon circle e.g. "#e91e8c"
+
+  // Module scope — which storefront this category belongs to
+  moduleType: {
+    type:    String,
+    enum:    ['eptomart', 'koyambedu_daily', 'uzhavar_fresh', 'shared'],
+    default: 'eptomart',
+  },
+
+  // Whether to feature this category prominently on the homepage
+  isFeatured: { type: Boolean, default: false },
+
   parentCategory: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Category',

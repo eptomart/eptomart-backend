@@ -7,12 +7,13 @@ const { uploadCategory } = require('../config/cloudinary');
 // Get all active categories
 router.get('/', async (req, res) => {
   const { parent, all, moduleType } = req.query;
-  const filter = { isActive: true };
+  // $ne: false also includes docs where isActive is undefined/not set (legacy data)
+  const filter = { isActive: { $ne: false } };
 
   // Module-type filter: e.g. ?moduleType=eptomart returns only non-perishable categories
   if (moduleType) {
     filter.moduleType = moduleType === 'eptomart'
-      ? { $in: ['eptomart', null] }   // eptomart + legacy (no moduleType set)
+      ? { $in: ['eptomart', null, undefined] }   // eptomart + legacy (no moduleType set)
       : moduleType;
   }
 
@@ -29,7 +30,7 @@ router.get('/', async (req, res) => {
 
 // Get single category by slug
 router.get('/:slug', async (req, res) => {
-  const category = await Category.findOne({ slug: req.params.slug, isActive: true })
+  const category = await Category.findOne({ slug: req.params.slug, isActive: { $ne: false } })
     .populate('subcategories');
   if (!category) return res.status(404).json({ success: false, message: 'Category not found' });
   res.json({ success: true, category });

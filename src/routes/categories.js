@@ -6,8 +6,15 @@ const { uploadCategory } = require('../config/cloudinary');
 
 // Get all active categories
 router.get('/', async (req, res) => {
-  const { parent, all } = req.query;
+  const { parent, all, moduleType } = req.query;
   const filter = { isActive: true };
+
+  // Module-type filter: e.g. ?moduleType=eptomart returns only non-perishable categories
+  if (moduleType) {
+    filter.moduleType = moduleType === 'eptomart'
+      ? { $in: ['eptomart', null] }   // eptomart + legacy (no moduleType set)
+      : moduleType;
+  }
 
   // If all=true, return all categories (including sub-categories)
   // Otherwise, filter by parent

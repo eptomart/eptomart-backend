@@ -459,22 +459,61 @@ const addReview = async (req, res) => {
  */
 const searchProducts = async (req, res) => {
   const { q, limit = 10 } = req.query;
-  if (!q) return res.json({ success: true, products: [] });
+  if (!q || !q.trim()) return res.json({ success: true, products: [] });
 
-  const products = await Product.find({
-    isActive: true,
-    approvalStatus: 'approved',
-    $or: [
-      { name: { $regex: q, $options: 'i' } },
-      { tags: { $in: [new RegExp(q, 'i')] } },
-      { brand: { $regex: q, $options: 'i' } },
-    ],
-  })
-    .populate('category', 'name').populate('subCategory', 'name')
-    .limit(Number(limit))
-    .select('name slug price discountPrice images ratings');
+  const terms    = q.trim();
+  const words    = terms.split(/\s+/).filter(w => w.length > 1);
+  const cap      = Math.max(Number(limit), 10);
+  const baseFilter = { approvalStatus: { $nin: ['rejected', 'pending'] } };
+  const SELECT   = 'name slug price discountPrice images ratings category';
+  const POPULATE = [
+    { path: 'category',    select: 'name' },
+    { path: 'subCategory', select: 'name' },
+  ];
 
-  res.json({ success: true, products });
+  const dedup = (a, b) => {
+    const seen = new Set(a.map(p => p._id.toString()));
+    return [...a, ...b.filter(p => !seen.has(p._id.toString()))];
+  };
+
+  // Tier 1: exact phrase in name (highest relevance)
+  let results = await Product.find({
+    ...baseFilter,
+    name: { $regex: terms, $options: 'i' },
+  }).populate(POPULATE).limit(cap).select(SELECT).lean();
+
+  // Tier 2: ALL words in name (e.g. "custard" AND "powder")
+  if (results.length < cap && words.length > 1) {
+    const andMatch = await Product.find({
+      ...baseFilter,
+      $and: words.map(w => ({ name: { $regex: w, $options: 'i' } })),
+    }).populate(POPULATE).limit(cap).select(SELECT).lean();
+    results = dedup(results, andMatch).slice(0, cap);
+  }
+
+  // Tier 3: exact phrase in description / brand / tags
+  if (results.length < cap) {
+    const tagMatch = await Product.find({
+      ...baseFilter,
+      $or: [
+        { brand:       { $regex: terms, $options: 'i' } },
+        { tags:        { $in: [new RegExp(terms, 'i')] } },
+        { description: { $regex: terms, $options: 'i' } },
+      ],
+    }).populate(POPULATE).limit(cap).select(SELECT).lean();
+    results = dedup(results, tagMatch).slice(0, cap);
+  }
+
+  // Tier 4: any single word in name (broadest — lowest relevance)
+  if (results.length < cap && words.length > 1) {
+    const anyWord = await Product.find({
+      ...baseFilter,
+      name: { $in: words.map(w => new RegExp(w, 'i')) },
+    }).populate(POPULATE).limit(cap).select(SELECT).lean();
+    results = dedup(results, anyWord).slice(0, cap);
+  }
+
+  res.json({ success: true, products: results });
 };
 
 /**

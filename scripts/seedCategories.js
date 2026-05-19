@@ -46,7 +46,7 @@ const CATEGORIES = [
 
 async function seed() {
   try {
-    await mongoose.connect(process.env.MONGO_URI);
+    await mongoose.connect(process.env.MONGODB_URI || process.env.MONGO_URI);
     console.log('✅ Connected to MongoDB');
 
     let created = 0, skipped = 0;

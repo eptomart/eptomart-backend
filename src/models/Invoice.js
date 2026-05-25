@@ -34,6 +34,14 @@ const invoiceSchema = new mongoose.Schema({
   order:    { type: mongoose.Schema.Types.ObjectId, ref: 'Order', required: true },
   customer: { type: mongoose.Schema.Types.ObjectId, ref: 'User',  required: true },
 
+  // For multi-seller orders: each seller gets their own invoice
+  sellerRef:       { type: mongoose.Schema.Types.ObjectId, ref: 'Seller' },
+  sellerName:      String,
+  sellerGstNumber: String,
+  isSellerInvoice: { type: Boolean, default: false },  // true = per-seller GST invoice
+  // If this is the combined customer-facing invoice that bundles all seller invoices
+  bundledInvoices: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' }],
+
   items: [invoiceItemSchema],
 
   billingAddress:  addressSnapshotSchema,

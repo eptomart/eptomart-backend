@@ -189,8 +189,31 @@ const orderSchema = new mongoose.Schema({
     subtotal:    Number,
     gstTotal:    Number,
     total:       Number,
-    status:      { type: String, enum: ['pending','processing','shipped','delivered'], default: 'pending' },
+    status:      { type: String, enum: ['pending','confirmed','processing','shipped','delivered'], default: 'pending' },
     trackingId:  String,
+    // Per-seller pickup address (set when that seller confirms)
+    pickupSnapshot: {
+      addressId:  String,
+      label:      String,
+      street:     String,
+      city:       String,
+      state:      String,
+      pincode:    String,
+      phone:      String,
+    },
+    confirmedAt: Date,
+    // Per-seller Shiprocket data (separate AWB per seller)
+    shiprocket: {
+      orderId:       String,
+      shipmentId:    String,
+      awb:           String,
+      courier:       String,
+      trackingUrl:   String,
+      shippingCharge: { type: Number, default: 0 },
+      createdAt:     Date,
+    },
+    // Per-seller invoice
+    invoice: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
   }],
 }, {
   timestamps: true,

@@ -285,6 +285,32 @@ const placeOrder = async (req, res) => {
 
   const total = gst.grandTotal + shipping;
 
+  // ── Build sellerBreakdown for multi-vendor tracking ──
+  const sellerBreakdownMap = {};
+  for (const item of validatedItems) {
+    const prod = await Product.findById(item.product)
+      .populate('seller', 'businessName gstNumber address')
+      .lean();
+    const sid  = prod?.seller?._id?.toString();
+    if (!sid) continue;
+    if (!sellerBreakdownMap[sid]) {
+      sellerBreakdownMap[sid] = {
+        seller:     prod.seller._id,
+        sellerName: prod.seller.businessName || '',
+        subtotal:   0, gstTotal: 0, total: 0,
+      };
+    }
+    const gstRate = prod.gstRate || 18;
+    const exGst   = extractBasePrice(item.price, gstRate);
+    const lineGst = (exGst * gstRate / 100) * item.quantity;
+    sellerBreakdownMap[sid].subtotal += item.price * item.quantity;
+    sellerBreakdownMap[sid].gstTotal += lineGst;
+  }
+  const sellerBreakdown = Object.values(sellerBreakdownMap).map(sb => ({
+    ...sb,
+    total: parseFloat(sb.subtotal.toFixed(2)),
+  }));
+
   const order = await Order.create({
     user:            req.user._id,
     items:           validatedItems,
@@ -308,6 +334,7 @@ const placeOrder = async (req, res) => {
     },
     paymentMethod,
     notes,
+    sellerBreakdown,
   });
 
   // Reduce stock + update metrics
@@ -362,11 +389,21 @@ const placeOrder = async (req, res) => {
     paymentMethod: order.paymentMethod,
   }).catch(() => {});
 
+  // Multi-seller notice — inform customer at order placement
+  if (sellerBreakdown.length > 1) {
+    notifyUser(req.user._id, {
+      title: `📦 Multi-seller order #${order.orderId}`,
+      body:  `Your order has items from ${sellerBreakdown.length} sellers. You may receive ${sellerBreakdown.length} separate packages with individual tracking numbers.`,
+      icon:  '/icons/icon-192x192.png',
+      url:   '/orders',
+      tag:   `multi-seller-placed-${order.orderId}`,
+    }).catch(() => {});
+  }
+
   // Notify seller(s) only for COD — online-payment orders notify after payment is confirmed
   if (order.paymentMethod === 'cod') {
     notifySeller(order).catch(() => {});
-    // Create Shiprocket shipment immediately for COD (no payment gateway step)
-    _createShiprocketCOD(order).catch(e => console.error('[Shiprocket COD] Error:', e.message));
+    // Shiprocket is now deferred to sellerConfirmOrder (after seller selects warehouse address)
   }
 
   const populated = await Order.findById(order._id).populate('items.product', 'name images');
@@ -378,19 +415,14 @@ const placeOrder = async (req, res) => {
   });
 };
 
-// ── Internal: generate and store invoice ─────────────────
-const createInvoice = async (order, user, gst, shipping) => {
-  const invoiceNumber = await generateInvoiceNumber();
-  const buyerState    = order.shippingAddress?.state || business.state;
-
-  // Build invoice line items with full GST detail
-  const lineItems = await Promise.all(order.items.map(async (item, idx) => {
+// ── Internal: build line items for a set of order items ──
+const _buildLineItems = async (items, buyerState) => {
+  return await Promise.all(items.map(async (item) => {
     const product     = await Product.findById(item.product).populate('seller','businessName gstNumber address').lean();
     const gstRate     = product?.gstRate || 18;
     const priceExGst  = extractBasePrice(item.price, gstRate);
     const sellerState = product?.seller?.address?.state || business.state;
     const line        = require('../utils/gstCalculator').calcLineGst(priceExGst, gstRate, item.quantity, sellerState, buyerState);
-
     return {
       productId:      item.product,
       productName:    item.name,
@@ -411,10 +443,18 @@ const createInvoice = async (order, user, gst, shipping) => {
       gstAmount:      line.gstAmount,
       lineTotal:      line.lineBase,
       lineGrandTotal: line.lineGrandTotal,
+      _sellerRef:     product?.seller?._id,
+      _sellerGstNo:   product?.seller?.gstNumber || '',
+      _sellerName:    product?.seller?.businessName || '',
     };
   }));
+};
 
-  // Map fullName → name (Invoice addressSnapshotSchema uses `name`, User address uses `fullName`)
+// ── Internal: generate and store invoice ─────────────────
+// For multi-seller orders, creates one invoice per seller + a combined master invoice
+const createInvoice = async (order, user, gst, shipping) => {
+  const buyerState = order.shippingAddress?.state || business.state;
+
   const addrSnap = {
     name:         order.shippingAddress?.fullName || order.shippingAddress?.name || user.name || '',
     phone:        order.shippingAddress?.phone || '',
@@ -425,47 +465,133 @@ const createInvoice = async (order, user, gst, shipping) => {
     pincode:      order.shippingAddress?.pincode || '',
   };
 
+  const businessInfo = {
+    name: business.name, address: business.address,
+    phone: business.phone, email: business.email,
+    website: business.website, gstNo: business.gstNo || '',
+  };
+
+  // Build all line items (with seller tracking fields)
+  const allLineItems = await _buildLineItems(order.items, buyerState);
+
+  // ── Detect multi-seller ──────────────────────────────
+  const sellerIds = [...new Set(allLineItems.map(i => i._sellerRef?.toString()).filter(Boolean))];
+  const isMultiSeller = sellerIds.length > 1;
+
+  const sellerInvoices = [];
+
+  if (isMultiSeller) {
+    // Create one invoice per seller
+    for (const sellerId of sellerIds) {
+      const sellerItems = allLineItems.filter(i => i._sellerRef?.toString() === sellerId);
+      if (!sellerItems.length) continue;
+
+      const sellerGst = require('../utils/gstCalculator').calcOrderGst(
+        sellerItems.map(i => ({
+          unitPriceExGst: i.unitPriceExGst,
+          gstRate:        i.gstRate,
+          quantity:       i.quantity,
+          sellerState:    business.state,
+        })),
+        business.state,
+        buyerState
+      );
+
+      const sellerInvNum = await generateInvoiceNumber();
+      // Strip internal tracking fields before storing
+      const cleanItems = sellerItems.map(({ _sellerRef, _sellerGstNo, _sellerName, ...rest }) => rest);
+
+      const sellerDoc = await Seller.findById(sellerId).select('businessName gstNumber').lean();
+      const sellerInv = await Invoice.create({
+        invoiceNumber:   sellerInvNum,
+        order:           order._id,
+        customer:        user._id,
+        sellerRef:       sellerId,
+        sellerName:      sellerDoc?.businessName || sellerItems[0]._sellerName || '',
+        sellerGstNumber: sellerDoc?.gstNumber    || sellerItems[0]._sellerGstNo || '',
+        isSellerInvoice: true,
+        items:           cleanItems,
+        billingAddress:  addrSnap,
+        shippingAddress: addrSnap,
+        subtotal:        sellerGst.subtotal,
+        cgstTotal:       sellerGst.cgstTotal,
+        sgstTotal:       sellerGst.sgstTotal,
+        igstTotal:       sellerGst.igstTotal,
+        gstTotal:        sellerGst.gstTotal,
+        shipping:        0,
+        grandTotal:      parseFloat(sellerGst.grandTotal.toFixed(2)),
+        gstType:         sellerGst.gstType,
+        sellerState:     business.state,
+        customerState:   buyerState,
+        business:        businessInfo,
+      });
+
+      // Generate PDF for this seller's invoice
+      try {
+        const pdfBuf = await generateInvoicePDF({ ...sellerInv.toObject(), order, sellerName: sellerDoc?.businessName });
+        const { url, publicId } = await uploadInvoicePDF(pdfBuf, sellerInvNum);
+        sellerInv.pdfUrl      = url;
+        sellerInv.pdfPublicId = publicId;
+        await sellerInv.save();
+      } catch (pdfErr) {
+        console.error('[PDF] Seller invoice PDF failed:', pdfErr.message);
+      }
+
+      // Link invoice to sellerBreakdown
+      await Order.findOneAndUpdate(
+        { _id: order._id, 'sellerBreakdown.seller': sellerId },
+        { $set: { 'sellerBreakdown.$.invoice': sellerInv._id } }
+      );
+
+      sellerInvoices.push(sellerInv._id);
+      console.log(`[Invoice] Created per-seller invoice ${sellerInvNum} for ${sellerDoc?.businessName}`);
+    }
+  }
+
+  // ── Master / combined invoice ────────────────────────────
+  const invoiceNumber = await generateInvoiceNumber();
+  const cleanAllItems = allLineItems.map(({ _sellerRef, _sellerGstNo, _sellerName, ...rest }) => rest);
+
   const invoice = await Invoice.create({
     invoiceNumber,
-    order:           order._id,
-    customer:        user._id,
-    items:           lineItems,
-    billingAddress:  addrSnap,
-    shippingAddress: addrSnap,
-    subtotal:        gst.subtotal,
-    cgstTotal:       gst.cgstTotal,
-    sgstTotal:       gst.sgstTotal,
-    igstTotal:       gst.igstTotal,
-    gstTotal:        gst.gstTotal,
+    order:            order._id,
+    customer:         user._id,
+    isSellerInvoice:  false,
+    bundledInvoices:  sellerInvoices,
+    items:            cleanAllItems,
+    billingAddress:   addrSnap,
+    shippingAddress:  addrSnap,
+    subtotal:         gst.subtotal,
+    cgstTotal:        gst.cgstTotal,
+    sgstTotal:        gst.sgstTotal,
+    igstTotal:        gst.igstTotal,
+    gstTotal:         gst.gstTotal,
     shipping,
-    grandTotal:      parseFloat((gst.grandTotal + shipping).toFixed(2)),
-    gstType:         gst.gstType,
-    sellerState:     business.state,
-    customerState:   buyerState,
-    business: {
-      name:    business.name,
-      address: business.address,
-      phone:   business.phone,
-      email:   business.email,
-      website: business.website,
-      gstNo:   business.gstNo || '',
-    },
+    grandTotal:       parseFloat((gst.grandTotal + shipping).toFixed(2)),
+    gstType:          gst.gstType,
+    sellerState:      business.state,
+    customerState:    buyerState,
+    business:         businessInfo,
   });
 
-  // Generate PDF and upload to Cloudinary
+  // Generate combined PDF
   let pdfBuf = null;
   try {
-    pdfBuf = await generateInvoicePDF({ ...invoice.toObject(), order });
+    pdfBuf = await generateInvoicePDF({
+      ...invoice.toObject(),
+      order,
+      isMultiSeller,
+      sellerInvoiceCount: sellerInvoices.length,
+    });
     const { url, publicId } = await uploadInvoicePDF(pdfBuf, invoiceNumber);
     invoice.pdfUrl      = url;
     invoice.pdfPublicId = publicId;
     await invoice.save();
   } catch (pdfErr) {
-    console.error('[PDF] Upload failed:', pdfErr.message);
+    console.error('[PDF] Master invoice PDF failed:', pdfErr.message);
     pdfBuf = null;
   }
 
-  // Return both invoice + PDF buffer (buffer used for email attachment)
   return { invoice, pdfBuf };
 };
 
@@ -649,9 +775,167 @@ const sellerConfirmOrder = async (req, res) => {
     note:      `Confirmed by seller — pickup: ${pickupSnapshot.label}, ${pickupSnapshot.city}`,
     updatedBy: 'seller',
   });
+
+  // ── Update per-seller breakdown entry ──────────────────
+  const breakdownIdx = order.sellerBreakdown?.findIndex(
+    sb => sb.seller?.toString() === sellerDocId.toString()
+  );
+  if (breakdownIdx >= 0) {
+    order.sellerBreakdown[breakdownIdx].status        = 'confirmed';
+    order.sellerBreakdown[breakdownIdx].confirmedAt   = new Date();
+    order.sellerBreakdown[breakdownIdx].pickupSnapshot = {
+      addressId: pickupSnapshot.addressId,
+      label:     pickupSnapshot.label,
+      street:    pickupSnapshot.street,
+      city:      pickupSnapshot.city,
+      state:     pickupSnapshot.state,
+      pincode:   pickupSnapshot.pincode,
+      phone:     pickupSnapshot.phone || '',
+    };
+    order.markModified('sellerBreakdown');
+  }
+
   await order.save();
 
-  res.json({ success: true, message: 'Order confirmed. Admin will acknowledge the pickup location.', order });
+  // ── Create Shiprocket shipment for THIS seller's items only ──
+  setImmediate(async () => {
+    try {
+      if (!process.env.SHIPROCKET_EMAIL || !process.env.SHIPROCKET_PASSWORD) return;
+
+      // Populate order with product details
+      const populatedOrder = await Order.findById(order._id)
+        .populate({
+          path: 'items.product',
+          select: 'seller name hsnCode gstRate',
+          populate: { path: 'seller', model: 'Seller', select: 'businessName address contact gstNumber' },
+        })
+        .lean();
+      if (!populatedOrder) return;
+
+      // Filter only THIS seller's items
+      const sellerItems = populatedOrder.items.filter(
+        item => item.product?.seller?._id?.toString() === sellerDocId.toString()
+      );
+      if (sellerItems.length === 0) return;
+
+      const { createShipment } = require('../utils/shiprocket');
+
+      // Use the selected pickup address as the seller for Shiprocket
+      const sellerForShiprocket = {
+        ...sellerDoc,
+        address: {
+          street:  pickupSnapshot.street,
+          city:    pickupSnapshot.city,
+          state:   pickupSnapshot.state,
+          pincode: pickupSnapshot.pincode,
+        },
+      };
+
+      // Build a sub-order with only this seller's items for Shiprocket
+      const multiSellerCount = (populatedOrder.sellerBreakdown || []).length;
+      const sellerSuffix = multiSellerCount > 1 ? `-S${sellerDocId.toString().slice(-4)}` : '';
+      const subOrderId   = `${populatedOrder.orderId}${sellerSuffix}`;
+
+      const subOrder = {
+        ...populatedOrder,
+        orderId: subOrderId,
+        items:   sellerItems,
+        pricing: {
+          ...populatedOrder.pricing,
+          subtotal: sellerItems.reduce((s, i) => s + i.price * i.quantity, 0),
+        },
+      };
+
+      const result = await createShipment(subOrder, populatedOrder.shippingAddress, sellerForShiprocket);
+
+      const srOrderId    = result?.order_id  || '';
+      const srShipId     = result?.shipment_id || '';
+      const awb          = result?.awb_code   || '';
+      const courierName  = result?.courier_name || '';
+      const trackingUrl  = awb ? `https://shiprocket.co/tracking/${awb}` : '';
+      const shippingCharge = result?.shippingCharge || 0;
+
+      if (srOrderId) {
+        // Update per-seller breakdown
+        await Order.findOneAndUpdate(
+          { _id: order._id, 'sellerBreakdown.seller': sellerDocId },
+          {
+            $set: {
+              'sellerBreakdown.$.shiprocket': {
+                orderId:      String(srOrderId),
+                shipmentId:   String(srShipId),
+                awb,
+                courier:      courierName,
+                trackingUrl,
+                shippingCharge,
+                createdAt:    new Date(),
+              },
+              // Also set top-level shiprocket for backward compat (first/only seller)
+              ...( multiSellerCount <= 1 ? {
+                shiprocket: {
+                  orderId:      String(srOrderId),
+                  shipmentId:   String(srShipId),
+                  awb,
+                  courier:      courierName,
+                  trackingUrl,
+                  shippingCharge,
+                  createdAt:    new Date(),
+                },
+                trackingNumber:  awb,
+                deliveryPartner: courierName,
+              } : {}),
+            },
+          }
+        );
+        console.log(`[Shiprocket] Seller ${sellerDoc.businessName} — sub-order ${subOrderId} | AWB: ${awb || '(pending)'}`);
+
+        // Notify customer of AWB if assigned
+        if (awb) {
+          const { notifyUser } = require('../utils/pushNotification');
+          notifyUser(order.user, {
+            title: `🚚 Your order #${populatedOrder.orderId} is on its way!`,
+            body:  `AWB: ${awb} via ${courierName}. Track at eptomart.com/orders`,
+            url:   '/orders',
+            tag:   `awb-${populatedOrder.orderId}`,
+          }).catch(() => {});
+        }
+      }
+
+      // ── Multi-seller customer message ────────────────────
+      if (multiSellerCount > 1) {
+        try {
+          const { sendOrderStatusWhatsApp } = require('../utils/sendWhatsApp');
+          const User = require('../models/User');
+          const buyer = await User.findById(populatedOrder.user).select('phone name').lean();
+          const phone = populatedOrder.shippingAddress?.phone || buyer?.phone;
+          const name  = populatedOrder.shippingAddress?.fullName || buyer?.name;
+          if (phone) {
+            sendOrderStatusWhatsApp(phone, {
+              status:  'multi_seller_shipping',
+              orderId: populatedOrder.orderId,
+              name,
+              note:    `Your order contains items from ${multiSellerCount} sellers. You may receive them in ${multiSellerCount} separate deliveries. Each package will have its own tracking number.`,
+            }).catch(() => {});
+          }
+
+          // In-app notification
+          const { notifyUser } = require('../utils/pushNotification');
+          notifyUser(populatedOrder.user, {
+            title: `📦 Your order #${populatedOrder.orderId} has multiple sellers`,
+            body:  `Items from ${multiSellerCount} sellers will arrive in separate packages. Check Orders for tracking details.`,
+            url:   '/orders',
+            tag:   `multi-seller-${populatedOrder.orderId}`,
+          }).catch(() => {});
+        } catch (msgErr) {
+          console.error('[Multi-seller notice] Error:', msgErr.message);
+        }
+      }
+    } catch (err) {
+      console.error('[Shiprocket Confirm] Failed:', err.message);
+    }
+  });
+
+  res.json({ success: true, message: 'Order confirmed. Shipping will be arranged from your selected warehouse.', order });
 };
 
 // ── Shiprocket shipment for COD orders (fire-and-forget) ─

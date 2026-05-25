@@ -337,7 +337,7 @@ exports.createOrder = async (req, res) => {
   if (totalKg > 0 && totalKg < UZHAVAR_MIN_KG) {
     return res.status(400).json({
       success: false,
-      message: `Minimum order quantity for Uzhavar Fresh is ${UZHAVAR_MIN_KG} kg. You have ${totalKg} kg in your cart.`,
+      message: `Minimum order quantity for Farmer Fresh is ${UZHAVAR_MIN_KG} kg. You have ${totalKg} kg in your cart.`,
     });
   }
 
@@ -502,7 +502,7 @@ exports.verifyPayment = async (req, res) => {
     const itemList = (order.items || []).slice(0, 4).map(i => `• ${i.name} ×${i.quantity} ${i.unit}`).join('\n');
     const more = order.items?.length > 4 ? `\n...and ${order.items.length - 4} more` : '';
     const msg =
-`✅ *Uzhavar Fresh Booking Confirmed!*
+`✅ *Farmer Fresh Booking Confirmed!*
 
 Hi ${order.buyer?.name || 'there'} 👋
 
@@ -516,7 +516,7 @@ ${itemList}${more}
 
 The farmer will accept your order shortly. You'll be notified.
 
-Track your order on Uzhavar Fresh 🌱
+Track your order on Farmer Fresh 🌱
 — *Team Eptomart*`;
     sendMetaWhatsApp(buyerPhone, msg).catch(() => {});
   }

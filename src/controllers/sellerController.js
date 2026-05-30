@@ -88,16 +88,35 @@ const createSeller = async (req, res) => {
     return res.status(400).json({ success: false, message: 'PAN number must be exactly 10 characters' });
   }
 
-  // Create user account with seller role
+  // Check if a user already exists with this email/phone — reuse instead of creating duplicate
   const tempPassword = Math.random().toString(36).slice(-8) + 'A1!';
-  const user = await User.create({
-    name:      businessName,
-    email:     email || undefined,
-    phone:     phone || undefined,
-    role:      'seller',
-    isVerified: true,
-    password:  tempPassword,
-  });
+  let user = email
+    ? await User.findOne({ $or: [{ email }, ...(phone ? [{ phone }] : [])] })
+    : phone ? await User.findOne({ phone }) : null;
+
+  if (user) {
+    // Existing user — check not already a seller
+    if (user.sellerProfile) {
+      const existingSeller = await Seller.findById(user.sellerProfile);
+      if (existingSeller) {
+        return res.status(400).json({ success: false, message: `This user is already a seller (${existingSeller.businessName})` });
+      }
+    }
+    // Upgrade existing user to seller role
+    user.role      = 'seller';
+    user.isVerified = true;
+    await user.save();
+  } else {
+    // Create new user account
+    user = await User.create({
+      name:       businessName,
+      email:      email || undefined,
+      phone:      phone || undefined,
+      role:       'seller',
+      isVerified: true,
+      password:   tempPassword,
+    });
+  }
 
   // Geocode seller location
   const coords = await geocode(address.pincode);

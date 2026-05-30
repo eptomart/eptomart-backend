@@ -75,49 +75,66 @@ const getApprovalHistory = async (req, res) => {
 
 // ── Shared: perform approval action ─────────────────────
 const performAction = async (req, res, action) => {
-  const { productId } = req.params;
-  const { note } = req.body;
+  try {
+    const { productId } = req.params;
+    const { note } = req.body;
 
-  const product = await Product.findById(productId);
-  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
-  if (!product.seller) return res.status(400).json({ success: false, message: 'This is not a seller product' });
+    const product = await Product.findById(productId);
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
-  const statusMap = {
-    approve:            'approved',
-    reject:             'rejected',
-    request_correction: 'correction_needed',
-    resubmit:           'pending',
-  };
+    const statusMap = {
+      approve:            'approved',
+      reject:             'rejected',
+      request_correction: 'correction_needed',
+      resubmit:           'pending',
+    };
 
-  product.approvalStatus = statusMap[action];
-  if (action === 'approve') {
-    product.approvedBy = req.user._id;
-    product.approvedAt = new Date();
-    product.isActive   = true;
-    await assignProductCode(product); // assign EPT-P-XXXX on first approval
-  } else if (action === 'reject') {
-    product.approvalNote = note;
-    product.isActive     = false;
-  } else if (action === 'request_correction') {
-    product.approvalNote = note;
-    product.isActive     = false;
+    if (!statusMap[action]) {
+      return res.status(400).json({ success: false, message: `Unknown action: ${action}` });
+    }
+
+    product.approvalStatus = statusMap[action];
+
+    if (action === 'approve') {
+      product.approvedBy = req.user._id;
+      product.approvedAt = new Date();
+      product.isActive   = true;
+      await assignProductCode(product);
+    } else if (action === 'reject') {
+      product.approvalNote = note || '';
+      product.isActive     = false;
+      product.approvedBy   = undefined;
+      product.approvedAt   = undefined;
+    } else if (action === 'request_correction') {
+      product.approvalNote = note || '';
+      product.isActive     = false;
+    }
+
+    await product.save();
+
+    // Audit trail — fixed action names
+    const auditActionMap = {
+      approve:            'approved',
+      reject:             'rejected',
+      request_correction: 'correction_requested',
+      resubmit:           'resubmitted',
+    };
+
+    await ProductApproval.create({
+      product:     product._id,
+      seller:      product.seller || undefined,
+      action:      auditActionMap[action],
+      performedBy: req.user._id,
+      note:        note || undefined,
+      snapshot:    product.toObject(),
+    }).catch(err => console.error('[Approval audit] Failed to save audit trail:', err));
+
+    const actionLabel = { approve: 'approved', reject: 'rejected', request_correction: 'sent back for correction' };
+    res.json({ success: true, product, message: `Product ${actionLabel[action] || action} successfully` });
+  } catch (err) {
+    console.error('[performAction] Error:', err);
+    res.status(500).json({ success: false, message: err.message || 'Action failed' });
   }
-
-  await product.save();
-
-  // Audit trail
-  const seller = await Seller.findById(product.seller);
-  await ProductApproval.create({
-    product:     product._id,
-    seller:      product.seller,
-    action:      action === 'resubmit' ? 'resubmitted' :
-                 action === 'request_correction' ? 'correction_requested' : action + 'd',
-    performedBy: req.user._id,
-    note:        note || undefined,
-    snapshot:    product.toObject(),
-  });
-
-  res.json({ success: true, product, message: `Product ${action}ed successfully` });
 };
 
 const approve           = (req, res) => performAction(req, res, 'approve');

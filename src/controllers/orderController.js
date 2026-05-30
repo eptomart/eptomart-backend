@@ -700,10 +700,19 @@ const getSellerOrders = async (req, res) => {
 
   // Keep only this seller's items in each order (hide other sellers' items)
   const productIdSet = new Set(productIds.map(p => p.toString()));
-  const result = orders.map(o => ({
-    ...o,
-    items: o.items.filter(item => productIdSet.has(item.product.toString())),
-  }));
+  const result = orders.map(o => {
+    const myItems = o.items.filter(item => productIdSet.has(item.product.toString()));
+    // Calculate this seller's portion of the order total
+    const myBreakdown = o.sellerBreakdown?.find(sb => sb.seller?.toString() === sellerDocId.toString());
+    const myTotal = myBreakdown?.total
+      ?? myItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    return {
+      ...o,
+      items: myItems,
+      _myTotal: myTotal,          // seller-specific total (not full order total)
+      _isMultiSeller: (o.sellerBreakdown?.length ?? 0) > 1,
+    };
+  });
 
   res.json({ success: true, orders: result, total, totalPages: Math.ceil(total / Number(limit)) });
 };

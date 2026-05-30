@@ -200,8 +200,10 @@ const createProduct = async (req, res) => {
     const sellerDocId = getSellerDocId(req);
     if (!sellerDocId) return res.status(404).json({ success: false, message: 'Seller profile not found. Contact admin.' });
     productData.seller = sellerDocId;
-    productData.approvalStatus = 'pending'; // seller products need admin approval
-    productData.isActive = false;           // hidden until approved
+    // Respect the approvalStatus sent by frontend ('draft' or 'pending')
+    const requestedStatus = req.body.approvalStatus;
+    productData.approvalStatus = requestedStatus === 'draft' ? 'draft' : 'pending';
+    productData.isActive = false; // hidden until approved
   } else if (['admin', 'superAdmin'].includes(req.user.role)) {
     // Admin-created products are immediately active and approved
     if (seller) productData.seller = seller;
@@ -299,10 +301,15 @@ const updateProduct = async (req, res) => {
     if (updates[f] !== undefined && updates[f] !== '') updates[f] = Number(updates[f]);
   });
 
-  // Admin/superAdmin saving a product always marks it active (undoes any deactivation)
+  // Admin/superAdmin saving a product always marks it active
   if (['admin', 'superAdmin'].includes(req.user.role)) {
     updates.isActive = true;
     updates.approvalStatus = 'approved';
+  } else if (req.user.role === 'seller') {
+    // Seller: only allow 'draft' or 'pending' — never let seller force 'approved'
+    const requested = updates.approvalStatus;
+    updates.approvalStatus = requested === 'draft' ? 'draft' : 'pending';
+    updates.isActive = false;
   }
 
   product = await Product.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true });

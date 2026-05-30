@@ -29,9 +29,8 @@ const getProducts = async (req, res) => {
     inStock,
   } = req.query;
 
-  // Public store: show all products except those explicitly rejected or pending-without-activation
-  // This covers: approved products, legacy imports, admin-created products
-  const filter = { approvalStatus: { $nin: ['rejected', 'pending'] } };
+  // Public store: only show approved & active products
+  const filter = { approvalStatus: 'approved', isActive: true };
 
   if (subCategory) {
     filter.subCategory = subCategory; // subcategory filter takes precedence
@@ -471,7 +470,7 @@ const searchProducts = async (req, res) => {
   const terms    = q.trim();
   const words    = terms.split(/\s+/).filter(w => w.length > 1);
   const cap      = Math.max(Number(limit), 10);
-  const baseFilter = { approvalStatus: { $nin: ['rejected', 'pending'] } };
+  const baseFilter = { approvalStatus: 'approved', isActive: true };
   const SELECT   = 'name slug price discountPrice images ratings category';
   const POPULATE = [
     { path: 'category',    select: 'name' },

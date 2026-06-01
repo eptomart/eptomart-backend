@@ -134,7 +134,7 @@ const getProducts = async (req, res) => {
   const skip = (Number(page) - 1) * Number(limit);
   const [products, total] = await Promise.all([
     KoyambeduProduct.find(filter)
-      .populate('seller', 'businessName stallNumber marketSection rating')
+      .populate('seller', 'businessName stallNumber marketSection rating servicePincodes')
       .populate('category', 'name icon')
       .sort(sortMap[sort] || sortMap.default)
       .skip(skip)
@@ -376,11 +376,28 @@ const placeOrder = async (req, res) => {
   const cart = await KoyambeduCart.findOne({ user: req.user._id })
     .populate({
       path: 'items.product',
-      populate: { path: 'seller', select: 'status isActive commissionRate contact businessName notifyWhatsApp' },
+      populate: { path: 'seller', select: 'status isActive commissionRate contact businessName notifyWhatsApp servicePincodes' },
     });
 
   if (!cart || !cart.items.length) {
     return res.status(400).json({ success: false, message: 'Cart is empty' });
+  }
+
+  // ── 4b. Pincode check — buyer pincode must match each seller's servicePincodes ──
+  const buyerPincode = String(shippingAddress.pincode).trim();
+  for (const ci of cart.items) {
+    const seller = ci.product?.seller;
+    if (seller?.servicePincodes?.length > 0) {
+      if (!seller.servicePincodes.includes(buyerPincode)) {
+        return res.status(400).json({
+          success: false,
+          message: `"${ci.product?.name || 'A product'}" is not available for delivery to pincode ${buyerPincode}. This seller only delivers to: ${seller.servicePincodes.join(', ')}.`,
+          pincodeBlocked: true,
+          blockedProduct: ci.product?.name,
+          sellerPincodes: seller.servicePincodes,
+        });
+      }
+    }
   }
 
   // ── 5. Weight check ───────────────────────────────────────

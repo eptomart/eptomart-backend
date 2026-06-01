@@ -59,6 +59,11 @@ const koyambeduSellerSchema = new Schema({
   pendingPayout:  { type: Number, default: 0 },
   totalSettled:   { type: Number, default: 0 },
 
+  // Pincode(s) this seller can deliver to
+  // Ordering is blocked if the buyer's delivery pincode is not in this list.
+  // Leave empty to allow all pincodes (backwards-compatible default).
+  servicePincodes: [{ type: String, trim: true }],
+
   // Delivery availability
   offersSameDay:  { type: Boolean, default: true },
   offersNextDay:  { type: Boolean, default: true },

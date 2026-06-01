@@ -1575,6 +1575,44 @@ const _refundOrder = async (order) => {
 };
 
 // ══════════════════════════════════════════════
+// AI — Translate & Describe
+// ══════════════════════════════════════════════
+const { callClaude } = require('../utils/claudeAI');
+
+/** POST /api/koyambedu/ai/translate  { text } → { tamil } */
+const aiTranslate = async (req, res) => {
+  const { text } = req.body;
+  if (!text?.trim()) return res.status(400).json({ success: false, message: 'text is required' });
+
+  const tamil = await callClaude(
+    `Translate the following produce/vegetable/fruit name from English to Tamil. Return ONLY the Tamil text, nothing else.\n\n"${text.trim()}"`,
+    'You are a Tamil language expert specialising in Koyambedu market produce names. Return only the Tamil translation, no explanation.'
+  );
+  res.json({ success: true, tamil });
+};
+
+/** POST /api/koyambedu/ai/describe  { name, nameTamil, category, unit } → { description } */
+const aiDescribe = async (req, res) => {
+  const { name, nameTamil, category, unit } = req.body;
+  if (!name?.trim()) return res.status(400).json({ success: false, message: 'name is required' });
+
+  const prompt = [
+    `Write a short, appealing product description (2–3 sentences) for a fresh produce listing on an ecommerce app.`,
+    `Product: ${name.trim()}`,
+    nameTamil ? `Tamil name: ${nameTamil}` : '',
+    category  ? `Category: ${category}`    : '',
+    unit      ? `Sold by: ${unit}`         : '',
+    `Focus on freshness, taste, and health benefits. Keep it simple and friendly for Indian shoppers. No emojis.`,
+  ].filter(Boolean).join('\n');
+
+  const description = await callClaude(
+    prompt,
+    'You are a helpful assistant writing concise, friendly product descriptions for a Koyambedu daily-fresh produce marketplace in India.'
+  );
+  res.json({ success: true, description });
+};
+
+// ══════════════════════════════════════════════
 module.exports = {
   // Public
   getCategories, getProducts, getFeaturedProducts, getProductDetail, getDeliverySlots,
@@ -1604,4 +1642,6 @@ module.exports = {
   adminCreateProduct,
   // Admin seller-edit review (SuperAdmin only)
   adminReviewSellerEdit,
+  // AI
+  aiTranslate, aiDescribe,
 };

@@ -1612,6 +1612,16 @@ const aiDescribe = async (req, res) => {
   res.json({ success: true, description });
 };
 
+/** POST /api/koyambedu/upload-image  multipart: image field "image" */
+const uploadImage = async (req, res) => {
+  if (!req.file) return res.status(400).json({ success: false, message: 'No image uploaded' });
+  res.json({
+    success:   true,
+    url:       req.file.path,
+    publicId:  req.file.filename,
+  });
+};
+
 // ══════════════════════════════════════════════
 module.exports = {
   // Public
@@ -1644,4 +1654,6 @@ module.exports = {
   adminReviewSellerEdit,
   // AI
   aiTranslate, aiDescribe,
+  // Image upload
+  uploadImage,
 };

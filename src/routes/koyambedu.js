@@ -6,6 +6,7 @@ const express  = require('express');
 const router   = express.Router();
 const ctrl     = require('../controllers/koyambeduController');
 const { protect, optionalAuth } = require('../middleware/auth');
+const { uploadKoyambedu } = require('../config/cloudinary');
 const { protectAdmin, protectSuperAdmin } = require('../middleware/adminAuth');
 
 // ── Seller guard middleware ──────────────────
@@ -61,6 +62,11 @@ router.post  ('/orders/:orderId/cancel',    protect, ctrl.cancelOrder);
 // ══════════════════════════════════════════════
 router.post('/ai/translate', protect, ctrl.aiTranslate);
 router.post('/ai/describe',  protect, ctrl.aiDescribe);
+
+// ══════════════════════════════════════════════
+// IMAGE UPLOAD
+// ══════════════════════════════════════════════
+router.post('/upload-image', protect, uploadKoyambedu.single('image'), ctrl.uploadImage);
 
 // ══════════════════════════════════════════════
 // SELLER — requires KoyambeduSeller profile

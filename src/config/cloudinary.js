@@ -109,4 +109,22 @@ const deleteImage = async (publicId, resourceType = 'image') => {
   }
 };
 
-module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, uploadBill, deleteImage };
+// Koyambedu Fresh produce image storage
+const koyambeduStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'eptomart/koyambedu',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+    transformation: [{ width: 800, height: 800, crop: 'limit', quality: 'auto' }],
+  },
+});
+const uploadKoyambedu = multer({
+  storage: koyambeduStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Only image files are allowed'), false);
+  },
+});
+
+module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, uploadBill, uploadKoyambedu, deleteImage };

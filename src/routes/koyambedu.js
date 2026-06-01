@@ -57,10 +57,10 @@ router.post  ('/orders/:orderId/approve-revision', protect, ctrl.approveRevision
 router.post  ('/orders/:orderId/cancel',    protect, ctrl.cancelOrder);
 
 // ══════════════════════════════════════════════
-// AI — translate & describe (seller only)
+// AI — translate & describe (any logged-in user)
 // ══════════════════════════════════════════════
-router.post('/ai/translate', protectSeller, ctrl.aiTranslate);
-router.post('/ai/describe',  protectSeller, ctrl.aiDescribe);
+router.post('/ai/translate', protect, ctrl.aiTranslate);
+router.post('/ai/describe',  protect, ctrl.aiDescribe);
 
 // ══════════════════════════════════════════════
 // SELLER — requires KoyambeduSeller profile

@@ -74,6 +74,10 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  phoneVerified: {
+    type: Boolean,
+    default: false,   // true once user verifies via OTP
+  },
   isActive: {
     type: Boolean,
     default: true,

@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { sendOtp, verifyOtp, register, getMe, updateProfile, logout, verifyFirebasePhone, addAddress, deleteAddress, setDefaultAddress } = require('../controllers/authController');
+const { sendOtp, verifyOtp, register, getMe, updateProfile, logout, verifyFirebasePhone, addAddress, deleteAddress, setDefaultAddress, sendPhoneOtp, confirmPhoneOtp } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 const { otpSendLimiter, authLimiter } = require('../middleware/rateLimiter');
 
@@ -11,6 +11,10 @@ router.get('/me', protect, getMe);
 router.put('/update-profile', protect, updateProfile);
 router.post('/logout', protect, logout);
 router.post('/firebase-phone-verify', authLimiter, verifyFirebasePhone);
+
+// Phone verification
+router.post('/send-phone-otp',    otpSendLimiter, protect, sendPhoneOtp);
+router.post('/confirm-phone-otp', authLimiter,    protect, confirmPhoneOtp);
 
 // Address management
 router.post('/add-address',                protect, addAddress);

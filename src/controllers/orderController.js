@@ -1,6 +1,7 @@
 const Order   = require('../models/Order');
 const Product = require('../models/Product');
 const Seller  = require('../models/Seller');
+const User    = require('../models/User');
 const Invoice = require('../models/Invoice');
 const Cart    = require('../models/Cart');
 const { sendOrderConfirmation, sendSellerNewOrderEmail } = require('../utils/sendEmail');
@@ -229,6 +230,16 @@ const placeOrder = async (req, res) => {
   const { items, shippingAddress, paymentMethod, notes, shipping: clientShipping } = req.body;
   if (!items?.length) {
     return res.status(400).json({ success: false, message: 'Order items are required' });
+  }
+
+  // ── Phone verification check ────────────────────────────
+  const buyerUser = await User.findById(req.user._id).select('phoneVerified');
+  if (!buyerUser?.phoneVerified) {
+    return res.status(400).json({
+      success: false,
+      message: 'Please verify your mobile number before placing an order.',
+      phoneNotVerified: true,
+    });
   }
 
   // ── Buyer name mandatory ─────────────────────────────────

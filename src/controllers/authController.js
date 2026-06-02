@@ -174,11 +174,11 @@ const verifyOtp = async (req, res) => {
         message: 'Your account has been deactivated. Please contact the SuperAdmin at eptosicare@gmail.com to restore access.',
       });
     }
-    // Mark as verified
-    if (!user.isVerified) {
-      user.isVerified = true;
-      await user.save();
-    }
+    // Mark as verified; also mark phoneVerified if this was a phone OTP login
+    let needsSave = false;
+    if (!user.isVerified)    { user.isVerified    = true; needsSave = true; }
+    if (type === 'phone' && !user.phoneVerified) { user.phoneVerified = true; needsSave = true; }
+    if (needsSave) await user.save();
   }
 
   // Record login history
@@ -421,6 +421,9 @@ const addAddress = async (req, res) => {
   if (!addressLine1 || !city || !pincode) {
     return res.status(400).json({ success: false, message: 'addressLine1, city and pincode are required' });
   }
+  if (phone && !/^[6-9]\d{9}$/.test(phone)) {
+    return res.status(400).json({ success: false, message: 'Enter a valid 10-digit Indian mobile number' });
+  }
 
   // Prevent duplicate entries (same street + pincode)
   const duplicate = user.addresses.find(
@@ -458,4 +461,57 @@ const setDefaultAddress = async (req, res) => {
   res.json({ success: true, addresses: user.addresses });
 };
 
-module.exports = { sendOtp, verifyOtp, register, getMe, updateProfile, logout, verifyFirebasePhone, addAddress, deleteAddress, setDefaultAddress };
+/**
+ * POST /api/auth/send-phone-otp  — send OTP to logged-in user's phone for verification
+ */
+const sendPhoneOtp = async (req, res) => {
+  const user = await User.findById(req.user._id).select('phone phoneVerified');
+  if (!user.phone) return res.status(400).json({ success: false, message: 'No phone number on your account' });
+  if (user.phoneVerified) return res.json({ success: true, message: 'Phone already verified' });
+
+  const code = generateOtp();
+  await Otp.create({
+    contact: user.phone,
+    type: 'phone',
+    purpose: 'verify',
+    code,
+    expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+  });
+  // Firebase handles SMS delivery on frontend; backend just stores the OTP
+  console.log(`[PhoneVerify] OTP for ${user.phone}: ${code}`);
+  const devData = process.env.NODE_ENV === 'development' ? { otp: code } : {};
+  res.json({ success: true, message: `OTP sent to XXXXX${user.phone.slice(-5)}`, ...devData });
+};
+
+/**
+ * POST /api/auth/confirm-phone-otp  — verify OTP and mark phone as verified
+ */
+const confirmPhoneOtp = async (req, res) => {
+  const { code } = req.body;
+  const user = await User.findById(req.user._id).select('phone phoneVerified');
+  if (!user.phone) return res.status(400).json({ success: false, message: 'No phone on account' });
+
+  const otpDoc = await Otp.findOne({
+    contact: user.phone,
+    type: 'phone',
+    used: false,
+    expiresAt: { $gt: new Date() },
+  });
+
+  if (!otpDoc) return res.status(400).json({ success: false, message: 'OTP expired or not found. Request a new one.' });
+
+  otpDoc.attempts += 1;
+  if (otpDoc.attempts > 5) { await otpDoc.deleteOne(); return res.status(400).json({ success: false, message: 'Too many wrong attempts. Request a new OTP.' }); }
+  if (otpDoc.code !== code.toString()) {
+    await otpDoc.save();
+    return res.status(400).json({ success: false, message: `Incorrect OTP. ${5 - otpDoc.attempts} attempts left.` });
+  }
+
+  otpDoc.used = true;
+  await otpDoc.save();
+  user.phoneVerified = true;
+  await user.save();
+  res.json({ success: true, message: 'Phone number verified successfully!' });
+};
+
+module.exports = { sendOtp, verifyOtp, register, getMe, updateProfile, logout, verifyFirebasePhone, addAddress, deleteAddress, setDefaultAddress, sendPhoneOtp, confirmPhoneOtp };

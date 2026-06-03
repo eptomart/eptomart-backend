@@ -144,9 +144,12 @@ const verifyOtp = async (req, res) => {
     return res.status(400).json({ success: false, message: `Incorrect OTP. ${remaining} attempts left.` });
   }
 
-  // OTP is valid — mark as used
-  otpDoc.used = true;
-  await otpDoc.save();
+  // OTP is valid — mark as used (demo account OTP stays reusable)
+  const isDemoContact = contact === (process.env.DEMO_EMAIL || 'eptosicare@gmail.com');
+  if (!isDemoContact) {
+    otpDoc.used = true;
+    await otpDoc.save();
+  }
 
   // Find user — check BOTH email and phone fields to prevent duplicate accounts
   // e.g. user registered via email, now logging in via phone saved in their profile

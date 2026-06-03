@@ -8,6 +8,10 @@ const { sendTokenResponse } = require('../utils/generateToken');
 const { sendOtpEmail } = require('../utils/sendEmail');
 // SMS is used only for order confirmations — OTP uses email (or Firebase for phone)
 
+// Demo account constants (module-level so all functions can access)
+const DEMO_EMAIL = process.env.DEMO_EMAIL || 'eptosicare@gmail.com';
+const DEMO_OTP   = process.env.DEMO_OTP   || '246810';
+
 /**
  * @route   POST /api/auth/send-otp
  * @desc    Send OTP to email or phone
@@ -59,8 +63,6 @@ const sendOtp = async (req, res) => {
   await Otp.deleteMany({ contact, type });
 
   // Use fixed OTP for demo account (Apple App Store review)
-  const DEMO_EMAIL = process.env.DEMO_EMAIL || 'eptosicare@gmail.com';
-  const DEMO_OTP   = process.env.DEMO_OTP   || '246810';
   const code = (contact === DEMO_EMAIL) ? DEMO_OTP : generateOtp();
 
   const expiryMs = (contact === DEMO_EMAIL)
@@ -410,7 +412,7 @@ const verifyFirebasePhone = async (req, res) => {
     }
   });
 
-  const needsProfile2 = contact !== (process.env.DEMO_EMAIL || 'eptosicare@gmail.com') && (!user.firstName || user.name === 'New User');
+  const needsProfile2 = contact !== DEMO_EMAIL && (!user.firstName || user.name === 'New User');
   sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!', { isNewUser, needsProfile: needsProfile2 });
 };
 

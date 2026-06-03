@@ -41,7 +41,6 @@ const sendTokenResponse = (user, statusCode, res, message = 'Success', extraData
         role: user.role,
         avatar: user.avatar,
         isVerified: user.isVerified,
-        phoneVerified: user.phoneVerified || false,
         addresses: user.addresses || [],
       },
       ...extraData,

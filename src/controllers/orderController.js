@@ -232,16 +232,6 @@ const placeOrder = async (req, res) => {
     return res.status(400).json({ success: false, message: 'Order items are required' });
   }
 
-  // ── Phone verification check ────────────────────────────
-  const buyerUser = await User.findById(req.user._id).select('phoneVerified');
-  if (!buyerUser?.phoneVerified) {
-    return res.status(400).json({
-      success: false,
-      message: 'Please verify your mobile number before placing an order.',
-      phoneNotVerified: true,
-    });
-  }
-
   // ── Buyer name mandatory ─────────────────────────────────
   const buyerName = shippingAddress?.fullName?.trim() || req.user?.name?.trim();
   if (!buyerName) {

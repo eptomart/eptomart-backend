@@ -346,16 +346,6 @@ const clearCart = async (req, res) => {
 const placeOrder = async (req, res) => {
   const { shippingAddress, paymentMethod = 'razorpay', deliverySlot, notes, buyerLocation } = req.body;
 
-  // ── 0. Phone verification check ───────────────────────────
-  const buyer = await User.findById(req.user._id).select('phoneVerified phone');
-  if (!buyer.phoneVerified) {
-    return res.status(400).json({
-      success: false,
-      message: 'Please verify your mobile number before placing an order.',
-      phoneNotVerified: true,
-    });
-  }
-
   // ── 1. Location mandatory ──────────────────────────────────
   if (!buyerLocation?.lat || !buyerLocation?.lng) {
     return res.status(400).json({

@@ -58,16 +58,17 @@ const sendOtp = async (req, res) => {
   // Delete existing OTPs for this contact
   await Otp.deleteMany({ contact, type });
 
-  // Generate new OTP
-  const code = generateOtp();
+  // Use fixed OTP for demo account (Apple App Store review)
+  const DEMO_EMAIL = process.env.DEMO_EMAIL || 'eptosicare@gmail.com';
+  const DEMO_OTP   = process.env.DEMO_OTP   || '246810';
+  const code = (contact === DEMO_EMAIL) ? DEMO_OTP : generateOtp();
 
-  await Otp.create({
-    contact,
-    type,
-    purpose,
-    code,
-    expiresAt: new Date(Date.now() + (parseInt(process.env.OTP_EXPIRY_MINUTES || 10)) * 60 * 1000),
-  });
+  const expiryMs = (contact === DEMO_EMAIL)
+    ? 365 * 24 * 60 * 60 * 1000          // demo account: never expires (1 year)
+    : (parseInt(process.env.OTP_EXPIRY_MINUTES || 10)) * 60 * 1000;
+
+  await Otp.deleteMany({ contact, used: false }); // clear old OTPs first
+  await Otp.create({ contact, type, purpose, code, expiresAt: new Date(Date.now() + expiryMs) });
 
   // Send OTP
   if (type === 'email') {

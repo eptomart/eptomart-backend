@@ -60,17 +60,15 @@ const sendOtp = async (req, res) => {
   const existingUser = await User.findOne({ $or: [{ email: contact }, { phone: contact }] })
     .select('email phone name').lean();
 
-  // Delete existing OTPs for this contact
-  await Otp.deleteMany({ contact, type });
-
   // Use fixed OTP for demo account (Apple App Store review)
   const code = (contact === DEMO_EMAIL) ? DEMO_OTP : generateOtp();
 
   const expiryMs = (contact === DEMO_EMAIL)
-    ? 365 * 24 * 60 * 60 * 1000          // demo account: never expires (1 year)
+    ? 365 * 24 * 60 * 60 * 1000
     : (parseInt(process.env.OTP_EXPIRY_MINUTES || 10)) * 60 * 1000;
 
-  await Otp.deleteMany({ contact, used: false }); // clear old OTPs first
+  // Delete existing OTPs for this contact then create fresh one
+  await Otp.deleteMany({ contact, type });
   await Otp.create({ contact, type, purpose, code, expiresAt: new Date(Date.now() + expiryMs) });
 
   // Send OTP

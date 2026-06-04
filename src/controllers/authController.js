@@ -27,7 +27,8 @@ const detectContactType = (contact) => {
 };
 
 const sendOtp = async (req, res) => {
-  const { contact, purpose = 'login' } = req.body;
+  const { purpose = 'login' } = req.body;
+  const contact = (req.body.contact || '').trim().toLowerCase();
   // Accept explicit type OR auto-detect
   let type = req.body.type;
 
@@ -114,7 +115,8 @@ const sendOtp = async (req, res) => {
  * @access  Public
  */
 const verifyOtp = async (req, res) => {
-  const { contact, type = 'email', code, name } = req.body;
+  const { type = 'email', code, name } = req.body;
+  const contact = (req.body.contact || '').trim().toLowerCase();
 
   if (!contact || !code) {
     return res.status(400).json({ success: false, message: 'Contact and OTP are required' });
@@ -463,4 +465,63 @@ const setDefaultAddress = async (req, res) => {
   res.json({ success: true, addresses: user.addresses });
 };
 
-module.exports = { sendOtp, verifyOtp, register, getMe, updateProfile, logout, verifyFirebasePhone, addAddress, deleteAddress, setDefaultAddress };
+/**
+ * DELETE /api/auth/delete-account
+ * Permanently deletes the user's account and all associated data.
+ * Demo account cannot be deleted.
+ */
+const deleteAccount = async (req, res) => {
+  const user = await User.findById(req.user._id);
+  if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+  // Protect demo account from deletion
+  if (user.email === DEMO_EMAIL || user.phone === DEMO_EMAIL) {
+    return res.status(403).json({ success: false, message: 'Demo account cannot be deleted' });
+  }
+
+  const userId = user._id;
+
+  // Delete associated data
+  try {
+    const Cart          = require('../models/Cart');
+    const Order         = require('../models/Order');
+    const Wishlist      = require('../models/Wishlist');
+    await Cart.deleteMany({ user: userId });
+    // Anonymise orders (keep for seller records but remove buyer PII)
+    await Order.updateMany({ buyer: userId }, {
+      $set: {
+        'shippingAddress.fullName': 'Deleted User',
+        'shippingAddress.phone':    '',
+        'shippingAddress.addressLine1': 'Deleted',
+        buyer: null,
+      }
+    });
+    await Wishlist?.deleteMany?.({ user: userId });
+  } catch (_) {}
+
+  try {
+    const KoyambeduCart  = require('../models/KoyambeduCart');
+    const KoyambeduOrder = require('../models/KoyambeduOrder');
+    await KoyambeduCart.deleteMany({ user: userId });
+    await KoyambeduOrder.updateMany({ buyer: userId }, {
+      $set: { 'shippingAddress.fullName': 'Deleted User', 'shippingAddress.phone': '', buyer: null }
+    });
+  } catch (_) {}
+
+  try {
+    const UzhavarOrder = require('../models/UzhavarOrder');
+    await UzhavarOrder.updateMany({ buyer: userId }, { $set: { buyer: null } });
+  } catch (_) {}
+
+  // Delete OTPs
+  await Otp.deleteMany({ contact: user.email || user.phone });
+
+  // Delete the user
+  await User.findByIdAndDelete(userId);
+
+  // Clear auth cookie
+  res.clearCookie('token');
+  res.json({ success: true, message: 'Your account has been permanently deleted.' });
+};
+
+module.exports = { sendOtp, verifyOtp, register, getMe, updateProfile, logout, verifyFirebasePhone, addAddress, deleteAddress, setDefaultAddress, deleteAccount };

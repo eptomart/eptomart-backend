@@ -412,7 +412,7 @@ const verifyFirebasePhone = async (req, res) => {
     }
   });
 
-  const needsProfile2 = contact !== DEMO_EMAIL && (!user.firstName || user.name === 'New User');
+  const needsProfile2 = phone !== DEMO_EMAIL && (!user.firstName || user.name === 'New User');
   sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!', { isNewUser, needsProfile: needsProfile2 });
 };
 

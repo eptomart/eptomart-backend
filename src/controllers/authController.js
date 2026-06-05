@@ -202,7 +202,7 @@ const verifyOtp = async (req, res) => {
     }
   });
 
-  const needsProfile = contact !== DEMO_EMAIL && (!user.firstName || user.name === 'New User');
+  const needsProfile = isNewUser && contact !== DEMO_EMAIL;
   sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!', { isNewUser, needsProfile });
 };
 
@@ -412,7 +412,7 @@ const verifyFirebasePhone = async (req, res) => {
     }
   });
 
-  const needsProfile2 = phone !== DEMO_EMAIL && (!user.firstName || user.name === 'New User');
+  const needsProfile2 = isNewUser && phone !== DEMO_EMAIL;
   sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!', { isNewUser, needsProfile: needsProfile2 });
 };
 

@@ -8,7 +8,7 @@ const crypto  = require('crypto');
 const getNotifySeller   = () => require('./orderController').notifySeller;
 const getCreateInvoice  = () => require('./orderController').createInvoice;
 const { createShipment } = require('../utils/shiprocket');
-const { sendOrderPaidWhatsApp } = require('../utils/sendWhatsApp');
+const { sendOrderPaidWhatsApp, sendOrderPlacedWhatsApp, sendAdminNewOrderAlert } = require('../utils/sendWhatsApp');
 const { notifyUser } = require('../utils/pushNotification');
 
 const getRazorpay = () => {
@@ -148,6 +148,27 @@ const verifyRazorpayPayment = async (req, res) => {
       sendOrderPaidWhatsApp(customerPhone, { orderId: order.orderId, total, name: buyer.name }).catch(() => {});
     }
   }
+
+  // Send order-placed WhatsApp & admin alert now that payment is confirmed
+  const { notifications } = require('../utils/pushNotification');
+  notifyUser(order.user, notifications.orderPlaced(order.orderId)).catch(() => {});
+
+  const placedPhone = buyer?.phone || order.shippingAddress?.phone;
+  if (placedPhone) {
+    sendOrderPlacedWhatsApp(placedPhone, {
+      orderId:       order.orderId,
+      total:         order.pricing?.total,
+      paymentMethod: order.paymentMethod,
+      items:         order.items,
+    }).catch(() => {});
+  }
+
+  sendAdminNewOrderAlert({
+    orderId:      order.orderId,
+    customerName: buyer?.name || '',
+    total:        order.pricing?.total,
+    paymentMethod: order.paymentMethod,
+  }).catch(() => {});
 
   // Payment verified — notify seller(s)
   getNotifySeller()(order).catch(() => {});

@@ -358,53 +358,39 @@ const placeOrder = async (req, res) => {
     }).catch(() => {});
   }
 
-  // Push notification to customer (free, no 3rd party — VAPID web push)
-  notifyUser(req.user._id, notifications.orderPlaced(order.orderId)).catch(() => {});
-
-  // WhatsApp confirmation to customer (fires when META_WHATSAPP_TOKEN is set)
-  const customerPhone = req.user.phone || order.shippingAddress?.phone;
-  if (customerPhone) {
-    sendOrderPlacedWhatsApp(customerPhone, {
-      orderId:       order.orderId,
-      total:         order.pricing.total,
-      paymentMethod: order.paymentMethod,
-      items:         order.items,
-    }).then(result => {
-      if (!result?.success) {
-        console.error(`[WhatsApp] Order placed message failed for ${customerPhone}:`, result?.error || 'unknown error');
-      } else {
-        console.log(`[WhatsApp] Order placed message sent to ${customerPhone} for order ${order.orderId}`);
-      }
-    }).catch(err => {
-      console.error(`[WhatsApp] Order placed message exception for ${customerPhone}:`, err.message);
-    });
-  } else {
-    console.warn(`[WhatsApp] No phone number found for order ${order.orderId} — skipping WhatsApp`);
-  }
-
-  // WhatsApp alert to admin
-  sendAdminNewOrderAlert({
-    orderId:      order.orderId,
-    customerName: req.user.name,
-    total:        order.pricing.total,
-    paymentMethod: order.paymentMethod,
-  }).catch(() => {});
-
-  // Multi-seller notice — inform customer at order placement
-  if (sellerBreakdown.length > 1) {
-    notifyUser(req.user._id, {
-      title: `📦 Multi-seller order #${order.orderId}`,
-      body:  `Your order has items from ${sellerBreakdown.length} sellers. You may receive ${sellerBreakdown.length} separate packages with individual tracking numbers.`,
-      icon:  '/icons/icon-192x192.png',
-      url:   '/orders',
-      tag:   `multi-seller-placed-${order.orderId}`,
-    }).catch(() => {});
-  }
-
-  // Notify seller(s) only for COD — online-payment orders notify after payment is confirmed
+  // For COD — send all notifications immediately
+  // For Razorpay — skip here; notifications sent after payment verification
   if (order.paymentMethod === 'cod') {
+    notifyUser(req.user._id, notifications.orderPlaced(order.orderId)).catch(() => {});
+
+    const customerPhone = req.user.phone || order.shippingAddress?.phone;
+    if (customerPhone) {
+      sendOrderPlacedWhatsApp(customerPhone, {
+        orderId:       order.orderId,
+        total:         order.pricing.total,
+        paymentMethod: order.paymentMethod,
+        items:         order.items,
+      }).catch(() => {});
+    }
+
+    sendAdminNewOrderAlert({
+      orderId:      order.orderId,
+      customerName: req.user.name,
+      total:        order.pricing.total,
+      paymentMethod: order.paymentMethod,
+    }).catch(() => {});
+
+    if (sellerBreakdown.length > 1) {
+      notifyUser(req.user._id, {
+        title: `📦 Multi-seller order #${order.orderId}`,
+        body:  `Your order has items from ${sellerBreakdown.length} sellers. You may receive ${sellerBreakdown.length} separate packages.`,
+        icon:  '/icons/icon-192x192.png',
+        url:   '/orders',
+        tag:   `multi-seller-placed-${order.orderId}`,
+      }).catch(() => {});
+    }
+
     notifySeller(order).catch(() => {});
-    // Shiprocket is now deferred to sellerConfirmOrder (after seller selects warehouse address)
   }
 
   const populated = await Order.findById(order._id).populate('items.product', 'name images');

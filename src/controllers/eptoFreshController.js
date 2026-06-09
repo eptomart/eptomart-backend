@@ -33,34 +33,35 @@ const getRazorpay = () => {
  * Returns nearby sellers sorted by distance from customer GPS
  */
 exports.getNearbySellers = async (req, res) => {
-  const { lat, lng, category, radius = 15 } = req.query;
+  const { lat, lng, category, radius = 30 } = req.query;
+  const hasLocation = lat && lng;
 
-  if (!lat || !lng) {
-    return res.status(400).json({ success: false, message: 'Location required. Please enable GPS.' });
-  }
-
-  const query = {
-    status: 'approved',
-    isActive: true,
-    isOpen: true,
-  };
+  const query = { status: 'approved', isActive: true };
   if (category) query.categories = category;
 
   const sellers = await EptoFreshSeller.find(query)
     .select('shopName categories rating ratingCount badges shopImage isOpen address location deliveryRadius')
     .lean();
 
-  // Calculate distance for each seller and filter by radius
-  const withDistance = sellers
-    .map(s => {
-      const [sLng, sLat] = s.location?.coordinates || [0, 0];
-      const dist = haversineDistance(parseFloat(lat), parseFloat(lng), sLat, sLng);
-      return { ...s, distanceKm: dist };
-    })
-    .filter(s => s.distanceKm <= parseFloat(radius))
-    .sort((a, b) => a.distanceKm - b.distanceKm);
+  let result;
+  if (hasLocation) {
+    // With GPS — sort by distance and filter by radius
+    result = sellers
+      .map(s => {
+        const [sLng, sLat] = s.location?.coordinates || [0, 0];
+        const dist = haversineDistance(parseFloat(lat), parseFloat(lng), sLat, sLng);
+        return { ...s, distanceKm: dist };
+      })
+      .filter(s => s.distanceKm <= parseFloat(radius))
+      .sort((a, b) => a.distanceKm - b.distanceKm);
+  } else {
+    // No GPS — return all approved sellers without distance (sorted by rating)
+    result = sellers
+      .map(s => ({ ...s, distanceKm: null }))
+      .sort((a, b) => (b.rating || 0) - (a.rating || 0));
+  }
 
-  res.json({ success: true, sellers: withDistance });
+  res.json({ success: true, sellers: result, locationRequired: !hasLocation });
 };
 
 /**

@@ -36,7 +36,7 @@ exports.getNearbySellers = async (req, res) => {
   const { lat, lng, category, radius = 30 } = req.query;
   const hasLocation = lat && lng;
 
-  const query = { status: 'approved', isActive: true };
+  const query = { status: 'approved' };
   if (category) query.categories = category;
 
   const sellers = await EptoFreshSeller.find(query)

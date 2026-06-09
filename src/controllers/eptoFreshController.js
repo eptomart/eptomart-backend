@@ -651,3 +651,42 @@ async function _triggerPayout(order) {
     console.error('[EptoFresh Payout] trigger failed:', e.message);
   }
 }
+
+// ══════════════════════════════════════════════════════════
+// GOOGLE PLACES PROXY — keeps API key server-side
+// ══════════════════════════════════════════════════════════
+exports.placesAutocomplete = async (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q || q.length < 2) return res.json({ predictions: [] });
+
+    const key = process.env.GOOGLE_PLACES_API_KEY;
+    if (!key) return res.status(500).json({ error: 'Places API not configured' });
+
+    const url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(q)}&components=country:in&language=en&types=geocode&key=${key}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    res.json({ predictions: data.predictions || [] });
+  } catch (e) {
+    console.error('Places autocomplete error:', e.message);
+    res.json({ predictions: [] });
+  }
+};
+
+exports.placesDetails = async (req, res) => {
+  try {
+    const { place_id } = req.query;
+    if (!place_id) return res.json({ result: null });
+
+    const key = process.env.GOOGLE_PLACES_API_KEY;
+    if (!key) return res.status(500).json({ error: 'Places API not configured' });
+
+    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place_id}&fields=geometry,formatted_address,name&key=${key}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    res.json({ result: data.result || null });
+  } catch (e) {
+    console.error('Places details error:', e.message);
+    res.json({ result: null });
+  }
+};

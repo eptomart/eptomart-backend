@@ -47,6 +47,11 @@ const protectEpfSeller = [protect, async (req, res, next) => {
 }];
 
 // ══════════════════════════════════════════════════════════
+// PLACES AUTOCOMPLETE PROXY (hides Google API key from frontend)
+// ══════════════════════════════════════════════════════════
+router.get('/places/autocomplete', ctrl.placesAutocomplete);
+router.get('/places/details',      ctrl.placesDetails);
+
 // PUBLIC / CUSTOMER BROWSE
 // ══════════════════════════════════════════════════════════
 router.get('/sellers',                      optionalAuth, ctrl.getNearbySellers);

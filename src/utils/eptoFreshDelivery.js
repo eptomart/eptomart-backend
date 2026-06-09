@@ -1,104 +1,135 @@
 // ============================================
 // EPTOFRESH DELIVERY CHARGE CALCULATOR
-// Rules as specified in EptoFresh Proteins spec
 // ============================================
 
 /**
- * Calculate delivery charge and warnings based on distance and order amount
+ * Calculate delivery charge based on distance and order amount.
  *
- * Rules:
- *  - Order >= ₹1049               → FREE
- *  - Distance <= 6km              → ₹49
- *  - 6km < distance <= 10km       → ₹149
- *  - 10km < distance <= 15km      → ₹199
- *  - distance > 15km              → NOT serviceable (or require confirmation)
- *  - Order > ₹1000 (but < ₹1049) → reduce calculated charge by ₹50
+ * FREE DELIVERY:
+ *   Order >= freeDeliveryThreshold (₹1049) AND distance <= freeDeliveryDistanceLimit (10km) → FREE
  *
- * Warnings:
- *  - distance > 10km: freshness warning
- *  - distance > 15km: strong warning requiring confirmation
+ * HIGH VALUE ORDERS (>= ₹1049) beyond 10km:
+ *   ₹50 for every 2km (or part thereof) beyond 10km
+ *   Examples: 11km=₹50, 12km=₹50, 13km=₹100, 15km=₹150, 18km=₹200, 22km=₹300, 30km=₹500
+ *
+ * STANDARD ORDERS (< ₹1049):
+ *   0-6km   → ₹49
+ *   6-10km  → ₹149
+ *   10-12km → ₹199
+ *   >12km   → ₹199 + ₹50 for every 3km (or part) beyond 12km
+ *
+ * MANDATORY CONSENT: order >= ₹1049 AND distance > 10km → requiresConsent = true
+ *
+ * @param {number} distanceKm
+ * @param {number} orderAmount
+ * @param {object} config  - admin-overridable settings
  */
-function calculateDeliveryCharge(distanceKm, orderAmount) {
-  const dist = parseFloat(distanceKm) || 0;
-  const amt  = parseFloat(orderAmount) || 0;
+function calculateDeliveryCharge(distanceKm, orderAmount, config = {}) {
+  const {
+    freeDeliveryThreshold      = 1049,
+    freeDeliveryDistanceLimit  = 10,
+    highValueSurchargePerSlab  = 50,
+    highValueSlabSizeKm        = 2,
+    standardSurchargePerSlab   = 50,
+    standardSlabSizeKm         = 3,
+    standardBaseBeyond12km     = 199,
+    maxServiceableDistance     = 0, // 0 = unlimited
+  } = config;
+
+  const dist      = parseFloat(distanceKm) || 0;
+  const amt       = parseFloat(orderAmount) || 0;
+  const isHighVal = amt >= freeDeliveryThreshold;
+  const isLong    = dist > freeDeliveryDistanceLimit;   // > 10km
+
+  // Max distance check
+  if (maxServiceableDistance > 0 && dist > maxServiceableDistance) {
+    return {
+      charge: 0,
+      isFreeDelivery: false,
+      requiresConsent: false,
+      isLongDistance: true,
+      serviceable: false,
+      warning: `Delivery not available beyond ${maxServiceableDistance} km`,
+      distanceKm: dist,
+      orderAmount: amt,
+    };
+  }
 
   let charge = 0;
-  let warning = null;
-  let requiresConfirmation = false;
-  let serviceable = true;
+  let isFreeDelivery = false;
 
-  // Free delivery threshold
-  if (amt >= 1049) {
-    charge = 0;
+  if (isHighVal) {
+    if (!isLong) {
+      // FREE — high value within 10km
+      charge = 0;
+      isFreeDelivery = true;
+    } else {
+      // Long-distance surcharge for high value orders
+      const beyondKm = dist - freeDeliveryDistanceLimit;
+      const slabs    = Math.ceil(beyondKm / highValueSlabSizeKm);
+      charge = slabs * highValueSurchargePerSlab;
+    }
   } else {
-    // Distance-based charge
+    // Standard orders
     if (dist <= 6) {
       charge = 49;
     } else if (dist <= 10) {
       charge = 149;
-    } else if (dist <= 15) {
-      charge = 199;
+    } else if (dist <= 12) {
+      charge = standardBaseBeyond12km;
     } else {
-      // Beyond 15km — flag but allow with confirmation
-      charge = 249;
-      serviceable = false; // admin can override
-    }
-
-    // ₹50 discount if order > ₹1000 (but still under ₹1049)
-    if (amt > 1000) {
-      charge = Math.max(0, charge - 50);
+      const beyondKm = dist - 12;
+      const slabs    = Math.ceil(beyondKm / standardSlabSizeKm);
+      charge = standardBaseBeyond12km + slabs * standardSurchargePerSlab;
     }
   }
 
-  // Distance warnings
-  if (dist > 15) {
-    warning = 'This seller is very far away (>15 km). Freshness and delivery time will be significantly affected. Do you still want to proceed?';
-    requiresConfirmation = true;
-  } else if (dist > 10) {
-    warning = 'Seller is located farther away. Product freshness and delivery time may be affected.';
-  }
+  // Mandatory consent warning (high value + long distance)
+  const requiresConsent = isHighVal && isLong;
+
+  const warning = isLong
+    ? (isHighVal
+        ? 'Long distance delivery charges apply. Free delivery is not available beyond 10 km.'
+        : 'Seller is farther than 10 km. Additional delivery charges apply.')
+    : null;
 
   return {
     charge,
+    isFreeDelivery,
+    requiresConsent,   // must show warning popup + checkbox
+    isLongDistance: isLong,
+    serviceable: true,
     warning,
-    requiresConfirmation,
-    serviceable: dist <= 15,
     distanceKm: dist,
-    isFreeDelivery: charge === 0,
+    orderAmount: amt,
   };
 }
 
 /**
- * Calculate haversine distance between two GPS coordinates (km)
+ * Haversine distance between two GPS coordinates (km)
  */
 function haversineDistance(lat1, lng1, lat2, lng2) {
-  const R = 6371; // Earth radius in km
+  const R    = 6371;
   const dLat = toRad(lat2 - lat1);
   const dLng = toRad(lng2 - lng1);
-  const a =
+  const a    =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
     Math.sin(dLng / 2) * Math.sin(dLng / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return parseFloat((R * c).toFixed(2));
+  return parseFloat((R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))).toFixed(2));
 }
 
-function toRad(deg) {
-  return deg * (Math.PI / 180);
-}
+function toRad(deg) { return deg * (Math.PI / 180); }
 
 /**
  * Calculate platform fee and seller payout
- * Platform Fee: 10%
- * GST on Fee: 18%
- * Seller receives: orderAmount - platformFee - gstOnFee
+ * Platform Fee: commissionRate% + 18% GST on fee
  */
 function calculatePayout(orderAmount, commissionRate = 10) {
   const platformFee    = parseFloat(((orderAmount * commissionRate) / 100).toFixed(2));
   const gstOnFee       = parseFloat(((platformFee * 18) / 100).toFixed(2));
   const totalDeduction = parseFloat((platformFee + gstOnFee).toFixed(2));
   const sellerReceives = parseFloat((orderAmount - totalDeduction).toFixed(2));
-
   return { orderAmount, platformFee, gstOnFee, totalDeduction, sellerReceives };
 }
 

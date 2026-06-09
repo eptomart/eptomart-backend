@@ -152,4 +152,8 @@ router.get ('/admin/coupons',              protectAdmin, adminCtrl.getCoupons);
 router.post('/admin/coupons',              protectAdmin, adminCtrl.createCoupon);
 router.patch('/admin/coupons/:couponId/toggle', protectAdmin, adminCtrl.toggleCoupon);
 
+// Delivery Config
+router.get('/admin/delivery-config',       protectAdmin,      adminCtrl.getDeliveryConfig);
+router.put('/admin/delivery-config',       protectSuperAdmin, adminCtrl.updateDeliveryConfig);
+
 module.exports = router;

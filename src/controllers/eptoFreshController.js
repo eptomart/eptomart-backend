@@ -10,7 +10,8 @@ const EptoFreshCart    = require('../models/EptoFreshCart');
 const EptoFreshReview  = require('../models/EptoFreshReview');
 const EptoFreshWallet  = require('../models/EptoFreshWallet');
 const EptoFreshPayout  = require('../models/EptoFreshPayout');
-const EptoFreshCoupon  = require('../models/EptoFreshCoupon');
+const EptoFreshCoupon         = require('../models/EptoFreshCoupon');
+const EptoFreshDeliveryConfig = require('../models/EptoFreshDeliveryConfig');
 const Razorpay         = require('razorpay');
 const crypto           = require('crypto');
 const { haversineDistance, calculateDeliveryCharge, calculatePayout } = require('../utils/eptoFreshDelivery');
@@ -114,13 +115,25 @@ exports.getSellerProducts = async (req, res) => {
  * Calculate delivery charge before checkout
  */
 exports.checkDelivery = async (req, res) => {
-  const { sellerId, buyerLat, buyerLng, orderAmount } = req.body;
-  const seller = await EptoFreshSeller.findById(sellerId).select('location').lean();
+  const { sellerId, buyerLat, buyerLng, orderAmount, city } = req.body;
+  const seller = await EptoFreshSeller.findById(sellerId).select('location address').lean();
   if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
 
   const [sLng, sLat] = seller.location?.coordinates || [0, 0];
   const distanceKm = haversineDistance(buyerLat, buyerLng, sLat, sLng);
-  const info = calculateDeliveryCharge(distanceKm, orderAmount || 0);
+
+  // Load admin-configurable delivery settings
+  const configDoc = await EptoFreshDeliveryConfig.findOne({ key: 'global' }).lean();
+  const config    = configDoc || {};
+  // Apply city-specific rule if available
+  const sellerCity = city || seller.address?.city;
+  let activeConfig = config;
+  if (configDoc && configDoc.cityRules?.length && sellerCity) {
+    const cityRule = configDoc.cityRules.find(r => r.city?.toLowerCase() === sellerCity.toLowerCase() && r.isActive);
+    if (cityRule) activeConfig = { ...config, ...cityRule };
+  }
+
+  const info = calculateDeliveryCharge(distanceKm, parseFloat(orderAmount) || 0, activeConfig);
 
   res.json({ success: true, ...info });
 };

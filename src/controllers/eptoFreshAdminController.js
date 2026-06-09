@@ -7,8 +7,9 @@ const EptoFreshSeller  = require('../models/EptoFreshSeller');
 const EptoFreshProduct = require('../models/EptoFreshProduct');
 const EptoFreshOrder   = require('../models/EptoFreshOrder');
 const EptoFreshPayout  = require('../models/EptoFreshPayout');
-const EptoFreshCoupon  = require('../models/EptoFreshCoupon');
-const EptoFreshWallet  = require('../models/EptoFreshWallet');
+const EptoFreshCoupon         = require('../models/EptoFreshCoupon');
+const EptoFreshWallet         = require('../models/EptoFreshWallet');
+const EptoFreshDeliveryConfig = require('../models/EptoFreshDeliveryConfig');
 const { notifyUser }   = require('../utils/pushNotification');
 const { createPorterOrder } = require('../utils/porter');
 
@@ -557,4 +558,36 @@ exports.getAnalytics = async (req, res) => {
   ]);
 
   res.json({ success: true, analytics: { ordersByCategory, revenueByDay, topSellers, cancellationRate, period } });
+};
+
+// ══════════════════════════════════════════════════════════
+// DELIVERY CONFIG
+// ══════════════════════════════════════════════════════════
+
+exports.getDeliveryConfig = async (req, res) => {
+  let config = await EptoFreshDeliveryConfig.findOne({ key: 'global' }).lean();
+  if (!config) {
+    // Return defaults if not configured yet
+    config = new EptoFreshDeliveryConfig().toObject();
+  }
+  res.json({ success: true, config });
+};
+
+exports.updateDeliveryConfig = async (req, res) => {
+  const allowed = [
+    'freeDeliveryThreshold', 'freeDeliveryDistanceLimit',
+    'highValueSurchargePerSlab', 'highValueSlabSizeKm',
+    'standardSurchargePerSlab', 'standardSlabSizeKm',
+    'standardBaseBeyond12km', 'maxServiceableDistance', 'cityRules',
+  ];
+  const update = {};
+  allowed.forEach(k => { if (req.body[k] !== undefined) update[k] = req.body[k]; });
+  update.updatedBy = req.user._id;
+
+  const config = await EptoFreshDeliveryConfig.findOneAndUpdate(
+    { key: 'global' },
+    { $set: update },
+    { new: true, upsert: true }
+  );
+  res.json({ success: true, config });
 };

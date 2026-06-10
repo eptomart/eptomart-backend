@@ -9,6 +9,7 @@ const getNotifySeller   = () => require('./orderController').notifySeller;
 const getCreateInvoice  = () => require('./orderController').createInvoice;
 const { createShipment } = require('../utils/shiprocket');
 const { sendOrderPaidWhatsApp, sendOrderPlacedWhatsApp, sendAdminNewOrderAlert } = require('../utils/sendWhatsApp');
+const { sendOrderConfirmation } = require('../utils/sendEmail');
 const { notifyUser } = require('../utils/pushNotification');
 
 const getRazorpay = () => {
@@ -146,6 +147,15 @@ const verifyRazorpayPayment = async (req, res) => {
     const customerPhone = buyer.phone || order.shippingAddress?.phone;
     if (customerPhone) {
       sendOrderPaidWhatsApp(customerPhone, { orderId: order.orderId, total, name: buyer.name }).catch(() => {});
+    }
+
+    // Confirmation email — sent here (not in placeOrder) so it only fires after successful payment
+    if (buyer.email) {
+      sendOrderConfirmation(buyer.email, order, {
+        userName:      buyer.name || '',
+        invoicePdfBuf: null,
+        invoiceNumber: '',
+      }).catch(() => {});
     }
   }
 

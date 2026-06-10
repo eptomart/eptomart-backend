@@ -7,6 +7,7 @@ const EptoFreshSeller  = require('../models/EptoFreshSeller');
 const EptoFreshProduct = require('../models/EptoFreshProduct');
 const EptoFreshOrder   = require('../models/EptoFreshOrder');
 const EptoFreshPayout  = require('../models/EptoFreshPayout');
+const EptoFreshCoupon  = require('../models/EptoFreshCoupon');
 const { notifyUser }   = require('../utils/pushNotification');
 const { createPorterOrder, cancelPorterOrder } = require('../utils/porter');
 
@@ -390,4 +391,48 @@ exports.getDashboard = async (req, res) => {
       badges:   seller.badges,
     },
   });
+};
+
+// ══════════════════════════════════════════════════════════
+// PROMO CODE REQUESTS
+// ══════════════════════════════════════════════════════════
+
+exports.requestPromo = async (req, res) => {
+  const seller = req.epfSeller;
+  const { code, description, discountValue, minOrderValue, maxUsage, validFrom, validTo, requestReason } = req.body;
+
+  if (!code || !discountValue || !validFrom || !validTo) {
+    return res.status(400).json({ success: false, message: 'Code, discount value, and validity dates are required' });
+  }
+  if (parseFloat(discountValue) <= 0 || parseFloat(discountValue) > 100) {
+    return res.status(400).json({ success: false, message: 'Discount must be between 1% and 100%' });
+  }
+
+  const existing = await EptoFreshCoupon.findOne({ code: code.toUpperCase().trim() });
+  if (existing) return res.status(400).json({ success: false, message: 'Coupon code already exists' });
+
+  const coupon = new EptoFreshCoupon({
+    code: code.toUpperCase().trim(),
+    description,
+    discountType:  'percent',
+    discountValue: parseFloat(discountValue),
+    minOrderValue: parseFloat(minOrderValue) || 0,
+    maxUsage:      parseInt(maxUsage) || 50,
+    validFrom:     new Date(validFrom),
+    validTo:       new Date(validTo),
+    isActive:      false,                   // inactive until admin approves
+    sellers:       [seller._id],
+    requestedBy:   seller._id,
+    requestStatus: 'pending',
+    requestReason,
+  });
+  await coupon.save();
+
+  res.status(201).json({ success: true, message: 'Promo request submitted. Admin will review within 24 hours.', coupon });
+};
+
+exports.getMyPromoRequests = async (req, res) => {
+  const seller = req.epfSeller;
+  const coupons = await EptoFreshCoupon.find({ requestedBy: seller._id }).sort({ createdAt: -1 }).lean();
+  res.json({ success: true, coupons });
 };

@@ -119,6 +119,10 @@ router.post('/seller/orders/:orderId/packed-photos', protectEpfSeller, uploadEpf
 // Payouts
 router.get('/seller/payouts', protectEpfSeller, sellerCtrl.getPayouts);
 
+// Promo Requests
+router.post('/seller/promo-request',    protectEpfSeller, sellerCtrl.requestPromo);
+router.get ('/seller/promo-requests',   protectEpfSeller, sellerCtrl.getMyPromoRequests);
+
 // ══════════════════════════════════════════════════════════
 // ADMIN PANEL
 // ══════════════════════════════════════════════════════════
@@ -128,7 +132,7 @@ router.get('/admin/dashboard', protectAdmin, adminCtrl.getDashboard);
 router.get('/admin/analytics', protectAdmin, adminCtrl.getAnalytics);
 
 // Sellers
-router.post('/admin/sellers',                        protectSuperAdmin, adminCtrl.createSeller);
+router.post('/admin/sellers',                        protectAdmin, adminCtrl.createSeller);
 router.get ('/admin/sellers',                        protectAdmin, adminCtrl.getSellers);
 router.get ('/admin/sellers/:sellerId',               protectAdmin, adminCtrl.getSellerDetail);
 router.post('/admin/sellers/:sellerId/approve',       protectSuperAdmin, adminCtrl.approveSeller);
@@ -158,6 +162,11 @@ router.post('/admin/refund',        protectAdmin, adminCtrl.processRefund);
 router.get ('/admin/coupons',              protectAdmin, adminCtrl.getCoupons);
 router.post('/admin/coupons',              protectAdmin, adminCtrl.createCoupon);
 router.patch('/admin/coupons/:couponId/toggle', protectAdmin, adminCtrl.toggleCoupon);
+
+// Promo Requests (admin side)
+router.get ('/admin/promo-requests',                      protectAdmin, adminCtrl.getPromoRequests);
+router.post('/admin/promo-requests/:couponId/approve',    protectAdmin, adminCtrl.approvePromoRequest);
+router.post('/admin/promo-requests/:couponId/reject',     protectAdmin, adminCtrl.rejectPromoRequest);
 
 // Delivery Config
 router.get('/admin/delivery-config',       protectAdmin,      adminCtrl.getDeliveryConfig);

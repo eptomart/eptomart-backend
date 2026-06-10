@@ -348,19 +348,17 @@ const placeOrder = async (req, res) => {
   // Clear server-side cart
   await Cart.findOneAndUpdate({ user: req.user._id }, { items: [] });
 
-  // Invoice is generated after successful Razorpay payment (in paymentController)
-  // For now just send order confirmation email without PDF
-  if (req.user.email) {
-    sendOrderConfirmation(req.user.email, order, {
-      userName:      req.user.name || '',
-      invoicePdfBuf: null,
-      invoiceNumber: '',
-    }).catch(() => {});
-  }
-
-  // For COD — send all notifications immediately
-  // For Razorpay — skip here; notifications sent after payment verification
+  // For COD — send all notifications + confirmation email immediately
+  // For Razorpay — skip here; everything sent after payment verification in paymentController
   if (order.paymentMethod === 'cod') {
+    // Confirmation email only for COD; Razorpay sends it after payment verify
+    if (req.user.email) {
+      sendOrderConfirmation(req.user.email, order, {
+        userName:      req.user.name || '',
+        invoicePdfBuf: null,
+        invoiceNumber: '',
+      }).catch(() => {});
+    }
     notifyUser(req.user._id, notifications.orderPlaced(order.orderId)).catch(() => {});
 
     const customerPhone = req.user.phone || order.shippingAddress?.phone;

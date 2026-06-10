@@ -521,6 +521,37 @@ exports.toggleCoupon = async (req, res) => {
   res.json({ success: true, coupon });
 };
 
+exports.getPromoRequests = async (req, res) => {
+  const { status = 'pending' } = req.query;
+  const coupons = await EptoFreshCoupon.find({ requestStatus: status })
+    .populate('requestedBy', 'shopName sellerCode')
+    .sort({ createdAt: -1 })
+    .lean();
+  res.json({ success: true, coupons });
+};
+
+exports.approvePromoRequest = async (req, res) => {
+  const coupon = await EptoFreshCoupon.findById(req.params.couponId);
+  if (!coupon) return res.status(404).json({ success: false, message: 'Coupon not found' });
+  if (coupon.requestStatus !== 'pending') return res.status(400).json({ success: false, message: 'Request already processed' });
+  coupon.requestStatus = 'approved';
+  coupon.isActive = true;
+  coupon.createdBy = req.user._id;
+  await coupon.save();
+  res.json({ success: true, coupon });
+};
+
+exports.rejectPromoRequest = async (req, res) => {
+  const coupon = await EptoFreshCoupon.findById(req.params.couponId);
+  if (!coupon) return res.status(404).json({ success: false, message: 'Coupon not found' });
+  if (coupon.requestStatus !== 'pending') return res.status(400).json({ success: false, message: 'Request already processed' });
+  coupon.requestStatus = 'rejected';
+  coupon.isActive = false;
+  coupon.rejectReason = req.body.reason || '';
+  await coupon.save();
+  res.json({ success: true, coupon });
+};
+
 // ══════════════════════════════════════════════════════════
 // ANALYTICS
 // ══════════════════════════════════════════════════════════

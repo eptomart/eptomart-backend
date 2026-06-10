@@ -28,6 +28,12 @@ const eptoFreshCouponSchema = new Schema({
 
   createdBy:    { type: Schema.Types.ObjectId, ref: 'User' },
 
+  // Seller promo request fields
+  requestedBy:    { type: Schema.Types.ObjectId, ref: 'EptoFreshSeller' },
+  requestStatus:  { type: String, enum: ['admin_created', 'pending', 'approved', 'rejected'], default: 'admin_created' },
+  requestReason:  String,
+  rejectReason:   String,
+
 }, { timestamps: true });
 
 eptoFreshCouponSchema.index({ code: 1 });

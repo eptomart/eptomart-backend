@@ -653,6 +653,15 @@ async function _triggerPayout(order) {
 }
 
 // ══════════════════════════════════════════════════════════
+// GOOGLE MAPS CONFIG — returns key to frontend securely
+// ══════════════════════════════════════════════════════════
+exports.mapsConfig = (req, res) => {
+  const key = process.env.GOOGLE_PLACES_API_KEY;
+  if (!key) return res.status(500).json({ error: 'Maps API not configured' });
+  res.json({ key });
+};
+
+// ══════════════════════════════════════════════════════════
 // GOOGLE PLACES PROXY — keeps API key server-side
 // ══════════════════════════════════════════════════════════
 exports.placesAutocomplete = async (req, res) => {

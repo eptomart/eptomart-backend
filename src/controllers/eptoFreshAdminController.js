@@ -573,6 +573,50 @@ exports.getDeliveryConfig = async (req, res) => {
   res.json({ success: true, config });
 };
 
+exports.createSeller = async (req, res) => {
+  try {
+    const {
+      shopName, ownerName, phone, email,
+      addressLine1, addressLine2, city, state, pincode, landmark,
+      lat, lng,
+      categories,
+      fssaiNumber, panNumber, gstNumber,
+    } = req.body;
+
+    if (!shopName || !ownerName || !phone) {
+      return res.status(400).json({ success: false, message: 'shopName, ownerName, and phone are required' });
+    }
+
+    const seller = new EptoFreshSeller({
+      shopName,
+      ownerName,
+      contact: { phone, email },
+      address: {
+        addressLine1,
+        addressLine2,
+        city:     city     || 'Chennai',
+        state:    state    || 'Tamil Nadu',
+        pincode,
+        landmark,
+      },
+      location: {
+        type: 'Point',
+        coordinates: [parseFloat(lng) || 0, parseFloat(lat) || 0],
+      },
+      categories: Array.isArray(categories) ? categories : [],
+      kyc: { fssaiNumber, panNumber, gstNumber },
+      status:     'approved',
+      approvedBy: req.user._id,
+      approvedAt: new Date(),
+    });
+
+    await seller.save();
+    res.json({ success: true, seller });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e.message });
+  }
+};
+
 exports.updateDeliveryConfig = async (req, res) => {
   const allowed = [
     'freeDeliveryThreshold', 'freeDeliveryDistanceLimit',

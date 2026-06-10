@@ -127,6 +127,7 @@ router.get('/admin/dashboard', protectAdmin, adminCtrl.getDashboard);
 router.get('/admin/analytics', protectAdmin, adminCtrl.getAnalytics);
 
 // Sellers
+router.post('/admin/sellers',                        protectSuperAdmin, adminCtrl.createSeller);
 router.get ('/admin/sellers',                        protectAdmin, adminCtrl.getSellers);
 router.get ('/admin/sellers/:sellerId',               protectAdmin, adminCtrl.getSellerDetail);
 router.post('/admin/sellers/:sellerId/approve',       protectSuperAdmin, adminCtrl.approveSeller);

@@ -681,9 +681,28 @@ exports.linkSellerUser = async (req, res) => {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ success: false, message: 'phone is required' });
 
+    // Strip to last 10 digits and try exact match first, then suffix regex
     const phoneDigits = String(phone).replace(/\D/g, '').slice(-10);
-    const user = await User.findOne({ phone: { $regex: phoneDigits + '$' } }).lean();
-    if (!user) return res.status(404).json({ success: false, message: `No user account found with phone ending in ${phoneDigits}` });
+    let user = await User.findOne({ phone: phoneDigits }).lean();
+    if (!user) {
+      // Fallback: some users may have stored with country code prefix
+      user = await User.findOne({ phone: { $regex: phoneDigits + '$' } }).lean();
+    }
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: `No Eptomart account found for phone ${phoneDigits}. Ask the seller to sign up on Eptomart first, then link here.`,
+      });
+    }
+
+    // Check if this user is already linked to another seller
+    const existing = await EptoFreshSeller.findOne({ user: user._id, _id: { $ne: sellerId } }).lean();
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        message: `This phone is already linked to seller "${existing.shopName}". Cannot link to two sellers.`,
+      });
+    }
 
     const seller = await EptoFreshSeller.findByIdAndUpdate(
       sellerId,
@@ -692,7 +711,7 @@ exports.linkSellerUser = async (req, res) => {
     ).lean();
     if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
 
-    res.json({ success: true, message: `Seller linked to user ${user.name || user.phone}`, seller });
+    res.json({ success: true, message: `✓ Linked to ${user.name || user.phone}. Seller can now access the portal.`, seller });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }

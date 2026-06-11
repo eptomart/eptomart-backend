@@ -678,20 +678,38 @@ exports.createSeller = async (req, res) => {
 exports.linkSellerUser = async (req, res) => {
   try {
     const { sellerId } = req.params;
-    const { phone } = req.body;
-    if (!phone) return res.status(400).json({ success: false, message: 'phone is required' });
+    const { phone, email } = req.body;
+    if (!phone && !email) return res.status(400).json({ success: false, message: 'phone or email is required' });
 
-    // Strip to last 10 digits and try exact match first, then suffix regex
-    const phoneDigits = String(phone).replace(/\D/g, '').slice(-10);
-    let user = await User.findOne({ phone: phoneDigits }).lean();
-    if (!user) {
-      // Fallback: some users may have stored with country code prefix
-      user = await User.findOne({ phone: { $regex: phoneDigits + '$' } }).lean();
+    let user = null;
+
+    // ── Try phone lookup ──────────────────────────────────────────────
+    if (phone) {
+      const phoneDigits = String(phone).replace(/\D/g, '').slice(-10);
+      // Exact match (10-digit stored value)
+      user = await User.findOne({ phone: phoneDigits }).lean();
+      // Suffix regex (e.g. stored with country code)
+      if (!user) user = await User.findOne({ phone: { $regex: phoneDigits + '$' } }).lean();
     }
+
+    // ── Try email lookup if phone didn't match ────────────────────────
+    if (!user && email) {
+      user = await User.findOne({ email: email.toLowerCase().trim() }).lean();
+    }
+
+    // ── If phone given but not matched, also try email from seller record
+    if (!user && phone) {
+      const seller = await EptoFreshSeller.findById(sellerId).lean();
+      if (seller?.contact?.email) {
+        user = await User.findOne({ email: seller.contact.email.toLowerCase().trim() }).lean();
+      }
+    }
+
     if (!user) {
+      const searched = [phone && `phone ${String(phone).replace(/\D/g, '').slice(-10)}`, email && `email ${email}`].filter(Boolean).join(' / ');
       return res.status(404).json({
         success: false,
-        message: `No Eptomart account found for phone ${phoneDigits}. Ask the seller to sign up on Eptomart first, then link here.`,
+        message: `No Eptomart account found for ${searched}. The seller must sign up on Eptomart first (using the same phone or email), then link here.`,
       });
     }
 

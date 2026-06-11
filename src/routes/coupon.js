@@ -124,7 +124,7 @@ router.post('/request', protect, async (req, res) => {
     if (existing) return res.status(400).json({ success: false, message: 'Coupon code already exists' });
 
     // ── Auto-resolve seller ID for the platform ───────────
-    const platformRestriction = platform || 'all';
+    const platformRestriction = (platform || 'all').toLowerCase();
     let assignedSellerId    = null;
     let assignedSellerName  = null;
 

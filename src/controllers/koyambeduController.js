@@ -462,7 +462,9 @@ const placeOrder = async (req, res) => {
       validFrom:     { $lte: new Date() },
       validTo:       { $gte: new Date() },
     });
-    if (coupon && coupon.usedCount < coupon.maxUsage && subtotal >= coupon.minOrderValue) {
+    // Koyambedu: allow 'all' or 'koyambedu' platform coupons
+    const koyPlatformOk = !coupon || !coupon.platformRestriction || ['all', 'koyambedu'].includes(coupon.platformRestriction);
+    if (coupon && koyPlatformOk && coupon.usedCount < coupon.maxUsage && subtotal >= coupon.minOrderValue) {
       if (coupon.discountType === 'flat') {
         couponDiscount = Math.min(coupon.discountValue, subtotal);
       } else {

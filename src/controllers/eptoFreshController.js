@@ -257,13 +257,19 @@ exports.placeOrder = async (req, res) => {
       minOrderValue: { $lte: subtotal },
     });
     if (coupon) {
-      if (coupon.discountType === 'flat') {
-        couponDiscount = Math.min(coupon.discountValue, subtotal);
-      } else {
-        couponDiscount = Math.min((subtotal * coupon.discountValue) / 100, coupon.maxDiscount || Infinity);
+      // Platform check: allow 'all' or 'eptofresh'
+      const epfPlatformOk = !coupon.platformRestriction || ['all', 'eptofresh'].includes(coupon.platformRestriction);
+      // Seller check: if restricted, seller must match
+      const epfSellerOk = !coupon.assignedSellerId || String(coupon.assignedSellerId) === String(cart.seller?._id || cart.seller);
+      if (epfPlatformOk && epfSellerOk) {
+        if (coupon.discountType === 'flat') {
+          couponDiscount = Math.min(coupon.discountValue, subtotal);
+        } else {
+          couponDiscount = Math.min((subtotal * coupon.discountValue) / 100, coupon.maxDiscount || Infinity);
+        }
+        coupon.usedCount = (coupon.usedCount || 0) + 1;
+        await coupon.save();
       }
-      coupon.usedCount = (coupon.usedCount || 0) + 1;
-      await coupon.save();
     }
   }
 

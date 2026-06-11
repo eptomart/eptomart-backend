@@ -22,9 +22,21 @@ const eptoFreshCouponSchema = new Schema({
 
   isActive:     { type: Boolean, default: true },
 
-  // Restrict to specific categories or sellers
+  // Restrict to specific categories or sellers (EptoFresh legacy)
   categories:   [String],
   sellers:      [{ type: Schema.Types.ObjectId, ref: 'EptoFreshSeller' }],
+
+  // ── Universal platform + seller restriction ─────────────
+  // Which sub-app this coupon applies to ('all' = all platforms)
+  platformRestriction: {
+    type: String,
+    enum: ['all', 'koyambedu', 'uzhavar', 'eptofresh'],
+    default: 'all',
+  },
+  // Optional: restrict to one specific seller within the platform
+  // Stores the ObjectId (as string) of KoyambeduSeller / Farmer / EptoFreshSeller
+  assignedSellerId:   { type: String, default: null },
+  assignedSellerName: { type: String, default: null }, // human-readable, for admin display
 
   createdBy:    { type: Schema.Types.ObjectId, ref: 'User' },
 

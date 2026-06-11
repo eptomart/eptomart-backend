@@ -7,15 +7,20 @@ const express = require('express');
 const router  = express.Router();
 const { protect, optionalAuth } = require('../middleware/auth');
 const EptoFreshCoupon  = require('../models/EptoFreshCoupon');
+const KoyambeduSeller  = require('../models/KoyambeduSeller');
+const Farmer           = require('../models/Farmer');
+const EptoFreshSeller  = require('../models/EptoFreshSeller');
 
 /**
  * POST /api/coupon/validate
- * Body: { code, orderAmount }
- * orderAmount = subtotal + GST (shipping excluded, as per promo rules)
+ * Body: { code, orderAmount, platform?, sellerId? }
+ *   platform  — 'koyambedu' | 'uzhavar' | 'eptofresh' | undefined (main marketplace)
+ *   sellerId  — ObjectId of the specific seller (for seller-specific coupons)
+ *   orderAmount = subtotal + GST (shipping excluded)
  */
 router.post('/validate', optionalAuth, async (req, res) => {
   try {
-    const { code, orderAmount } = req.body;
+    const { code, orderAmount, platform, sellerId } = req.body;
     if (!code) return res.status(400).json({ success: false, message: 'Coupon code is required' });
 
     const coupon = await EptoFreshCoupon.findOne({
@@ -33,6 +38,29 @@ router.post('/validate', optionalAuth, async (req, res) => {
       return res.status(400).json({ success: false, message: 'This coupon has reached its usage limit' });
     }
 
+    // ── Platform restriction check ────────────────────────
+    if (coupon.platformRestriction && coupon.platformRestriction !== 'all') {
+      if (!platform || platform !== coupon.platformRestriction) {
+        const names = { koyambedu: 'Koyambedu Daily', uzhavar: 'Uzhavar Fresh', eptofresh: 'EptoFresh Proteins' };
+        return res.status(400).json({
+          success: false,
+          message: `This coupon is only valid for ${names[coupon.platformRestriction] || coupon.platformRestriction} orders`,
+        });
+      }
+    }
+
+    // ── Seller-specific restriction check ────────────────
+    if (coupon.assignedSellerId) {
+      if (!sellerId || String(sellerId) !== String(coupon.assignedSellerId)) {
+        return res.status(400).json({
+          success: false,
+          message: coupon.assignedSellerName
+            ? `This coupon is only valid for orders from ${coupon.assignedSellerName}`
+            : 'This coupon is only valid for a specific seller',
+        });
+      }
+    }
+
     const amount = parseFloat(orderAmount) || 0;
     if (amount < coupon.minOrderValue) {
       return res.status(400).json({
@@ -45,7 +73,6 @@ router.post('/validate', optionalAuth, async (req, res) => {
     if (coupon.discountType === 'flat') {
       discount = Math.min(coupon.discountValue, amount);
     } else {
-      // percent — shipping is excluded (applied on subtotal+GST only)
       discount = (amount * coupon.discountValue) / 100;
       if (coupon.maxDiscount) discount = Math.min(discount, coupon.maxDiscount);
     }
@@ -55,10 +82,13 @@ router.post('/validate', optionalAuth, async (req, res) => {
       success:  true,
       discount,
       coupon: {
-        code:          coupon.code,
-        description:   coupon.description || '',
-        discountType:  coupon.discountType,
-        discountValue: coupon.discountValue,
+        code:               coupon.code,
+        description:        coupon.description || '',
+        discountType:       coupon.discountType,
+        discountValue:      coupon.discountValue,
+        platformRestriction: coupon.platformRestriction,
+        assignedSellerId:   coupon.assignedSellerId,
+        assignedSellerName: coupon.assignedSellerName,
       },
     });
   } catch (err) {
@@ -69,8 +99,11 @@ router.post('/validate', optionalAuth, async (req, res) => {
 
 /**
  * POST /api/coupon/request
- * Any authenticated seller (Koyambedu / Uzhavar / EptoFresh) can request a promo
- * Body: { code, discountValue, minOrderValue, maxUsage, validFrom, validTo, description, requestReason, platform }
+ * Any authenticated seller can request a promo.
+ * Server auto-looks up the seller record for the platform so the coupon is
+ * seller-specific when approved.
+ * Body: { code, discountValue, minOrderValue, maxUsage, validFrom, validTo,
+ *         description, requestReason, platform }
  */
 router.post('/request', protect, async (req, res) => {
   try {
@@ -90,21 +123,52 @@ router.post('/request', protect, async (req, res) => {
     const existing = await EptoFreshCoupon.findOne({ code: code.toUpperCase().trim() });
     if (existing) return res.status(400).json({ success: false, message: 'Coupon code already exists' });
 
+    // ── Auto-resolve seller ID for the platform ───────────
+    const platformRestriction = platform || 'all';
+    let assignedSellerId    = null;
+    let assignedSellerName  = null;
+
+    if (platform === 'koyambedu') {
+      const seller = await KoyambeduSeller.findOne({ user: req.user._id }).lean();
+      if (seller) {
+        assignedSellerId   = String(seller._id);
+        assignedSellerName = seller.shopName || seller.businessName || null;
+      }
+    } else if (platform === 'uzhavar') {
+      const farmer = await Farmer.findOne({ user: req.user._id }).lean();
+      if (farmer) {
+        assignedSellerId   = String(farmer._id);
+        assignedSellerName = farmer.name || farmer.farmName || null;
+      }
+    } else if (platform === 'eptofresh') {
+      const epfSeller = await EptoFreshSeller.findOne({ user: req.user._id }).lean();
+      if (epfSeller) {
+        assignedSellerId   = String(epfSeller._id);
+        assignedSellerName = epfSeller.shopName || null;
+      }
+    }
+
+    const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+    const descWithPlatform = platform
+      ? `[${cap(platform)}] ${description || ''}`.trim()
+      : (description || '');
+
     const coupon = await EptoFreshCoupon.create({
-      code:          code.toUpperCase().trim(),
-      discountType:  'percent',
-      discountValue: pct,
-      minOrderValue: Number(minOrderValue) || 0,
-      maxUsage:      Number(maxUsage)      || 50,
-      validFrom:     new Date(validFrom),
-      validTo:       new Date(validTo),
-      description:   description || '',
-      requestReason: requestReason || '',
-      isActive:      false,
-      requestStatus: 'pending',
-      createdBy:     req.user._id,
-      // platform tag stored in description prefix if provided
-      ...(platform ? { description: `[${platform}] ${description || ''}`.trim() } : {}),
+      code:               code.toUpperCase().trim(),
+      discountType:       'percent',
+      discountValue:      pct,
+      minOrderValue:      Number(minOrderValue) || 0,
+      maxUsage:           Number(maxUsage)      || 50,
+      validFrom:          new Date(validFrom),
+      validTo:            new Date(validTo),
+      description:        descWithPlatform,
+      requestReason:      requestReason || '',
+      isActive:           false,
+      requestStatus:      'pending',
+      createdBy:          req.user._id,
+      platformRestriction,
+      assignedSellerId,
+      assignedSellerName,
     });
 
     res.status(201).json({ success: true, coupon });

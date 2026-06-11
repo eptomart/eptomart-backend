@@ -503,7 +503,21 @@ exports.processRefund = async (req, res) => {
 // ══════════════════════════════════════════════════════════
 
 exports.createCoupon = async (req, res) => {
-  const coupon = new EptoFreshCoupon({ ...req.body, createdBy: req.user._id });
+  const {
+    code, description, discountType, discountValue, maxDiscount,
+    minOrderValue, maxUsage, validFrom, validTo,
+    platformRestriction, assignedSellerId, assignedSellerName,
+  } = req.body;
+  const coupon = new EptoFreshCoupon({
+    code, description, discountType, discountValue, maxDiscount,
+    minOrderValue, maxUsage, validFrom, validTo,
+    isActive:           true,
+    requestStatus:      'admin_created',
+    platformRestriction: platformRestriction || 'all',
+    assignedSellerId:   assignedSellerId   || null,
+    assignedSellerName: assignedSellerName || null,
+    createdBy:          req.user._id,
+  });
   await coupon.save();
   res.status(201).json({ success: true, coupon });
 };

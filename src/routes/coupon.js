@@ -6,6 +6,7 @@
 const express = require('express');
 const router  = express.Router();
 const { protect, optionalAuth } = require('../middleware/auth');
+const { protectAdmin }          = require('../middleware/adminAuth');
 const EptoFreshCoupon  = require('../models/EptoFreshCoupon');
 const KoyambeduSeller  = require('../models/KoyambeduSeller');
 const Farmer           = require('../models/Farmer');
@@ -185,6 +186,135 @@ router.get('/my-requests', protect, async (req, res) => {
     res.json({ success: true, coupons });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to fetch requests' });
+  }
+});
+
+// ============================================================
+// ADMIN ROUTES — require protectAdmin
+// ============================================================
+
+/**
+ * GET /api/coupon/admin/all
+ * Returns all coupons, newest first. Optional ?status=pending|approved|admin_created
+ */
+router.get('/admin/all', protectAdmin, async (req, res) => {
+  try {
+    const filter = {};
+    if (req.query.status) filter.requestStatus = req.query.status;
+    const coupons = await EptoFreshCoupon.find(filter).sort({ createdAt: -1 }).lean();
+    res.json({ success: true, coupons });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch coupons' });
+  }
+});
+
+/**
+ * POST /api/coupon/admin/create
+ * Admin creates a coupon directly (requestStatus = 'admin_created', isActive = true)
+ */
+router.post('/admin/create', protectAdmin, async (req, res) => {
+  try {
+    const {
+      code, discountType, discountValue, maxDiscount,
+      minOrderValue, maxUsage, validFrom, validTo,
+      description, platformRestriction, assignedSellerId, assignedSellerName,
+    } = req.body;
+
+    if (!code || !discountType || !discountValue || !validFrom || !validTo) {
+      return res.status(400).json({ success: false, message: 'code, discountType, discountValue, validFrom and validTo are required' });
+    }
+    const existing = await EptoFreshCoupon.findOne({ code: code.toUpperCase().trim() });
+    if (existing) return res.status(400).json({ success: false, message: 'Coupon code already exists' });
+
+    const coupon = await EptoFreshCoupon.create({
+      code:                code.toUpperCase().trim(),
+      discountType:        discountType || 'percent',
+      discountValue:       Number(discountValue),
+      maxDiscount:         maxDiscount ? Number(maxDiscount) : undefined,
+      minOrderValue:       Number(minOrderValue) || 0,
+      maxUsage:            Number(maxUsage) || 100,
+      validFrom:           new Date(validFrom),
+      validTo:             new Date(validTo),
+      description:         description || '',
+      isActive:            true,
+      requestStatus:       'admin_created',
+      createdBy:           req.user._id,
+      platformRestriction: (platformRestriction || 'all').toLowerCase(),
+      assignedSellerId:    assignedSellerId || null,
+      assignedSellerName:  assignedSellerName || null,
+    });
+
+    res.status(201).json({ success: true, coupon });
+  } catch (err) {
+    if (err.code === 11000) return res.status(400).json({ success: false, message: 'Coupon code already exists' });
+    console.error('[Admin coupon create]', err.message);
+    res.status(500).json({ success: false, message: 'Failed to create coupon' });
+  }
+});
+
+/**
+ * PATCH /api/coupon/admin/:id/toggle
+ * Toggle isActive
+ */
+router.patch('/admin/:id/toggle', protectAdmin, async (req, res) => {
+  try {
+    const coupon = await EptoFreshCoupon.findById(req.params.id);
+    if (!coupon) return res.status(404).json({ success: false, message: 'Coupon not found' });
+    coupon.isActive = !coupon.isActive;
+    await coupon.save();
+    res.json({ success: true, coupon });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to toggle coupon' });
+  }
+});
+
+/**
+ * PATCH /api/coupon/admin/:id/approve
+ * Approve a seller promo request
+ */
+router.patch('/admin/:id/approve', protectAdmin, async (req, res) => {
+  try {
+    const coupon = await EptoFreshCoupon.findByIdAndUpdate(
+      req.params.id,
+      { requestStatus: 'approved', isActive: true },
+      { new: true },
+    ).lean();
+    if (!coupon) return res.status(404).json({ success: false, message: 'Coupon not found' });
+    res.json({ success: true, coupon });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to approve coupon' });
+  }
+});
+
+/**
+ * PATCH /api/coupon/admin/:id/reject
+ * Reject a seller promo request
+ */
+router.patch('/admin/:id/reject', protectAdmin, async (req, res) => {
+  try {
+    const { reason } = req.body;
+    const coupon = await EptoFreshCoupon.findByIdAndUpdate(
+      req.params.id,
+      { requestStatus: 'rejected', isActive: false, rejectReason: reason || '' },
+      { new: true },
+    ).lean();
+    if (!coupon) return res.status(404).json({ success: false, message: 'Coupon not found' });
+    res.json({ success: true, coupon });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to reject coupon' });
+  }
+});
+
+/**
+ * DELETE /api/coupon/admin/:id
+ * Hard-delete a coupon
+ */
+router.delete('/admin/:id', protectAdmin, async (req, res) => {
+  try {
+    await EptoFreshCoupon.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to delete coupon' });
   }
 });
 

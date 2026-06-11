@@ -41,7 +41,7 @@ router.post('/validate', optionalAuth, async (req, res) => {
     // ── Platform restriction check ────────────────────────
     if (coupon.platformRestriction && coupon.platformRestriction !== 'all') {
       if (!platform || platform !== coupon.platformRestriction) {
-        const names = { koyambedu: 'Koyambedu Daily', uzhavar: 'Uzhavar Fresh', eptofresh: 'EptoFresh Proteins' };
+        const names = { main: 'Eptomart', koyambedu: 'Koyambedu Daily', uzhavar: 'Uzhavar Fresh', eptofresh: 'EptoFresh Proteins' };
         return res.status(400).json({
           success: false,
           message: `This coupon is only valid for ${names[coupon.platformRestriction] || coupon.platformRestriction} orders`,

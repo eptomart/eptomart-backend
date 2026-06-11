@@ -296,8 +296,8 @@ const placeOrder = async (req, res) => {
       validFrom:     { $lte: new Date() },
       validTo:       { $gte: new Date() },
     });
-    // Main marketplace: only allow 'all' platform coupons
-    const mainMarketplatformOk = !coupon || !coupon.platformRestriction || coupon.platformRestriction === 'all';
+    // Main marketplace: allow 'all' or 'main' platform coupons
+    const mainMarketplatformOk = !coupon || !coupon.platformRestriction || ['all', 'main'].includes(coupon.platformRestriction);
     if (coupon && mainMarketplatformOk && coupon.usedCount < coupon.maxUsage && gst.grandTotal >= coupon.minOrderValue) {
       if (coupon.discountType === 'flat') {
         couponDiscount = Math.min(coupon.discountValue, gst.grandTotal);

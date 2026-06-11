@@ -47,6 +47,7 @@ const uzhavarRoutes       = require('./src/routes/uzhavar');
 const koyambeduRoutes     = require('./src/routes/koyambedu');
 const supplierRoutes      = require('./src/routes/suppliers');
 const eptoFreshRoutes     = require('./src/routes/eptoFresh');
+const couponRoutes        = require('./src/routes/coupon');
 
 const app = express();
 
@@ -186,6 +187,7 @@ app.use('/api/uzhavar',       uzhavarRoutes);
 app.use('/api/koyambedu',     koyambeduRoutes);
 app.use('/api/suppliers',     supplierRoutes);
 app.use('/api/eptofresh',     eptoFreshRoutes);
+app.use('/api/coupon',       couponRoutes);
 app.use('/',             sitemapRoutes);  // /sitemap.xml and /robots.txt
 
 // ─── Health Check ────────────────────────────

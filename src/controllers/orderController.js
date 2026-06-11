@@ -1,9 +1,10 @@
-const Order   = require('../models/Order');
-const Product = require('../models/Product');
-const Seller  = require('../models/Seller');
-const User    = require('../models/User');
-const Invoice = require('../models/Invoice');
-const Cart    = require('../models/Cart');
+const Order            = require('../models/Order');
+const Product          = require('../models/Product');
+const Seller           = require('../models/Seller');
+const User             = require('../models/User');
+const Invoice          = require('../models/Invoice');
+const Cart             = require('../models/Cart');
+const EptoFreshCoupon  = require('../models/EptoFreshCoupon');
 const { sendOrderConfirmation, sendSellerNewOrderEmail } = require('../utils/sendEmail');
 const { notifyUser, notifications } = require('../utils/pushNotification');
 const { sendOrderPlacedWhatsApp, sendAdminNewOrderAlert, sendSellerNewOrderWhatsApp } = require('../utils/sendWhatsApp');
@@ -227,7 +228,7 @@ const notifySeller = async (order) => {
 
 // ── POST /api/orders ──────────────────────────────────────
 const placeOrder = async (req, res) => {
-  const { items, shippingAddress, paymentMethod, notes, shipping: clientShipping } = req.body;
+  const { items, shippingAddress, paymentMethod, notes, shipping: clientShipping, couponCode } = req.body;
   if (!items?.length) {
     return res.status(400).json({ success: false, message: 'Order items are required' });
   }
@@ -284,7 +285,30 @@ const placeOrder = async (req, res) => {
       ? clientShipping
       : 0;
 
-  const total = gst.grandTotal + shipping;
+  // ── Coupon discount (applied on subtotal+tax, shipping excluded) ──
+  let couponDiscount = 0;
+  let appliedCoupon  = null;
+  if (couponCode) {
+    const coupon = await EptoFreshCoupon.findOne({
+      code:          couponCode.toUpperCase().trim(),
+      isActive:      true,
+      requestStatus: { $in: ['admin_created', 'approved'] },
+      validFrom:     { $lte: new Date() },
+      validTo:       { $gte: new Date() },
+    });
+    if (coupon && coupon.usedCount < coupon.maxUsage && gst.grandTotal >= coupon.minOrderValue) {
+      if (coupon.discountType === 'flat') {
+        couponDiscount = Math.min(coupon.discountValue, gst.grandTotal);
+      } else {
+        couponDiscount = (gst.grandTotal * coupon.discountValue) / 100;
+        if (coupon.maxDiscount) couponDiscount = Math.min(couponDiscount, coupon.maxDiscount);
+      }
+      couponDiscount = parseFloat(couponDiscount.toFixed(2));
+      appliedCoupon  = coupon;
+    }
+  }
+
+  const total = parseFloat((gst.grandTotal + shipping - couponDiscount).toFixed(2));
 
   // ── Build sellerBreakdown for multi-vendor tracking ──
   const sellerBreakdownMap = {};
@@ -317,11 +341,12 @@ const placeOrder = async (req, res) => {
     items:           validatedItems,
     shippingAddress,
     pricing: {
-      subtotal: gst.subtotal,
-      discount: 0,
+      subtotal:   gst.subtotal,
+      discount:   couponDiscount,
+      couponCode: appliedCoupon?.code || undefined,
       shipping,
-      tax:      gst.gstTotal,
-      total:    parseFloat(total.toFixed(2)),
+      tax:        gst.gstTotal,
+      total,
     },
     gstBreakdown: {
       subtotalExGst: gst.subtotal,
@@ -343,6 +368,11 @@ const placeOrder = async (req, res) => {
     await Product.findByIdAndUpdate(item.product, {
       $inc: { stock: -item.quantity, soldCount: item.quantity },
     });
+  }
+
+  // Increment coupon usage
+  if (appliedCoupon) {
+    await EptoFreshCoupon.findByIdAndUpdate(appliedCoupon._id, { $inc: { usedCount: 1 } });
   }
 
   // Clear server-side cart

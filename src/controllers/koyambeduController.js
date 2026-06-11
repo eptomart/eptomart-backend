@@ -15,6 +15,7 @@ const KoyambeduCart         = require('../models/KoyambeduCart');
 const KoyambeduOrder        = require('../models/KoyambeduOrder');
 const KoyambeduDeliverySlot = require('../models/KoyambeduDeliverySlot');
 const User                  = require('../models/User');
+const EptoFreshCoupon       = require('../models/EptoFreshCoupon');
 const Razorpay              = require('razorpay');
 const crypto                = require('crypto');
 const {
@@ -344,7 +345,7 @@ const clearCart = async (req, res) => {
 
 /** POST /api/koyambedu/orders — place order */
 const placeOrder = async (req, res) => {
-  const { shippingAddress, paymentMethod = 'razorpay', deliverySlot, notes, buyerLocation } = req.body;
+  const { shippingAddress, paymentMethod = 'razorpay', deliverySlot, notes, buyerLocation, couponCode } = req.body;
 
   // ── 1. Location mandatory ──────────────────────────────────
   if (!buyerLocation?.lat || !buyerLocation?.lng) {
@@ -445,11 +446,35 @@ const placeOrder = async (req, res) => {
   }
 
   // ── 7. Delivery charge (weight-based) ─────────────────────
-  const chargeCalc    = calcDeliveryCharge(totalWeightKg);
+  const chargeCalc     = calcDeliveryCharge(totalWeightKg);
   const deliveryCharge = chargeCalc.charge;
-  const serviceFee    = 10;
-  const total         = subtotal + deliveryCharge + serviceFee;
-  const deliveryType  = deliveryTypes.size > 1 ? 'mixed' : [...deliveryTypes][0];
+  const serviceFee     = 10;
+  const deliveryType   = deliveryTypes.size > 1 ? 'mixed' : [...deliveryTypes][0];
+
+  // ── 7b. Coupon discount (applied on subtotal, shipping excluded) ──
+  let couponDiscount = 0;
+  let appliedCoupon  = null;
+  if (couponCode) {
+    const coupon = await EptoFreshCoupon.findOne({
+      code:          couponCode.toUpperCase().trim(),
+      isActive:      true,
+      requestStatus: { $in: ['admin_created', 'approved'] },
+      validFrom:     { $lte: new Date() },
+      validTo:       { $gte: new Date() },
+    });
+    if (coupon && coupon.usedCount < coupon.maxUsage && subtotal >= coupon.minOrderValue) {
+      if (coupon.discountType === 'flat') {
+        couponDiscount = Math.min(coupon.discountValue, subtotal);
+      } else {
+        couponDiscount = (subtotal * coupon.discountValue) / 100;
+        if (coupon.maxDiscount) couponDiscount = Math.min(couponDiscount, coupon.maxDiscount);
+      }
+      couponDiscount = parseFloat(couponDiscount.toFixed(2));
+      appliedCoupon  = coupon;
+    }
+  }
+
+  const total = parseFloat((subtotal + deliveryCharge + serviceFee - couponDiscount).toFixed(2));
 
   // ── 8. Save order ─────────────────────────────────────────
   const order = new KoyambeduOrder({
@@ -468,12 +493,17 @@ const placeOrder = async (req, res) => {
     paymentMethod,
     paymentStatus:'pending',
     orderStatus:  'placed',
-    pricing:      { subtotal, deliveryCharge, serviceFee, total },
+    pricing:      { subtotal, deliveryCharge, serviceFee, discount: couponDiscount, couponCode: appliedCoupon?.code || undefined, total },
     adminNotes:   notes || '',
   });
   await order.save();
 
   await KoyambeduCart.findOneAndUpdate({ user: req.user._id }, { items: [] });
+
+  // Increment coupon usage
+  if (appliedCoupon) {
+    await EptoFreshCoupon.findByIdAndUpdate(appliedCoupon._id, { $inc: { usedCount: 1 } });
+  }
 
   if (paymentMethod === 'cod') {
     order.orderStatus = 'pending_confirmation';

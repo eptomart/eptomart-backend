@@ -129,17 +129,11 @@ router.post('/request', protect, async (req, res) => {
     let assignedSellerName  = null;
 
     if (platform === 'koyambedu') {
-      const seller = await KoyambeduSeller.findOne({ user: req.user._id }).lean();
-      if (seller) {
-        assignedSellerId   = String(seller._id);
-        assignedSellerName = seller.shopName || seller.businessName || null;
-      }
+      // Koyambedu is a market (multi-vendor) — platform-level restriction only
+      // Individual vendor IDs are not passed at checkout, so no seller-specific lock
     } else if (platform === 'uzhavar') {
-      const farmer = await Farmer.findOne({ user: req.user._id }).lean();
-      if (farmer) {
-        assignedSellerId   = String(farmer._id);
-        assignedSellerName = farmer.name || farmer.farmName || null;
-      }
+      // Uzhavar is platform-level only — no per-farmer seller restriction
+      // (buyers order from the market, not a specific farmer by ID)
     } else if (platform === 'eptofresh') {
       const epfSeller = await EptoFreshSeller.findOne({ user: req.user._id }).lean();
       if (epfSeller) {

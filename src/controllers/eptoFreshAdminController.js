@@ -7,7 +7,8 @@ const EptoFreshSeller  = require('../models/EptoFreshSeller');
 const EptoFreshProduct = require('../models/EptoFreshProduct');
 const EptoFreshOrder   = require('../models/EptoFreshOrder');
 const EptoFreshPayout  = require('../models/EptoFreshPayout');
-const EptoFreshCoupon         = require('../models/EptoFreshCoupon');
+const EptoFreshCoupon  = require('../models/EptoFreshCoupon');
+const User             = require('../models/User');
 const EptoFreshWallet         = require('../models/EptoFreshWallet');
 const EptoFreshDeliveryConfig = require('../models/EptoFreshDeliveryConfig');
 const { notifyUser }   = require('../utils/pushNotification');
@@ -632,9 +633,15 @@ exports.createSeller = async (req, res) => {
       return res.status(400).json({ success: false, message: 'shopName, ownerName, and phone are required' });
     }
 
+    // Look up the user account by phone so the seller record is linked —
+    // this is what protectEpfSeller uses to identify the seller after login.
+    const phoneDigits = String(phone).replace(/\D/g, '').slice(-10);
+    const linkedUser  = await User.findOne({ phone: { $regex: phoneDigits + '$' } }).lean();
+
     const seller = new EptoFreshSeller({
       shopName,
       ownerName,
+      user: linkedUser?._id || undefined,   // ← critical: links seller to their login
       contact: { phone, email },
       address: {
         addressLine1,
@@ -656,9 +663,38 @@ exports.createSeller = async (req, res) => {
     });
 
     await seller.save();
-    res.json({ success: true, seller });
+    res.json({ success: true, seller, userLinked: !!linkedUser });
   } catch (e) {
     res.status(400).json({ success: false, message: e.message });
+  }
+};
+
+/**
+ * POST /admin/sellers/:sellerId/link-user
+ * Links an existing seller record to a user account by phone number.
+ * Needed when admin created a seller but the user field was not set.
+ * Body: { phone }  — the seller's login phone number
+ */
+exports.linkSellerUser = async (req, res) => {
+  try {
+    const { sellerId } = req.params;
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ success: false, message: 'phone is required' });
+
+    const phoneDigits = String(phone).replace(/\D/g, '').slice(-10);
+    const user = await User.findOne({ phone: { $regex: phoneDigits + '$' } }).lean();
+    if (!user) return res.status(404).json({ success: false, message: `No user account found with phone ending in ${phoneDigits}` });
+
+    const seller = await EptoFreshSeller.findByIdAndUpdate(
+      sellerId,
+      { $set: { user: user._id } },
+      { new: true }
+    ).lean();
+    if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+    res.json({ success: true, message: `Seller linked to user ${user.name || user.phone}`, seller });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
   }
 };
 

@@ -263,10 +263,15 @@ const checkDeliveryAvailability = async (req, res) => {
 /** GET /api/koyambedu/slots */
 const getDeliverySlots = async (req, res) => {
   await KoyambeduDeliverySlot.seedDefaults();
+  // One-time migration: fix any old '10:00' or '14:00' cutoffs on today slots to '08:00'
+  await KoyambeduDeliverySlot.updateMany(
+    { type: 'today', cutoffTime: { $in: ['10:00', '14:00'] } },
+    { $set: { cutoffTime: '08:00' } }
+  ).catch(() => {});
   const now   = new Date();
   const hhmm  = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
   const slots = await KoyambeduDeliverySlot.find({ isActive: true }).sort({ sortOrder: 1 }).lean();
-  // Mark today slots as expired if past cutoff
+  // Mark today slots as expired if past 8 AM cutoff
   const enriched = slots.map(s => ({
     ...s,
     available: s.type === 'tomorrow' ? true : (hhmm <= s.cutoffTime),

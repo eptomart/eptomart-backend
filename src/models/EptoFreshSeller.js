@@ -72,7 +72,7 @@ const eptoFreshSellerSchema = new Schema({
   // Approval status
   status: {
     type: String,
-    enum: ['pending_review', 'approved', 'rejected', 'suspended'],
+    enum: ['pending_review', 'approved', 'rejected', 'suspended', 'deleted'],
     default: 'pending_review',
   },
   isActive:       { type: Boolean, default: true },

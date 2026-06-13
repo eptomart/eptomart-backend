@@ -753,3 +753,167 @@ exports.updateDeliveryConfig = async (req, res) => {
   );
   res.json({ success: true, config });
 };
+
+// ══════════════════════════════════════════════════════════
+// UPDATE SELLER  PUT /admin/sellers/:sellerId
+// ══════════════════════════════════════════════════════════
+exports.updateSeller = async (req, res) => {
+  try {
+    const { sellerId } = req.params;
+    const {
+      shopName, ownerName, phone, email,
+      addressLine1, addressLine2, city, state, pincode, landmark,
+      lat, lng, locationLabel,
+      categories,
+      fssaiNumber, panNumber, gstNumber,
+      commissionRate,
+    } = req.body;
+
+    const seller = await EptoFreshSeller.findById(sellerId);
+    if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+    if (shopName)    seller.shopName  = shopName;
+    if (ownerName)   seller.ownerName = ownerName;
+    if (phone || email) {
+      seller.contact = {
+        phone: phone || seller.contact?.phone,
+        email: email || seller.contact?.email,
+      };
+    }
+
+    seller.address = {
+      addressLine1: addressLine1 ?? seller.address?.addressLine1,
+      addressLine2: addressLine2 ?? seller.address?.addressLine2,
+      city:         city         ?? seller.address?.city ?? 'Chennai',
+      state:        state        ?? seller.address?.state ?? 'Tamil Nadu',
+      pincode:      pincode      ?? seller.address?.pincode,
+      landmark:     landmark     ?? seller.address?.landmark,
+    };
+
+    const latF = parseFloat(lat);
+    const lngF = parseFloat(lng);
+    if (!isNaN(latF) && !isNaN(lngF) && (latF !== 0 || lngF !== 0)) {
+      seller.location = { type: 'Point', coordinates: [lngF, latF] };
+    }
+    if (locationLabel !== undefined) seller.locationLabel = locationLabel;
+
+    if (Array.isArray(categories)) seller.categories = categories;
+
+    seller.kyc = {
+      ...seller.kyc,
+      fssaiNumber: fssaiNumber ?? seller.kyc?.fssaiNumber,
+      panNumber:   panNumber   ?? seller.kyc?.panNumber,
+      gstNumber:   gstNumber   ?? seller.kyc?.gstNumber,
+    };
+
+    if (commissionRate !== undefined) seller.commissionRate = Number(commissionRate);
+
+    // Re-link user if phone changed
+    if (phone) {
+      const phoneDigits = String(phone).replace(/\D/g, '').slice(-10);
+      const linkedUser  = await User.findOne({ phone: { $regex: phoneDigits + '$' } }).lean();
+      if (linkedUser) seller.user = linkedUser._id;
+    }
+
+    await seller.save();
+    res.json({ success: true, seller });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e.message });
+  }
+};
+
+// ══════════════════════════════════════════════════════════
+// DELETE SELLER  DELETE /admin/sellers/:sellerId
+// ══════════════════════════════════════════════════════════
+exports.deleteSeller = async (req, res) => {
+  try {
+    const { sellerId } = req.params;
+    const seller = await EptoFreshSeller.findById(sellerId);
+    if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+    // Soft-delete: mark as deleted so order history is preserved
+    seller.status    = 'deleted';
+    seller.deletedAt = new Date();
+    seller.deletedBy = req.user._id;
+    await seller.save();
+
+    res.json({ success: true, message: `${seller.shopName} has been deleted` });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e.message });
+  }
+};
+
+// ══════════════════════════════════════════════════════════
+// ADMIN PRODUCT CRUD
+// ══════════════════════════════════════════════════════════
+
+exports.addProduct = async (req, res) => {
+  try {
+    const {
+      name, description, category, unit, price, discountPrice,
+      stock, minOrder, sellerId,
+    } = req.body;
+
+    if (!name || !category || !price || !sellerId)
+      return res.status(400).json({ success: false, message: 'name, category, price, and sellerId are required' });
+
+    const seller = await EptoFreshSeller.findById(sellerId);
+    if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+    const images = (req.files || []).map((f, i) => ({
+      url: f.path, publicId: f.filename, isDefault: i === 0,
+    }));
+
+    const product = await EptoFreshProduct.create({
+      seller: sellerId,
+      name, description, category, unit,
+      price:         Number(price),
+      discountPrice: discountPrice ? Number(discountPrice) : undefined,
+      stock:         stock !== undefined ? Number(stock) : 999,
+      minOrder:      minOrder ? Number(minOrder) : 0.25,
+      images,
+      status: 'approved',
+      approvedBy: req.user._id,
+    });
+
+    res.json({ success: true, product });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e.message });
+  }
+};
+
+exports.updateProduct = async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const product = await EptoFreshProduct.findById(productId);
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+
+    const fields = ['name', 'description', 'category', 'unit', 'price', 'discountPrice', 'stock', 'minOrder'];
+    fields.forEach(f => { if (req.body[f] !== undefined) product[f] = req.body[f]; });
+
+    if (req.body.sellerId) product.seller = req.body.sellerId;
+
+    if (req.files?.length) {
+      const newImgs = req.files.map((f, i) => ({
+        url: f.path, publicId: f.filename, isDefault: i === 0,
+      }));
+      product.images = newImgs;
+    }
+
+    await product.save();
+    res.json({ success: true, product });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e.message });
+  }
+};
+
+exports.deleteProduct = async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const product = await EptoFreshProduct.findByIdAndDelete(productId);
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+    res.json({ success: true, message: `${product.name} deleted` });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e.message });
+  }
+};

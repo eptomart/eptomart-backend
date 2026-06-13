@@ -132,19 +132,24 @@ router.get('/admin/dashboard', protectAdmin, adminCtrl.getDashboard);
 router.get('/admin/analytics', protectAdmin, adminCtrl.getAnalytics);
 
 // Sellers
-router.post('/admin/sellers',                         protectAdmin, adminCtrl.createSeller);
-router.get ('/admin/sellers',                         protectAdmin, adminCtrl.getSellers);
-router.get ('/admin/sellers/:sellerId',               protectAdmin, adminCtrl.getSellerDetail);
-router.post('/admin/sellers/:sellerId/approve',       protectSuperAdmin, adminCtrl.approveSeller);
-router.post('/admin/sellers/:sellerId/reject',        protectSuperAdmin, adminCtrl.rejectSeller);
-router.post('/admin/sellers/:sellerId/suspend',       protectSuperAdmin, adminCtrl.suspendSeller);
-router.patch('/admin/sellers/:sellerId/commission',   protectSuperAdmin, adminCtrl.adjustCommission);
-router.post('/admin/sellers/:sellerId/link-user',     protectAdmin, adminCtrl.linkSellerUser);
+router.post  ('/admin/sellers',                         protectAdmin,      adminCtrl.createSeller);
+router.get   ('/admin/sellers',                         protectAdmin,      adminCtrl.getSellers);
+router.get   ('/admin/sellers/:sellerId',               protectAdmin,      adminCtrl.getSellerDetail);
+router.put   ('/admin/sellers/:sellerId',               protectAdmin,      adminCtrl.updateSeller);
+router.delete('/admin/sellers/:sellerId',               protectSuperAdmin, adminCtrl.deleteSeller);
+router.post  ('/admin/sellers/:sellerId/approve',       protectSuperAdmin, adminCtrl.approveSeller);
+router.post  ('/admin/sellers/:sellerId/reject',        protectSuperAdmin, adminCtrl.rejectSeller);
+router.post  ('/admin/sellers/:sellerId/suspend',       protectSuperAdmin, adminCtrl.suspendSeller);
+router.patch ('/admin/sellers/:sellerId/commission',    protectSuperAdmin, adminCtrl.adjustCommission);
+router.post  ('/admin/sellers/:sellerId/link-user',     protectAdmin,      adminCtrl.linkSellerUser);
 
 // Products
-router.get ('/admin/products/pending',               protectAdmin, adminCtrl.getPendingProducts);
-router.post('/admin/products/:productId/approve',    protectAdmin, adminCtrl.approveProduct);
-router.post('/admin/products/:productId/reject',     protectAdmin, adminCtrl.rejectProduct);
+router.get   ('/admin/products/pending',               protectAdmin, adminCtrl.getPendingProducts);
+router.post  ('/admin/products',                       protectAdmin, uploadEpfProduct.array('images', 5), adminCtrl.addProduct);
+router.put   ('/admin/products/:productId',            protectAdmin, uploadEpfProduct.array('images', 5), adminCtrl.updateProduct);
+router.delete('/admin/products/:productId',            protectAdmin, adminCtrl.deleteProduct);
+router.post  ('/admin/products/:productId/approve',    protectAdmin, adminCtrl.approveProduct);
+router.post  ('/admin/products/:productId/reject',     protectAdmin, adminCtrl.rejectProduct);
 
 // Orders
 router.get ('/admin/orders',                         protectAdmin, adminCtrl.getOrders);

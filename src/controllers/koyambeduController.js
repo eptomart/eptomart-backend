@@ -268,6 +268,11 @@ const getDeliverySlots = async (req, res) => {
     { type: 'today', cutoffTime: { $in: ['10:00', '14:00'] } },
     { $set: { cutoffTime: '08:00' } }
   ).catch(() => {});
+  // Migrate existing products that still have sameDayCutoff '10:00' to '08:00'
+  await KoyambeduProduct.updateMany(
+    { sameDayCutoff: '10:00' },
+    { $set: { sameDayCutoff: '08:00' } }
+  ).catch(() => {});
   const now   = new Date();
   const hhmm  = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
   const slots = await KoyambeduDeliverySlot.find({ isActive: true }).sort({ sortOrder: 1 }).lean();

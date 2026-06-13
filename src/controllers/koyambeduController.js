@@ -72,6 +72,8 @@ const waSend = (phone, params) => {
 };
 
 // ─── Mask buyer details for seller view ─────
+// Seller NEVER sees: full address, phone, payment, GPS coords
+// Seller CAN see: areaName (locality), item quantities, delivery date
 const maskOrder = (order) => {
   const o = order.toObject ? order.toObject() : { ...order };
   // Remove buyer identity fields
@@ -79,6 +81,11 @@ const maskOrder = (order) => {
   delete o.shippingAddress;
   delete o.deliveryPersonPhone;
   delete o.paymentDetails;
+  // From buyerLocation, only expose safe area name
+  if (o.buyerLocation) {
+    o.deliveryArea = o.buyerLocation.areaName || o.buyerLocation.city || 'Chennai';
+    delete o.buyerLocation;
+  }
   // Keep only safe item fields
   o.items = (o.items || []).map(it => ({
     _id:         it._id,
@@ -345,7 +352,7 @@ const clearCart = async (req, res) => {
 
 /** POST /api/koyambedu/orders — place order */
 const placeOrder = async (req, res) => {
-  const { shippingAddress, paymentMethod = 'razorpay', deliverySlot, notes, buyerLocation, couponCode } = req.body;
+  const { shippingAddress, paymentMethod = 'razorpay', deliverySlot, deliveryDate, notes, buyerLocation, couponCode } = req.body;
 
   // ── 1. Location mandatory ──────────────────────────────────
   if (!buyerLocation?.lat || !buyerLocation?.lng) {
@@ -479,11 +486,24 @@ const placeOrder = async (req, res) => {
   const total = parseFloat((subtotal + deliveryCharge + serviceFee - couponDiscount).toFixed(2));
 
   // ── 8. Save order ─────────────────────────────────────────
+  // Validate deliveryDate: must be today or future, not more than 2 days ahead
+  let parsedDeliveryDate = null;
+  if (deliveryDate) {
+    parsedDeliveryDate = new Date(deliveryDate);
+    parsedDeliveryDate.setHours(0, 0, 0, 0);
+    const todayMidnight = new Date(); todayMidnight.setHours(0, 0, 0, 0);
+    const maxDate = new Date(todayMidnight); maxDate.setDate(maxDate.getDate() + 2);
+    if (parsedDeliveryDate < todayMidnight || parsedDeliveryDate > maxDate) {
+      return res.status(400).json({ success: false, message: 'Invalid delivery date. You can book max 2 days in advance.' });
+    }
+  }
+
   const order = new KoyambeduOrder({
     buyer:        req.user._id,
     buyerLocation: {
       lat:        Number(buyerLocation.lat),
       lng:        Number(buyerLocation.lng),
+      areaName:   buyerLocation.areaName || '',
       city:       buyerLocation.city || shippingAddress.city || 'Chennai',
       pincode:    buyerLocation.pincode || shippingAddress.pincode || '',
       distanceKm: Math.round(distanceKm * 10) / 10,
@@ -491,6 +511,7 @@ const placeOrder = async (req, res) => {
     shippingAddress,
     items:        orderItems,
     deliveryType,
+    deliveryDate: parsedDeliveryDate,
     deliverySlot: deliverySlot || '7 AM – 11 AM',
     paymentMethod,
     paymentStatus:'pending',
@@ -985,8 +1006,8 @@ const adminUpdateOrderStatus = async (req, res) => {
   if (status === 'delivered')  order.deliveredAt  = new Date();
   await order.save();
 
-  // Notify buyer of dispatch / delivery
-  if (['dispatched','delivered','confirmed'].includes(status)) {
+  // Notify buyer on key status changes
+  if (['confirmed','packing','dispatched','delivered'].includes(status)) {
     _notifyBuyer(order, status);
   }
 
@@ -1519,22 +1540,54 @@ const adminAnalytics = async (req, res) => {
 
 const _notifySellerNewOrder = async (order) => {
   try {
-    const fullOrder = await KoyambeduOrder.findById(order._id).populate('items.seller');
+    const fullOrder = await KoyambeduOrder.findById(order._id)
+      .populate('items.seller')
+      .populate('buyer', 'name phone');
     const sellerIds = [...new Set(fullOrder.items.map(i => String(i.seller?._id || i.seller)))];
 
+    // Build a single item summary for platform admin
+    const allItems   = fullOrder.items.map(i => `${i.name} ×${i.quantity}`).join(', ');
+    const areaLabel  = fullOrder.buyerLocation?.areaName || fullOrder.buyerLocation?.city || 'Chennai';
+    const delivDate  = fullOrder.deliveryDate
+      ? new Date(fullOrder.deliveryDate).toLocaleDateString('en-IN', { day:'numeric', month:'short' })
+      : 'TBD';
+
+    // 1. Notify each product seller (existing behaviour)
     for (const sid of sellerIds) {
       const seller = await KoyambeduSeller.findById(sid);
       if (!seller || !seller.contact?.phone || !seller.notifyWhatsApp) continue;
 
       const sellerItems = fullOrder.items.filter(i => String(i.seller?._id || i.seller) === sid);
-      const total = sellerItems.reduce((s, i) => s + (i.finalPrice || i.orderedPrice || 0) * i.quantity, 0);
-      const itemSummary = sellerItems.map(i => `${i.name} ×${i.quantity}${i.unitLabel || i.unit}`).join(', ');
+      const total       = sellerItems.reduce((s, i) => s + (i.finalPrice || i.orderedPrice || 0) * i.quantity, 0);
+      const itemSummary = sellerItems.map(i => `${i.name} ×${i.quantity}${i.unitLabel || i.unit ? ` ${i.unitLabel || i.unit}` : ''}`).join(', ');
 
       waSend(seller.contact.phone, [
         seller.businessName,
         fullOrder.orderId,
-        'New Order Received 📦',
-        `${itemSummary}. Est. payout: ₹${Math.round(total * 0.92).toLocaleString('en-IN')}. Confirm at eptomart.com/koyambedu/seller`,
+        'New Koyambedu Order 📦',
+        `${itemSummary}. Area: ${areaLabel}. Delivery: ${delivDate}. Est. payout: ₹${Math.round(total * 0.92).toLocaleString('en-IN')}. Confirm at eptomart.com/koyambedu/seller`,
+      ]);
+
+      // 2. Notify seller admin for this seller (if any)
+      const sellerAdmin = await KoyambeduSellerAdmin.findOne({ sellers: seller._id, status: 'approved' });
+      if (sellerAdmin?.contact?.phone) {
+        waSend(sellerAdmin.contact.phone, [
+          sellerAdmin.name || 'Admin',
+          fullOrder.orderId,
+          'New Koyambedu Order 📦',
+          `${itemSummary}. Area: ${areaLabel}. Delivery: ${delivDate}. Payout: ₹${Math.round(total * 0.92).toLocaleString('en-IN')}. Manage at eptomart.com/koyambedu/seller-admin`,
+        ]);
+      }
+    }
+
+    // 3. Notify platform admin
+    const adminPhone = process.env.PLATFORM_ADMIN_WHATSAPP || process.env.ADMIN_WHATSAPP_PHONE;
+    if (adminPhone) {
+      waSend(adminPhone, [
+        'Koyambedu Admin',
+        fullOrder.orderId,
+        'New Koyambedu Order Received 📦',
+        `Order #${fullOrder.orderId}: ${allItems}. Delivery area: ${areaLabel}. Date: ${delivDate}. Total: ₹${fullOrder.pricing?.total?.toLocaleString('en-IN') || '-'}. Manage at eptomart.com/admin`,
       ]);
     }
   } catch (err) {
@@ -1547,8 +1600,9 @@ const _notifyBuyer = async (order, event) => {
     const buyer = await User.findById(order.buyer).select('phone email name').lean();
     if (!buyer?.phone) return;
     const messages = {
-      confirmed:  ['Your Order is Confirmed ✅', `Order #${order.orderId} confirmed. We're preparing your fresh produce!`],
-      dispatched: ['Your Order is On the Way 🚚', `Order #${order.orderId} is dispatched. Expected: ${order.deliverySlot}.`],
+      confirmed:  ['Your Order is Confirmed ✅', `Order #${order.orderId} confirmed by seller. Fresh produce is being arranged for you!`],
+      packing:    ['Order Being Packed 📦', `Order #${order.orderId} is being packed and will be dispatched soon.`],
+      dispatched: ['Your Order is On the Way 🚚', `Order #${order.orderId} is dispatched. Expected delivery: ${order.deliverySlot}.`],
       delivered:  ['Order Delivered! 🎉', `Order #${order.orderId} delivered. Thank you for choosing Koyambedu Daily!`],
     };
     const [status, detail] = messages[event] || [event, ''];

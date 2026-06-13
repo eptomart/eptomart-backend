@@ -18,6 +18,7 @@ const koyambeduOrderSchema = new Schema({
   buyerLocation: {
     lat:        Number,
     lng:        Number,
+    areaName:   String, // locality/area name — safe to show seller (no house no.)
     city:       String,
     pincode:    String,
     distanceKm: Number, // distance from Koyambedu market at time of order

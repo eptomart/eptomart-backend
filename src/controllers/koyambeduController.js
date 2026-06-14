@@ -1719,6 +1719,39 @@ const uploadImage = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════
+// SUPERADMIN — Wipe all Koyambedu data
+// Deletes: products, sellers, seller-admins, orders, carts, categories
+// Does NOT touch main User accounts
+// ══════════════════════════════════════════════
+const adminWipeAll = async (req, res) => {
+  try {
+    const [products, sellers, sellerAdmins, orders, carts, categories] = await Promise.all([
+      KoyambeduProduct.deleteMany({}),
+      KoyambeduSeller.deleteMany({}),
+      KoyambeduSellerAdmin.deleteMany({}),
+      KoyambeduOrder.deleteMany({}),
+      KoyambeduCart.deleteMany({}),
+      KoyambeduCategory.deleteMany({}),
+    ]);
+    res.json({
+      success: true,
+      message: 'All Koyambedu data wiped',
+      deleted: {
+        products:     products.deletedCount,
+        sellers:      sellers.deletedCount,
+        sellerAdmins: sellerAdmins.deletedCount,
+        orders:       orders.deletedCount,
+        carts:        carts.deletedCount,
+        categories:   categories.deletedCount,
+      },
+    });
+  } catch (err) {
+    console.error('Koyambedu wipe error:', err);
+    res.status(500).json({ message: 'Wipe failed', error: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
 module.exports = {
   // Public
   getCategories, getProducts, getFeaturedProducts, getProductDetail, getDeliverySlots,
@@ -1752,4 +1785,6 @@ module.exports = {
   aiTranslate, aiDescribe,
   // Image upload
   uploadImage,
+  // SuperAdmin wipe
+  adminWipeAll,
 };

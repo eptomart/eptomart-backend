@@ -122,4 +122,7 @@ router.post ('/admin/seller-admins',              protectAdmin,      ctrl.adminC
 router.get  ('/admin/seller-admins',              protectAdmin,      ctrl.adminGetSellerAdmins);     // any admin can list
 router.patch('/admin/seller-admins/:saId/approve',protectSuperAdmin, ctrl.adminApproveSellerAdmin); // superAdmin only to approve/reject
 
+// ── SuperAdmin: wipe all Koyambedu data ──────
+router.delete('/admin/wipe-all', protectSuperAdmin, ctrl.adminWipeAll);
+
 module.exports = router;

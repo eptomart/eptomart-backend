@@ -108,12 +108,16 @@ const koyambeduOrderSchema = new Schema({
 
   // Pricing
   pricing: {
-    subtotal:     { type: Number, default: 0 },
-    deliveryCharge:{ type: Number, default: 40 },
-    serviceFee:   { type: Number, default: 10 },
-    total:        { type: Number, default: 0 },
-    revisedTotal: Number,  // if price revision occurred
-    refundAmount: Number,
+    subtotal:         { type: Number, default: 0 },
+    deliveryCharge:   { type: Number, default: 249 },
+    deliveryDistance: { type: Number, default: 0 },  // km from Koyambedu market
+    platformFee:      { type: Number, default: 15 },
+    serviceFee:       { type: Number, default: 0 },  // legacy — kept for old orders
+    discount:         { type: Number, default: 0 },
+    couponCode:       String,
+    total:            { type: Number, default: 0 },
+    revisedTotal:     Number,  // if price revision occurred
+    refundAmount:     Number,
   },
 
   // Refund

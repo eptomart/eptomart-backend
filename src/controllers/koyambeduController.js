@@ -226,37 +226,16 @@ const checkDeliveryAvailability = async (req, res) => {
     });
   }
 
-  // Compute weight from cart (if logged in)
-  let totalWeightKg = 0;
-  let deliveryCharge = 149;
-  let weightBlocked = false;
-  let weightMessage = null;
-
-  if (req.user) {
-    const cart = await KoyambeduCart.findOne({ user: req.user._id })
-      .populate({ path: 'items.product', select: 'weightKg unit' });
-    if (cart?.items?.length) {
-      totalWeightKg = cart.items.reduce((s, i) => s + itemWeightKg(i), 0);
-      const calc = calcDeliveryCharge(totalWeightKg);
-      deliveryCharge = calc.charge;
-      if (calc.blocked && calc.reason === 'above_max') {
-        weightBlocked = true;
-        weightMessage = 'For orders above 90 kg, please contact us.';
-      } else if (calc.blocked && calc.reason === 'below_min') {
-        weightBlocked = true;
-        weightMessage = 'Minimum order quantity is 1 kg.';
-      }
-    }
-  }
+  // Distance-based delivery charge: ₹249 per 8 km radius
+  const kmRounded    = Math.round(distanceKm * 10) / 10;
+  const deliveryCharge = Math.ceil(distanceKm / 8) * 249;
 
   res.json({
-    success: true,
-    available: !weightBlocked,
-    distanceKm: Math.round(distanceKm * 10) / 10,
-    totalWeightKg: Math.round(totalWeightKg * 100) / 100,
+    success:       true,
+    available:     true,
+    distanceKm:    kmRounded,
     deliveryCharge,
-    weightBlocked,
-    message: weightBlocked ? weightMessage : `Delivery available · ${Math.round(distanceKm * 10) / 10} km from Koyambedu market`,
+    message:       `Delivery available · ${kmRounded} km from Koyambedu market`,
   });
 };
 
@@ -462,10 +441,9 @@ const placeOrder = async (req, res) => {
     });
   }
 
-  // ── 7. Delivery charge (weight-based) ─────────────────────
-  const chargeCalc     = calcDeliveryCharge(totalWeightKg);
-  const deliveryCharge = chargeCalc.charge;
-  const serviceFee     = 10;
+  // ── 7. Delivery charge (distance-based: ₹249 per 8 km radius) ──
+  const deliveryCharge = Math.ceil(distanceKm / 8) * 249;
+  const platformFee    = 15;
   const deliveryType   = deliveryTypes.size > 1 ? 'mixed' : [...deliveryTypes][0];
 
   // ── 7b. Coupon discount (applied on subtotal, shipping excluded) ──
@@ -493,7 +471,7 @@ const placeOrder = async (req, res) => {
     }
   }
 
-  const total = parseFloat((subtotal + deliveryCharge + serviceFee - couponDiscount).toFixed(2));
+  const total = parseFloat((subtotal + deliveryCharge + platformFee - couponDiscount).toFixed(2));
 
   // ── 8. Save order ─────────────────────────────────────────
   // Validate deliveryDate: must be today or future, not more than 2 days ahead
@@ -530,7 +508,7 @@ const placeOrder = async (req, res) => {
     paymentMethod,
     paymentStatus:'pending',
     orderStatus:  'placed',
-    pricing:      { subtotal, deliveryCharge, serviceFee, discount: couponDiscount, couponCode: appliedCoupon?.code || undefined, total },
+    pricing:      { subtotal, deliveryCharge, deliveryDistance: Math.round(distanceKm * 10) / 10, platformFee, discount: couponDiscount, couponCode: appliedCoupon?.code || undefined, total },
     adminNotes:   notes || '',
   });
   await order.save();
@@ -542,11 +520,8 @@ const placeOrder = async (req, res) => {
     await EptoFreshCoupon.findByIdAndUpdate(appliedCoupon._id, { $inc: { usedCount: 1 } });
   }
 
-  if (paymentMethod === 'cod') {
-    order.orderStatus = 'pending_confirmation';
-    await order.save();
-    setImmediate(() => _notifySellerNewOrder(order).catch(() => {}));
-  }
+  // Orders auto-proceed to procurement queue — no seller confirmation required
+  setImmediate(() => _notifySellerNewOrder(order).catch(() => {}));
 
   res.status(201).json({ success: true, order: { _id: order._id, orderId: order.orderId, total, paymentMethod, deliveryCharge } });
 };
@@ -924,7 +899,7 @@ const requestPriceRevision = async (req, res) => {
     requestedAt:  new Date(),
     requestedBy:  seller._id,
     revisedItems: revisedItemDetails,
-    revisedTotal: newTotal + order.pricing.deliveryCharge + order.pricing.serviceFee,
+    revisedTotal: newTotal + order.pricing.deliveryCharge + (order.pricing.platformFee || order.pricing.serviceFee || 15),
     buyerResponse:'pending',
   };
   order.orderStatus = 'price_revision_pending';

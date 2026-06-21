@@ -22,8 +22,24 @@ const koyambeduProductSchema = new Schema({
   maxQty:     { type: Number, default: 50 },
   qtyStep:    { type: Number, default: 0.5 },
 
-  // Pricing — market-linked
-  marketPriceMin:  { type: Number, default: 0 },  // estimated daily range
+  // Product Code (auto-generated, editable)
+  productCode: { type: String, trim: true, uppercase: true },
+
+  // Dynamic Pricing — formula: finalPrice = basePrice + platformFee + logisticsFee + sellerMargin
+  basePrice:            { type: Number, default: 0 },      // raw cost price
+  platformFeePercent:   { type: Number, default: 10 },     // % of basePrice
+  logisticsPercent:     { type: Number, default: 10 },     // % of basePrice
+  sellerMarginPercent:  { type: Number, default: 15 },     // % of basePrice
+  finalPrice:           { type: Number, default: 0 },      // computed selling price
+
+  // Forecast price (admin sets, approve to make it today's price)
+  forecastPrice:        { type: Number, default: 0 },
+  forecastApproved:     { type: Boolean, default: false },
+  forecastApprovedAt:   Date,
+  forecastApprovedBy:   { type: Schema.Types.ObjectId, ref: 'User' },
+
+  // Pricing — market-linked (kept for backward compat)
+  marketPriceMin:  { type: Number, default: 0 },
   marketPriceMax:  { type: Number, default: 0 },
   currentPrice:    { type: Number, required: true },
   priceUpdatedAt:  { type: Date, default: Date.now },

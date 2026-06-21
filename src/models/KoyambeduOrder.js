@@ -52,9 +52,15 @@ const koyambeduOrderSchema = new Schema({
   // Delivery
   deliveryType:   { type: String, enum: ['today','tomorrow','mixed'], default: 'tomorrow' },
   deliveryDate:   Date,
-  deliverySlot:   { type: String, default: '7 AM – 11 AM' },
-  deliveryPartner:{ type: String },
+  deliverySlot:    { type: String, default: 'Slot 1: 9 AM – 12 PM' },
+  deliverySlotKey: { type: String, enum: ['slot1','slot2','slot3'], default: 'slot1' },
+  deliveryPartner: { type: String },
   deliveryPersonPhone: { type: String }, // PRIVATE — only admin
+
+  // Cutoff & procurement cycle
+  orderTimestamp:  { type: Date, default: Date.now },
+  procurementDate: { type: Date },   // which day's procurement cycle
+  cutoffCycle:     { type: String }, // "2026-06-22" ISO date of procurement day
 
   // Status lifecycle
   orderStatus: {

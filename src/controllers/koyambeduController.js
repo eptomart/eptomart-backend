@@ -362,7 +362,7 @@ const clearCart = async (req, res) => {
 
 /** POST /api/koyambedu/orders — place order */
 const placeOrder = async (req, res) => {
-  const { shippingAddress, paymentMethod = 'razorpay', deliverySlot, deliveryDate, notes, buyerLocation, couponCode } = req.body;
+  const { shippingAddress, paymentMethod = 'razorpay', deliverySlot, deliverySlotKey, deliveryDate, notes, buyerLocation, couponCode } = req.body;
 
   // ── 1. Location mandatory ──────────────────────────────────
   if (!buyerLocation?.lat || !buyerLocation?.lng) {
@@ -521,8 +521,12 @@ const placeOrder = async (req, res) => {
     shippingAddress,
     items:        orderItems,
     deliveryType,
-    deliveryDate: parsedDeliveryDate,
-    deliverySlot: deliverySlot || '7 AM – 11 AM',
+    deliveryDate:    parsedDeliveryDate,
+    deliverySlot:    deliverySlot    || 'Slot 1: 9 AM – 12 PM',
+    deliverySlotKey: deliverySlotKey || 'slot1',
+    orderTimestamp:  new Date(),
+    cutoffCycle:     getProcurementCycle(new Date()),
+    procurementDate: new Date(getProcurementCycle(new Date())),
     paymentMethod,
     paymentStatus:'pending',
     orderStatus:  'placed',
@@ -1752,6 +1756,516 @@ const adminWipeAll = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════
+// HELPERS — price formula
+// ══════════════════════════════════════════════
+const calcFinalPrice = ({ basePrice, platformFeePercent = 10, logisticsPercent = 10, sellerMarginPercent = 15 }) => {
+  const pf = (basePrice * platformFeePercent) / 100;
+  const lf = (basePrice * logisticsPercent)   / 100;
+  const sm = (basePrice * sellerMarginPercent) / 100;
+  return Math.round((basePrice + pf + lf + sm) * 100) / 100;
+};
+
+// procurement cycle date: orders before midnight belong to "today", after midnight → "tomorrow"
+const getProcurementCycle = (ts = new Date()) => {
+  // Use IST (UTC+5:30)
+  const ist = new Date(ts.getTime() + (5.5 * 60 * 60 * 1000));
+  const h = ist.getUTCHours(), m = ist.getUTCMinutes();
+  // After 23:59 → next day cycle
+  const base = new Date(ist);
+  if (h === 23 && m >= 59) base.setUTCDate(base.getUTCDate() + 1);
+  return base.toISOString().slice(0, 10); // "2026-06-22"
+};
+
+// Delivery slot definitions
+const DELIVERY_SLOTS = {
+  slot1: 'Slot 1: 9 AM – 12 PM',
+  slot2: 'Slot 2: 12 PM – 3 PM',
+  slot3: 'Slot 3: 3 PM – 6 PM',
+};
+
+// ══════════════════════════════════════════════
+// FEATURE 1 — Dynamic Pricing (product code auto-gen)
+// ══════════════════════════════════════════════
+const generateProductCode = (name) => {
+  const prefix = name.trim().replace(/\s+/g, '').substring(0, 3).toUpperCase();
+  const suffix = Date.now().toString(36).slice(-4).toUpperCase();
+  return `${prefix}${suffix}`;
+};
+
+// ══════════════════════════════════════════════
+// FEATURE 4 — Daily Price Update Panel
+// GET /seller-admin/daily-price  — list all products with today's price
+// PATCH /seller-admin/daily-price/:productId — update price
+// PATCH /seller-admin/daily-price/bulk — bulk update
+// ══════════════════════════════════════════════
+const KoyambeduPriceHistory = require('../models/KoyambeduPriceHistory');
+
+const getDailyPricePanel = async (req, res) => {
+  try {
+    const sellers = await require('../models/KoyambeduSeller').find({}).select('_id name').lean();
+    const sellerIds = sellers.map(s => s._id);
+    const products = await KoyambeduProduct.find({ seller: { $in: sellerIds }, isActive: true })
+      .populate('seller', 'name')
+      .select('name productCode currentPrice finalPrice basePrice sellerMarginPercent platformFeePercent logisticsPercent stockQty priceUpdatedAt')
+      .lean();
+    res.json({ success: true, products });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const updateDailyPrice = async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const { basePrice, sellerMarginPercent, platformFeePercent, logisticsPercent, stockQty, note } = req.body;
+
+    const product = await KoyambeduProduct.findById(productId);
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+
+    const prevPrice = product.currentPrice;
+
+    if (basePrice !== undefined)           product.basePrice           = basePrice;
+    if (sellerMarginPercent !== undefined) product.sellerMarginPercent = sellerMarginPercent;
+    if (platformFeePercent !== undefined)  product.platformFeePercent  = platformFeePercent;
+    if (logisticsPercent !== undefined)    product.logisticsPercent    = logisticsPercent;
+    if (stockQty !== undefined)            product.stockQty            = stockQty;
+
+    const newFinal = calcFinalPrice({
+      basePrice:           product.basePrice,
+      platformFeePercent:  product.platformFeePercent,
+      logisticsPercent:    product.logisticsPercent,
+      sellerMarginPercent: product.sellerMarginPercent,
+    });
+    product.finalPrice    = newFinal;
+    product.currentPrice  = newFinal;
+    product.priceUpdatedAt = new Date();
+    await product.save();
+
+    // Record history
+    await KoyambeduPriceHistory.create({
+      product:             product._id,
+      seller:              product.seller,
+      productName:         product.name,
+      productCode:         product.productCode,
+      previousPrice:       prevPrice,
+      updatedPrice:        newFinal,
+      basePrice:           product.basePrice,
+      platformFeePercent:  product.platformFeePercent,
+      logisticsPercent:    product.logisticsPercent,
+      sellerMarginPercent: product.sellerMarginPercent,
+      updatedBy:           req.user._id,
+      updatedByName:       req.user.name || req.user.email,
+      updatedByRole:       req.user.role === 'superAdmin' ? 'superAdmin' : 'sellerAdmin',
+      source:              'manual',
+      note,
+    });
+
+    res.json({ success: true, product, breakdown: {
+      basePrice: product.basePrice,
+      platformFee: Math.round((product.basePrice * product.platformFeePercent) / 100 * 100) / 100,
+      logisticsFee: Math.round((product.basePrice * product.logisticsPercent) / 100 * 100) / 100,
+      sellerMargin: Math.round((product.basePrice * product.sellerMarginPercent) / 100 * 100) / 100,
+      finalPrice: newFinal,
+    }});
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const bulkUpdateDailyPrice = async (req, res) => {
+  try {
+    // updates: [{ productId, basePrice, sellerMarginPercent, stockQty }]
+    const { updates } = req.body;
+    if (!Array.isArray(updates) || !updates.length) {
+      return res.status(400).json({ success: false, message: 'updates array required' });
+    }
+
+    const results = [];
+    for (const u of updates) {
+      try {
+        const product = await KoyambeduProduct.findById(u.productId);
+        if (!product) { results.push({ productId: u.productId, error: 'not found' }); continue; }
+
+        const prevPrice = product.currentPrice;
+        if (u.basePrice !== undefined)           product.basePrice           = u.basePrice;
+        if (u.sellerMarginPercent !== undefined) product.sellerMarginPercent = u.sellerMarginPercent;
+        if (u.stockQty !== undefined)            product.stockQty            = u.stockQty;
+
+        const newFinal = calcFinalPrice(product);
+        product.finalPrice    = newFinal;
+        product.currentPrice  = newFinal;
+        product.priceUpdatedAt = new Date();
+        await product.save();
+
+        await KoyambeduPriceHistory.create({
+          product: product._id, seller: product.seller,
+          productName: product.name, productCode: product.productCode,
+          previousPrice: prevPrice, updatedPrice: newFinal,
+          basePrice: product.basePrice, platformFeePercent: product.platformFeePercent,
+          logisticsPercent: product.logisticsPercent, sellerMarginPercent: product.sellerMarginPercent,
+          updatedBy: req.user._id, updatedByName: req.user.name || req.user.email,
+          updatedByRole: req.user.role === 'superAdmin' ? 'superAdmin' : 'sellerAdmin',
+          source: 'bulk_update',
+        });
+        results.push({ productId: u.productId, finalPrice: newFinal });
+      } catch (e) {
+        results.push({ productId: u.productId, error: e.message });
+      }
+    }
+    res.json({ success: true, results });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
+// FEATURE 5 — Price History
+// GET /seller-admin/price-history?productId=&days=7&from=&to=
+// ══════════════════════════════════════════════
+const getPriceHistory = async (req, res) => {
+  try {
+    const { productId, days, from, to } = req.query;
+    const filter = {};
+    if (productId) filter.product = productId;
+
+    const dateFilter = {};
+    if (from) dateFilter.$gte = new Date(from);
+    if (to)   dateFilter.$lte = new Date(new Date(to).setHours(23,59,59,999));
+    if (!from && !to && days) {
+      const d = new Date();
+      d.setDate(d.getDate() - parseInt(days));
+      dateFilter.$gte = d;
+    }
+    if (Object.keys(dateFilter).length) filter.createdAt = dateFilter;
+
+    const history = await KoyambeduPriceHistory.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(500)
+      .populate('product', 'name productCode')
+      .lean();
+
+    res.json({ success: true, history });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
+// FEATURE 6 — Forecast Price
+// GET  /seller-admin/forecast — list products with forecastPrice
+// PATCH /seller-admin/forecast/:productId — set forecast
+// POST  /seller-admin/forecast/:productId/approve — approve (sets currentPrice)
+// ══════════════════════════════════════════════
+const getForecasts = async (req, res) => {
+  try {
+    const sellers = await require('../models/KoyambeduSeller').find({}).select('_id').lean();
+    const products = await KoyambeduProduct.find({ seller: { $in: sellers.map(s => s._id) }, isActive: true })
+      .populate('seller', 'name')
+      .select('name productCode currentPrice forecastPrice forecastApproved forecastApprovedAt priceUpdatedAt')
+      .lean();
+    res.json({ success: true, products });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const setForecastPrice = async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const { forecastPrice } = req.body;
+    const product = await KoyambeduProduct.findByIdAndUpdate(
+      productId,
+      { forecastPrice, forecastApproved: false },
+      { new: true }
+    );
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+    res.json({ success: true, product });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const approveForecast = async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const product = await KoyambeduProduct.findById(productId);
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+    if (!product.forecastPrice) return res.status(400).json({ success: false, message: 'No forecast price set' });
+
+    const prevPrice = product.currentPrice;
+    product.currentPrice     = product.forecastPrice;
+    product.finalPrice       = product.forecastPrice;
+    product.priceUpdatedAt   = new Date();
+    product.forecastApproved  = true;
+    product.forecastApprovedAt = new Date();
+    product.forecastApprovedBy = req.user._id;
+    await product.save();
+
+    await KoyambeduPriceHistory.create({
+      product: product._id, seller: product.seller,
+      productName: product.name, productCode: product.productCode,
+      previousPrice: prevPrice, updatedPrice: product.forecastPrice,
+      updatedBy: req.user._id, updatedByName: req.user.name || req.user.email,
+      updatedByRole: req.user.role === 'superAdmin' ? 'superAdmin' : 'sellerAdmin',
+      source: 'forecast_approved',
+    });
+
+    res.json({ success: true, product, message: `Forecast ₹${product.forecastPrice} is now today's price` });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
+// FEATURE 7 — Procurement Summary Report
+// GET /admin/reports/procurement?date=2026-06-22
+// ══════════════════════════════════════════════
+const procurementReport = async (req, res) => {
+  try {
+    const { date } = req.query;
+    const cycle = date || getProcurementCycle();
+
+    const startOfDay = new Date(`${cycle}T00:00:00.000+05:30`);
+    const endOfDay   = new Date(`${cycle}T23:59:59.999+05:30`);
+
+    const orders = await KoyambeduOrder.find({
+      cutoffCycle: cycle,
+      paymentStatus: 'paid',
+      orderStatus: { $nin: ['cancelled'] },
+    }).populate('items.product', 'name unit unitLabel').lean();
+
+    // Aggregate by product
+    const summary = {};
+    for (const order of orders) {
+      for (const item of order.items) {
+        const key = item.product?._id?.toString() || item.name;
+        if (!summary[key]) {
+          summary[key] = {
+            productId:   key,
+            productName: item.name,
+            unit:        item.unit || 'kg',
+            unitLabel:   item.unitLabel || item.unit || 'kg',
+            totalQty:    0,
+            orderCount:  0,
+          };
+        }
+        summary[key].totalQty  += item.quantity || 0;
+        summary[key].orderCount += 1;
+      }
+    }
+
+    res.json({
+      success: true,
+      cycle,
+      totalOrders: orders.length,
+      summary: Object.values(summary).sort((a, b) => a.productName.localeCompare(b.productName)),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
+// FEATURE 8 — Slot-wise Order Report
+// GET /admin/reports/slot-wise?date=2026-06-22&slot=slot1
+// ══════════════════════════════════════════════
+const slotWiseReport = async (req, res) => {
+  try {
+    const { date, slot } = req.query;
+    const cycle = date || getProcurementCycle();
+
+    const filter = {
+      cutoffCycle:   cycle,
+      paymentStatus: 'paid',
+      orderStatus:   { $nin: ['cancelled'] },
+    };
+    if (slot) filter.deliverySlotKey = slot;
+
+    const orders = await KoyambeduOrder.find(filter)
+      .populate('buyer', 'name email phone')
+      .populate('items.product', 'name')
+      .sort({ deliverySlotKey: 1, createdAt: 1 })
+      .lean();
+
+    // Group by slot
+    const grouped = { slot1: [], slot2: [], slot3: [] };
+    for (const order of orders) {
+      const key = order.deliverySlotKey || 'slot1';
+      grouped[key].push({
+        orderId:    order.orderId,
+        buyerName:  order.buyer?.name || order.shippingAddress?.fullName,
+        items:      order.items.map(i => `${i.name} x${i.quantity}${i.unit}`).join(', '),
+        amount:     order.pricing?.total,
+        slot:       order.deliverySlot,
+      });
+    }
+
+    res.json({ success: true, cycle, grouped, slotLabels: DELIVERY_SLOTS });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
+// FEATURE 9 — Destination-wise Report
+// GET /admin/reports/destination?date=2026-06-22
+// ══════════════════════════════════════════════
+const destinationReport = async (req, res) => {
+  try {
+    const { date } = req.query;
+    const cycle = date || getProcurementCycle();
+
+    const orders = await KoyambeduOrder.find({
+      cutoffCycle:   cycle,
+      paymentStatus: 'paid',
+      orderStatus:   { $nin: ['cancelled'] },
+    })
+      .populate('buyer', 'name phone')
+      .populate('items.product', 'name')
+      .lean();
+
+    // Group by pincode/area
+    const grouped = {};
+    for (const order of orders) {
+      const pincode = order.shippingAddress?.pincode || order.buyerLocation?.pincode || 'Unknown';
+      const area    = order.buyerLocation?.areaName  || order.shippingAddress?.city  || 'Chennai';
+      const key     = `${area} — ${pincode}`;
+      if (!grouped[key]) grouped[key] = { area, pincode, orders: [] };
+      grouped[key].orders.push({
+        orderId:      order.orderId,
+        buyerName:    order.shippingAddress?.fullName || order.buyer?.name,
+        phone:        order.shippingAddress?.phone,
+        address:      `${order.shippingAddress?.addressLine1 || ''} ${order.shippingAddress?.addressLine2 || ''}`.trim(),
+        deliverySlot: order.deliverySlot,
+        amount:       order.pricing?.total,
+        items:        order.items.map(i => `${i.name} x${i.quantity}${i.unit}`).join(', '),
+      });
+    }
+
+    res.json({ success: true, cycle, grouped: Object.values(grouped).sort((a, b) => a.pincode.localeCompare(b.pincode)) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
+// FEATURE 10 — Enhanced Dashboard Stats
+// GET /admin/reports/dashboard?date=2026-06-22
+// ══════════════════════════════════════════════
+const dashboardStats = async (req, res) => {
+  try {
+    const { date } = req.query;
+    const cycle = date || getProcurementCycle();
+
+    const [orders, totalSellers, totalProducts] = await Promise.all([
+      KoyambeduOrder.find({ cutoffCycle: cycle, paymentStatus: 'paid', orderStatus: { $nin: ['cancelled'] } }).lean(),
+      require('../models/KoyambeduSeller').countDocuments({ isApproved: true }),
+      KoyambeduProduct.countDocuments({ isActive: true }),
+    ]);
+
+    const revenue = orders.reduce((s, o) => s + (o.pricing?.total || 0), 0);
+    const pending = orders.filter(o => ['placed','pending_confirmation','confirmed','packing'].includes(o.orderStatus)).length;
+    const delivered = orders.filter(o => o.orderStatus === 'delivered').length;
+
+    // Slot breakdown
+    const slotBreakdown = { slot1: 0, slot2: 0, slot3: 0 };
+    orders.forEach(o => { if (o.deliverySlotKey) slotBreakdown[o.deliverySlotKey]++; });
+
+    res.json({
+      success: true,
+      cycle,
+      ordersToday:   orders.length,
+      revenueToday:  Math.round(revenue * 100) / 100,
+      pendingOrders: pending,
+      deliveredOrders: delivered,
+      totalSellers,
+      totalProducts,
+      slotBreakdown,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
+// FEATURE 12 — Special Occasion Requests
+// ══════════════════════════════════════════════
+const KoyambeduSpecialRequest = require('../models/KoyambeduSpecialRequest');
+const nodemailer = require('nodemailer');
+
+const sendSpecialRequestEmail = async (req) => {
+  try {
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) return;
+    const transporter = nodemailer.createTransporter({
+      service: 'gmail',
+      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+    });
+    const itemsList = (req.requestedItems || []).map(i => `• ${i.itemName} — ${i.quantity} ${i.unit}`).join('\n');
+    await transporter.sendMail({
+      from:    `"Eptomart Koyambedu" <${process.env.EMAIL_USER}>`,
+      to:      process.env.ADMIN_EMAIL || process.env.EMAIL_USER,
+      subject: `🎉 Special Occasion Request — ${req.occasionType} — ${req.buyerName}`,
+      text:    `New special request received!\n\nName: ${req.buyerName}\nPhone: ${req.phone}\nEmail: ${req.email || '—'}\nOccasion: ${req.occasionType}\nRequired Date: ${req.requiredDate?.toDateString()}\n\nItems:\n${itemsList}\n\nNotes: ${req.additionalNotes || '—'}`,
+    });
+  } catch (e) {
+    console.error('[KBD SpecialRequest Email]', e.message);
+  }
+};
+
+const submitSpecialRequest = async (req, res) => {
+  try {
+    const { buyerName, phone, email, occasionType, occasionTypeOther, requestedItems, requiredDate, additionalNotes } = req.body;
+    if (!buyerName || !phone || !requiredDate) {
+      return res.status(400).json({ success: false, message: 'buyerName, phone, requiredDate required' });
+    }
+    const sr = await KoyambeduSpecialRequest.create({
+      buyerName, phone, email, occasionType, occasionTypeOther,
+      requestedItems, requiredDate, additionalNotes,
+      user: req.user?._id,
+    });
+    // Fire-and-forget email
+    sendSpecialRequestEmail(sr).then(async () => {
+      sr.emailSent = true; sr.emailSentAt = new Date(); await sr.save();
+    });
+    res.json({ success: true, message: 'Request submitted! We will contact you within 24 hours.', request: sr });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const getSpecialRequests = async (req, res) => {
+  try {
+    const { status } = req.query;
+    const filter = status ? { status } : {};
+    const requests = await KoyambeduSpecialRequest.find(filter).sort({ createdAt: -1 }).lean();
+    res.json({ success: true, requests });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const updateSpecialRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, adminNotes } = req.body;
+    const update = { status, adminNotes, handledBy: req.user._id };
+    if (status === 'contacted') update.contactedAt = new Date();
+    if (status === 'completed') update.completedAt = new Date();
+    const sr = await KoyambeduSpecialRequest.findByIdAndUpdate(id, update, { new: true });
+    if (!sr) return res.status(404).json({ success: false, message: 'Request not found' });
+    res.json({ success: true, request: sr });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// expose helpers for routes
+exports._calcFinalPrice       = calcFinalPrice;
+exports._getProcurementCycle  = getProcurementCycle;
+exports._generateProductCode  = generateProductCode;
+exports._DELIVERY_SLOTS       = DELIVERY_SLOTS;
+
+// ══════════════════════════════════════════════
 module.exports = {
   // Public
   getCategories, getProducts, getFeaturedProducts, getProductDetail, getDeliverySlots,
@@ -1787,4 +2301,16 @@ module.exports = {
   uploadImage,
   // SuperAdmin wipe
   adminWipeAll,
+  // F4: Daily Price Panel
+  getDailyPricePanel, updateDailyPrice, bulkUpdateDailyPrice,
+  // F5: Price History
+  getPriceHistory,
+  // F6: Forecast
+  getForecasts, setForecastPrice, approveForecast,
+  // F7-F9: Reports
+  procurementReport, slotWiseReport, destinationReport,
+  // F10: Dashboard stats
+  dashboardStats,
+  // F12: Special Requests
+  submitSpecialRequest, getSpecialRequests, updateSpecialRequest,
 };

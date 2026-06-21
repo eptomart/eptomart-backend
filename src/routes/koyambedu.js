@@ -125,4 +125,51 @@ router.patch('/admin/seller-admins/:saId/approve',protectSuperAdmin, ctrl.adminA
 // ── SuperAdmin: wipe all Koyambedu data ──────
 router.delete('/admin/wipe-all', protectSuperAdmin, ctrl.adminWipeAll);
 
+// ══════════════════════════════════════════════
+// FEATURE 4 — Daily Price Update Panel
+// ══════════════════════════════════════════════
+router.get  ('/seller-admin/daily-price',            protectSellerAdmin, ctrl.getDailyPricePanel);
+router.patch('/seller-admin/daily-price/:productId', protectSellerAdmin, ctrl.updateDailyPrice);
+router.post ('/seller-admin/daily-price/bulk',       protectSellerAdmin, ctrl.bulkUpdateDailyPrice);
+router.get  ('/admin/daily-price',                   protectAdmin,       ctrl.getDailyPricePanel);
+router.patch('/admin/daily-price/:productId',        protectAdmin,       ctrl.updateDailyPrice);
+router.post ('/admin/daily-price/bulk',              protectAdmin,       ctrl.bulkUpdateDailyPrice);
+
+// ══════════════════════════════════════════════
+// FEATURE 5 — Price History
+// ══════════════════════════════════════════════
+router.get('/seller-admin/price-history', protectSellerAdmin, ctrl.getPriceHistory);
+router.get('/admin/price-history',        protectAdmin,       ctrl.getPriceHistory);
+
+// ══════════════════════════════════════════════
+// FEATURE 6 — Forecast Price
+// ══════════════════════════════════════════════
+router.get  ('/seller-admin/forecast',                    protectSellerAdmin, ctrl.getForecasts);
+router.patch('/seller-admin/forecast/:productId',         protectSellerAdmin, ctrl.setForecastPrice);
+router.post ('/seller-admin/forecast/:productId/approve', protectSellerAdmin, ctrl.approveForecast);
+router.get  ('/admin/forecast',                           protectAdmin,       ctrl.getForecasts);
+router.patch('/admin/forecast/:productId',                protectAdmin,       ctrl.setForecastPrice);
+router.post ('/admin/forecast/:productId/approve',        protectAdmin,       ctrl.approveForecast);
+
+// ══════════════════════════════════════════════
+// FEATURES 7–10 — Reports & Dashboard Stats
+// ══════════════════════════════════════════════
+router.get('/admin/reports/procurement',        protectAdmin,       ctrl.procurementReport);
+router.get('/admin/reports/slot-wise',          protectAdmin,       ctrl.slotWiseReport);
+router.get('/admin/reports/destination',        protectAdmin,       ctrl.destinationReport);
+router.get('/admin/reports/dashboard',          protectAdmin,       ctrl.dashboardStats);
+router.get('/seller-admin/reports/procurement', protectSellerAdmin, ctrl.procurementReport);
+router.get('/seller-admin/reports/slot-wise',   protectSellerAdmin, ctrl.slotWiseReport);
+router.get('/seller-admin/reports/destination', protectSellerAdmin, ctrl.destinationReport);
+router.get('/seller-admin/reports/dashboard',   protectSellerAdmin, ctrl.dashboardStats);
+
+// ══════════════════════════════════════════════
+// FEATURE 12 — Special Occasion Requests
+// ══════════════════════════════════════════════
+router.post ('/special-request',                     optionalAuth,       ctrl.submitSpecialRequest);
+router.get  ('/admin/special-requests',              protectAdmin,       ctrl.getSpecialRequests);
+router.patch('/admin/special-requests/:id',          protectAdmin,       ctrl.updateSpecialRequest);
+router.get  ('/seller-admin/special-requests',       protectSellerAdmin, ctrl.getSpecialRequests);
+router.patch('/seller-admin/special-requests/:id',   protectSellerAdmin, ctrl.updateSpecialRequest);
+
 module.exports = router;

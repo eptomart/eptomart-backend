@@ -93,21 +93,75 @@ connectDB().then(autoSeed).catch(() => {});
 // ─── Helmet — Security Headers ───────────────
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
-  hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+  hsts: { maxAge: 63072000, includeSubDomains: true, preload: true }, // 2 years
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   contentSecurityPolicy: {
     directives: {
-      defaultSrc:     ["'self'"],
-      scriptSrc:      ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com', 'https://checkout.razorpay.com'],
-      styleSrc:       ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-      fontSrc:        ["'self'", 'https://fonts.gstatic.com'],
-      imgSrc:         ["'self'", 'data:', 'blob:', 'https://res.cloudinary.com', 'https://*.cloudinary.com'],
-      connectSrc:     ["'self'", 'https://api.eptomart.com', 'https://checkout.razorpay.com', 'https://graph.facebook.com'],
-      frameSrc:       ["'none'"],
-      objectSrc:      ["'none'"],
+      defaultSrc:   ["'self'"],
+      scriptSrc:    [
+        "'self'", "'unsafe-inline'",          // React SPA requires inline scripts
+        'https://fonts.googleapis.com',
+        'https://checkout.razorpay.com',       // Razorpay payment modal
+        'https://www.googletagmanager.com',    // GA4 (when enabled)
+        'https://www.google-analytics.com',
+        'https://maps.googleapis.com',         // Google Maps JS API
+      ],
+      styleSrc:     ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc:      ["'self'", 'https://fonts.gstatic.com'],
+      imgSrc:       [
+        "'self'", 'data:', 'blob:',
+        'https://res.cloudinary.com',
+        'https://*.cloudinary.com',
+        'https://lh3.googleusercontent.com',   // Firebase / Google login avatars
+        'https://maps.googleapis.com',         // Google Maps tiles
+        'https://maps.gstatic.com',
+        'https://www.google-analytics.com',    // GA4 pixel
+        'https://placehold.co',               // dev placeholder images
+      ],
+      connectSrc:   [
+        "'self'",
+        'https://www.eptomart.com',
+        'https://api.eptomart.com',
+        // Render backend (update when you have your Render URL)
+        'https://*.onrender.com',
+        // Third-party APIs
+        'https://checkout.razorpay.com',
+        'https://api.razorpay.com',
+        'https://lumberjack.razorpay.com',     // Razorpay analytics
+        'https://maps.googleapis.com',
+        'https://graph.facebook.com',
+        'https://www.google-analytics.com',
+        'https://www.googletagmanager.com',
+        'https://firebase.googleapis.com',
+        'https://firebaseinstallations.googleapis.com',
+        // Allow localhost in dev
+        ...(process.env.NODE_ENV !== 'production' ? ['http://localhost:5000', 'ws://localhost:*'] : []),
+      ],
+      frameSrc:     [
+        "'none'",
+        // Note: Razorpay checkout uses an iframe - if payment issues arise uncomment:
+        // 'https://checkout.razorpay.com',
+        // 'https://api.razorpay.com',
+      ],
+      objectSrc:    ["'none'"],
+      mediaSrc:     ["'self'", 'https://res.cloudinary.com', 'blob:'],
+      workerSrc:    ["'self'", 'blob:'],
+      manifestSrc:  ["'self'"],
       upgradeInsecureRequests: [],
     },
   },
 }));
+
+// ─── Additional Security Headers ─────────────
+app.use((req, res, next) => {
+  // Permissions Policy — disable unused browser features
+  res.setHeader('Permissions-Policy',
+    'camera=(), microphone=(), geolocation=(self), payment=(self "https://checkout.razorpay.com"), usb=(), bluetooth=(), serial=()'
+  );
+  // Cross-domain policy
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+  next();
+});
 
 // ─── CORS — whitelist only known origins ─────
 const ALLOWED_ORIGINS = [

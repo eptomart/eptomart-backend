@@ -1376,6 +1376,51 @@ const sellerAdminGetCategories = async (req, res) => {
   res.json({ success: true, categories: cats });
 };
 
+/** GET /api/koyambedu/admin/products — list all products (admin/superAdmin) */
+const adminGetAllProducts = async (req, res) => {
+  const { seller: sellerId, category, search, available } = req.query;
+  const filter = {};
+  if (sellerId)  filter.seller   = sellerId;
+  if (category)  filter.category = category;
+  if (available !== undefined) filter.isAvailable = available === 'true';
+  if (search)    filter.name     = { $regex: search, $options: 'i' };
+
+  const products = await KoyambeduProduct.find(filter)
+    .populate('seller',   'businessName ownerName stallNumber marketSection')
+    .populate('category', 'name icon')
+    .sort({ createdAt: -1 })
+    .lean();
+  res.json({ success: true, products });
+};
+
+/** PUT /api/koyambedu/admin/products/:productId — admin edits any product */
+const adminUpdateProduct = async (req, res) => {
+  const product = await KoyambeduProduct.findById(req.params.productId);
+  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+
+  const allowed = [
+    'name','nameTamil','unit','unitLabel','currentPrice','stockQty',
+    'minQty','maxQty','qtyStep','isAvailable','isSameDay','isNextDay',
+    'sameDayCutoff','weightKg','badges','description','images',
+    'marketPriceMin','marketPriceMax',
+  ];
+  for (const k of allowed) {
+    if (req.body[k] !== undefined) product[k] = req.body[k];
+  }
+  if (req.body.currentPrice !== undefined) product.priceUpdatedAt = new Date();
+  await product.save();
+  res.json({ success: true, product });
+};
+
+/** PATCH /api/koyambedu/admin/products/:productId/toggle — toggle availability */
+const adminToggleProduct = async (req, res) => {
+  const product = await KoyambeduProduct.findById(req.params.productId);
+  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+  product.isAvailable = !product.isAvailable;
+  await product.save();
+  res.json({ success: true, isAvailable: product.isAvailable });
+};
+
 /** POST /api/koyambedu/admin/sellers/:sellerId/products — admin adds product for any seller */
 const adminCreateProduct = async (req, res) => {
   const seller = await KoyambeduSeller.findById(req.params.sellerId);
@@ -2357,8 +2402,8 @@ module.exports = {
   sellerAdminGetProducts, sellerAdminUpdateProduct, sellerAdminCreateProduct,
   sellerAdminCreateCategory, sellerAdminGetCategories,
   sellerAdminRequestEdit,
-  // Admin product creation
-  adminCreateProduct,
+  // Admin product management
+  adminGetAllProducts, adminUpdateProduct, adminToggleProduct, adminCreateProduct,
   // Admin seller-edit review (SuperAdmin only)
   adminReviewSellerEdit,
   // AI

@@ -117,7 +117,10 @@ router.post ('/admin/categories',                 protectAdmin, ctrl.adminCreate
 router.put  ('/admin/categories/:catId',          protectAdmin, ctrl.adminEditCategory);
 router.patch('/admin/categories/:catId/approve',  protectAdmin, ctrl.adminApproveCategory);
 router.get  ('/admin/analytics',                  protectAdmin, ctrl.adminAnalytics);
-router.post ('/admin/sellers/:sellerId/products', protectAdmin, ctrl.adminCreateProduct);
+router.get  ('/admin/products',                   protectAdmin, ctrl.adminGetAllProducts);
+router.put  ('/admin/products/:productId',         protectAdmin, ctrl.adminUpdateProduct);
+router.patch('/admin/products/:productId/toggle',  protectAdmin, ctrl.adminToggleProduct);
+router.post ('/admin/sellers/:sellerId/products',  protectAdmin, ctrl.adminCreateProduct);
 
 // SellerAdmin management
 router.post ('/admin/sellers/:sellerId/review-edit', protectSuperAdmin, ctrl.adminReviewSellerEdit); // SuperAdmin approves/rejects SA edit request

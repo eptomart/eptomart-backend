@@ -34,7 +34,8 @@ const protectSellerAdmin = [protect, async (req, res, next) => {
 router.get ('/categories',             ctrl.getCategories);
 router.get ('/products',               ctrl.getProducts);
 router.get ('/products/featured',      ctrl.getFeaturedProducts);
-router.get ('/products/:productId',    ctrl.getProductDetail);
+router.get ('/products/:productId',             ctrl.getProductDetail);
+router.get ('/products/:productId/price-history', ctrl.getProductPriceHistory);
 router.get ('/slots',                  ctrl.getDeliverySlots);
 
 // ══════════════════════════════════════════════

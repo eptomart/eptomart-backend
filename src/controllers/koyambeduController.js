@@ -228,7 +228,7 @@ const checkDeliveryAvailability = async (req, res) => {
 
   // Distance-based delivery charge: ₹249 per 8 km radius
   const kmRounded    = Math.round(distanceKm * 10) / 10;
-  const deliveryCharge = Math.ceil(distanceKm / 8) * 249;
+  const deliveryCharge = Math.ceil(distanceKm / 4) * 125;
 
   res.json({
     success:       true,
@@ -442,7 +442,7 @@ const placeOrder = async (req, res) => {
   }
 
   // ── 7. Delivery charge (distance-based: ₹249 per 8 km radius) ──
-  const deliveryCharge = Math.ceil(distanceKm / 8) * 249;
+  const deliveryCharge = Math.ceil(distanceKm / 4) * 125;
   const platformFee    = 15;
   const deliveryType   = deliveryTypes.size > 1 ? 'mixed' : [...deliveryTypes][0];
 
@@ -756,6 +756,7 @@ const createSellerProduct = async (req, res) => {
     badges: badges || [], tags: tags || [],
     isBulkAvailable: isBulkAvailable || false, bulkMinQty, bulkPricePerUnit,
     isRecurringAllowed: isRecurringAllowed || false,
+    images: req.body.images || [],
   });
 
   res.status(201).json({ success: true, product });
@@ -771,7 +772,7 @@ const updateSellerProduct = async (req, res) => {
   const allowed = ['name','nameTamil','description','unit','unitLabel','minQty','maxQty','qtyStep',
     'marketPriceMin','marketPriceMax','currentPrice','stockQty','freshArrivalTime',
     'isSameDay','isNextDay','sameDayCutoff','badges','tags','isActive','isAvailable',
-    'isBulkAvailable','bulkMinQty','bulkPricePerUnit','isRecurringAllowed','weightKg'];
+    'isBulkAvailable','bulkMinQty','bulkPricePerUnit','isRecurringAllowed','weightKg','images'];
 
   for (const k of allowed) {
     if (req.body[k] !== undefined) product[k] = req.body[k];
@@ -1941,6 +1942,21 @@ const bulkUpdateDailyPrice = async (req, res) => {
 // FEATURE 5 — Price History
 // GET /seller-admin/price-history?productId=&days=7&from=&to=
 // ══════════════════════════════════════════════
+/** GET /api/koyambedu/products/:productId/price-history — public, last 30 days */
+const getProductPriceHistory = async (req, res) => {
+  try {
+    const since = new Date();
+    since.setDate(since.getDate() - 30);
+    const history = await KoyambeduPriceHistory.find({
+      product: req.params.productId,
+      createdAt: { $gte: since },
+    }).sort({ createdAt: -1 }).limit(30).select('price date createdAt note').lean();
+    res.json({ success: true, history });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 const getPriceHistory = async (req, res) => {
   try {
     const { productId, days, from, to } = req.query;
@@ -2323,7 +2339,7 @@ module.exports = {
   // F4: Daily Price Panel
   getDailyPricePanel, updateDailyPrice, bulkUpdateDailyPrice,
   // F5: Price History
-  getPriceHistory,
+  getPriceHistory, getProductPriceHistory,
   // F6: Forecast
   getForecasts, setForecastPrice, approveForecast,
   // F7-F9: Reports

@@ -106,7 +106,8 @@ router.patch('/seller-admin/sellers/:sellerId/edit-request',        protectSelle
 router.get  ('/admin/dashboard',                  protectAdmin, ctrl.adminDashboard);
 router.get  ('/admin/orders',                     protectAdmin, ctrl.adminGetOrders);
 router.patch('/admin/orders/:orderId/status',     protectAdmin, ctrl.adminUpdateOrderStatus);
-router.get  ('/admin/sellers',                    protectAdmin, ctrl.adminGetSellers);
+router.get  ('/admin/sellers',                    protectAdmin,      ctrl.adminGetSellers);
+router.post ('/admin/sellers',                    protectSuperAdmin, ctrl.adminCreateSeller);
 router.patch('/admin/sellers/:sellerId/approve',  protectAdmin,      ctrl.adminApproveSeller);
 router.patch('/admin/sellers/:sellerId/toggle',   protectAdmin,      ctrl.adminToggleSeller);
 router.patch('/admin/sellers/:sellerId/contact',  protectSuperAdmin, ctrl.adminEditSellerContact);

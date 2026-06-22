@@ -1055,6 +1055,50 @@ const adminApproveSeller = async (req, res) => {
   res.json({ success: true, seller });
 };
 
+/** POST /api/koyambedu/admin/sellers — SuperAdmin creates a seller directly (pre-approved) */
+const adminCreateSeller = async (req, res) => {
+  const {
+    businessName, ownerName, stallNumber, marketSection,
+    contactPhone, contactEmail, commissionRate, description,
+    assignedSellerAdminId,
+  } = req.body;
+
+  if (!businessName || !ownerName || !contactPhone) {
+    return res.status(400).json({ success: false, message: 'businessName, ownerName and contactPhone are required' });
+  }
+
+  const existing = await KoyambeduSeller.findOne({ 'contact.phone': contactPhone });
+  if (existing) return res.status(400).json({ success: false, message: 'A seller with this phone number already exists' });
+
+  // Validate assigned seller admin if provided
+  let sellerAdmin = null;
+  if (assignedSellerAdminId) {
+    sellerAdmin = await KoyambeduSellerAdmin.findById(assignedSellerAdminId);
+    if (!sellerAdmin) return res.status(400).json({ success: false, message: 'SellerAdmin not found' });
+    if (sellerAdmin.status !== 'approved') return res.status(400).json({ success: false, message: 'SellerAdmin must be approved before assigning sellers' });
+  }
+
+  const seller = await KoyambeduSeller.create({
+    businessName, ownerName, stallNumber, marketSection, description,
+    contact: { phone: contactPhone, email: contactEmail || '' },
+    commissionRate: commissionRate != null ? Number(commissionRate) : 10,
+    status:   'approved',
+    isActive: true,
+    approvedBy: req.user._id,
+    approvedAt: new Date(),
+    ...(sellerAdmin && { createdBySellerAdmin: sellerAdmin._id }),
+  });
+
+  // Link seller to the SellerAdmin's sellers array if assigned
+  if (sellerAdmin) {
+    if (!sellerAdmin.sellers) sellerAdmin.sellers = [];
+    sellerAdmin.sellers.push(seller._id);
+    await sellerAdmin.save();
+  }
+
+  res.status(201).json({ success: true, message: 'Seller created and approved.', seller });
+};
+
 /** PATCH /api/koyambedu/admin/sellers/:sellerId/contact — SuperAdmin edits seller details */
 const adminEditSellerContact = async (req, res) => {
   const seller = await KoyambeduSeller.findById(req.params.sellerId).populate('user', '_id name email phone');
@@ -2257,7 +2301,7 @@ module.exports = {
   getSellerOrders, confirmStock, requestPriceRevision, createSellerCategory,
   // Admin — sellers
   adminDashboard, adminGetOrders, adminUpdateOrderStatus,
-  adminGetSellers, adminApproveSeller, adminToggleSeller, adminEditSellerContact,
+  adminGetSellers, adminCreateSeller, adminApproveSeller, adminToggleSeller, adminEditSellerContact,
   adminGetCategories, adminApproveCategory, adminAnalytics,
   // Admin — seller admins (SuperAdmin only)
   adminUserSearch, adminCreateSellerAdmin, adminGetSellerAdmins, adminApproveSellerAdmin,

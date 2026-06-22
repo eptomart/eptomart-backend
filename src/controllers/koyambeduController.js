@@ -1351,7 +1351,7 @@ const sellerAdminCreateCategory = async (req, res) => {
   const sa = await KoyambeduSellerAdmin.findOne({ user: req.user._id, status: 'approved' });
   if (!sa) return res.status(403).json({ success: false, message: 'SellerAdmin not approved' });
 
-  const { name, nameTamil, icon, parentId, description } = req.body;
+  const { name, nameTamil, icon, image, parentId, description } = req.body;
   if (!name) return res.status(400).json({ success: false, message: 'Category name is required' });
 
   // Check for duplicate name (case-insensitive)
@@ -1359,8 +1359,8 @@ const sellerAdminCreateCategory = async (req, res) => {
   if (existing) return res.status(400).json({ success: false, message: 'A category with this name already exists' });
 
   const cat = await KoyambeduCategory.create({
-    name: name.trim(), nameTamil, icon: icon || '🌿', description,
-    parent: parentId || null,
+    name: name.trim(), nameTamil, icon: icon || '🌿', image: image || '',
+    description, parent: parentId || null,
     status: 'pending', // must be approved by admin
     // createdBy is KoyambeduSeller ref — leave null for SA-created categories
   });
@@ -1568,13 +1568,13 @@ const adminGetCategories = async (req, res) => {
 
 /** POST /api/koyambedu/admin/categories — admin creates a category directly (auto-approved) */
 const adminCreateCategory = async (req, res) => {
-  const { name, nameTamil, icon, description, sortOrder } = req.body;
+  const { name, nameTamil, icon, image, description, sortOrder } = req.body;
   if (!name?.trim()) return res.status(400).json({ success: false, message: 'Category name is required' });
   const existing = await KoyambeduCategory.findOne({ name: new RegExp(`^${name.trim()}$`, 'i') });
   if (existing) return res.status(400).json({ success: false, message: 'A category with this name already exists' });
   const cat = await KoyambeduCategory.create({
-    name: name.trim(), nameTamil, icon: icon || '🌿', description,
-    status: 'approved', isActive: true,
+    name: name.trim(), nameTamil, icon: icon || '🌿', image: image || '',
+    description, status: 'approved', isActive: true,
     approvedBy: req.user._id, approvedAt: new Date(),
     sortOrder: sortOrder || 0,
   });
@@ -1585,13 +1585,14 @@ const adminCreateCategory = async (req, res) => {
 const adminEditCategory = async (req, res) => {
   const cat = await KoyambeduCategory.findById(req.params.catId);
   if (!cat) return res.status(404).json({ success: false, message: 'Category not found' });
-  const { name, nameTamil, icon, description, sortOrder, isActive } = req.body;
-  if (name !== undefined)       cat.name       = name.trim();
-  if (nameTamil !== undefined)  cat.nameTamil  = nameTamil;
-  if (icon !== undefined)       cat.icon       = icon;
-  if (description !== undefined)cat.description= description;
-  if (sortOrder !== undefined)  cat.sortOrder  = Number(sortOrder);
-  if (isActive !== undefined)   cat.isActive   = isActive;
+  const { name, nameTamil, icon, image, description, sortOrder, isActive } = req.body;
+  if (name !== undefined)        cat.name        = name.trim();
+  if (nameTamil !== undefined)   cat.nameTamil   = nameTamil;
+  if (icon !== undefined)        cat.icon        = icon;
+  if (image !== undefined)       cat.image       = image;
+  if (description !== undefined) cat.description = description;
+  if (sortOrder !== undefined)   cat.sortOrder   = Number(sortOrder);
+  if (isActive !== undefined)    cat.isActive    = isActive;
   cat.slug = cat.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   await cat.save();
   res.json({ success: true, category: cat });

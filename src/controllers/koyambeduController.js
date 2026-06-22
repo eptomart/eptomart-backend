@@ -1327,6 +1327,7 @@ const _createProductForSeller = async (seller, body) => {
     tags:   tags   || [],
     isBulkAvailable: isBulkAvailable || false,
     bulkMinQty, bulkPricePerUnit,
+    images: body.images || [],
   });
 };
 
@@ -1442,10 +1443,10 @@ const sellerAdminUpdateProduct = async (req, res) => {
   const product = await KoyambeduProduct.findOne({ _id: req.params.productId, seller: seller._id });
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
-  // SellerAdmin can update: price, stock, minQty, isAvailable, delivery options
+  // SellerAdmin can update: price, stock, minQty, isAvailable, delivery options, images
   const allowed = [
     'currentPrice','stockQty','minQty','maxQty','qtyStep','isAvailable',
-    'isSameDay','isNextDay','sameDayCutoff','weightKg','marketPriceMin','marketPriceMax',
+    'isSameDay','isNextDay','sameDayCutoff','weightKg','marketPriceMin','marketPriceMax','images',
   ];
   for (const k of allowed) {
     if (req.body[k] !== undefined) product[k] = req.body[k];

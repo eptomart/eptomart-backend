@@ -113,6 +113,8 @@ router.patch('/admin/sellers/:sellerId/approve',  protectAdmin,      ctrl.adminA
 router.patch('/admin/sellers/:sellerId/toggle',   protectAdmin,      ctrl.adminToggleSeller);
 router.patch('/admin/sellers/:sellerId/contact',  protectSuperAdmin, ctrl.adminEditSellerContact);
 router.get  ('/admin/categories',                 protectAdmin, ctrl.adminGetCategories);
+router.post ('/admin/categories',                 protectAdmin, ctrl.adminCreateCategory);
+router.put  ('/admin/categories/:catId',          protectAdmin, ctrl.adminEditCategory);
 router.patch('/admin/categories/:catId/approve',  protectAdmin, ctrl.adminApproveCategory);
 router.get  ('/admin/analytics',                  protectAdmin, ctrl.adminAnalytics);
 router.post ('/admin/sellers/:sellerId/products', protectAdmin, ctrl.adminCreateProduct);

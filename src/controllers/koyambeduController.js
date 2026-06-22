@@ -1516,8 +1516,39 @@ const adminGetCategories = async (req, res) => {
   const { status } = req.query;
   const filter = status ? { status } : {};
   const cats = await KoyambeduCategory.find(filter)
-    .populate('createdBy','businessName').sort({ createdAt: -1 }).lean();
+    .populate('createdBy','businessName').sort({ sortOrder: 1, name: 1 }).lean();
   res.json({ success: true, categories: cats });
+};
+
+/** POST /api/koyambedu/admin/categories — admin creates a category directly (auto-approved) */
+const adminCreateCategory = async (req, res) => {
+  const { name, nameTamil, icon, description, sortOrder } = req.body;
+  if (!name?.trim()) return res.status(400).json({ success: false, message: 'Category name is required' });
+  const existing = await KoyambeduCategory.findOne({ name: new RegExp(`^${name.trim()}$`, 'i') });
+  if (existing) return res.status(400).json({ success: false, message: 'A category with this name already exists' });
+  const cat = await KoyambeduCategory.create({
+    name: name.trim(), nameTamil, icon: icon || '🌿', description,
+    status: 'approved', isActive: true,
+    approvedBy: req.user._id, approvedAt: new Date(),
+    sortOrder: sortOrder || 0,
+  });
+  res.status(201).json({ success: true, category: cat });
+};
+
+/** PUT /api/koyambedu/admin/categories/:catId — admin edits a category */
+const adminEditCategory = async (req, res) => {
+  const cat = await KoyambeduCategory.findById(req.params.catId);
+  if (!cat) return res.status(404).json({ success: false, message: 'Category not found' });
+  const { name, nameTamil, icon, description, sortOrder, isActive } = req.body;
+  if (name !== undefined)       cat.name       = name.trim();
+  if (nameTamil !== undefined)  cat.nameTamil  = nameTamil;
+  if (icon !== undefined)       cat.icon       = icon;
+  if (description !== undefined)cat.description= description;
+  if (sortOrder !== undefined)  cat.sortOrder  = Number(sortOrder);
+  if (isActive !== undefined)   cat.isActive   = isActive;
+  cat.slug = cat.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  await cat.save();
+  res.json({ success: true, category: cat });
 };
 
 /** PATCH /api/koyambedu/admin/categories/:catId/approve */
@@ -2318,7 +2349,7 @@ module.exports = {
   // Admin — sellers
   adminDashboard, adminGetOrders, adminUpdateOrderStatus,
   adminGetSellers, adminCreateSeller, adminApproveSeller, adminToggleSeller, adminEditSellerContact,
-  adminGetCategories, adminApproveCategory, adminAnalytics,
+  adminGetCategories, adminCreateCategory, adminEditCategory, adminApproveCategory, adminAnalytics,
   // Admin — seller admins (SuperAdmin only)
   adminUserSearch, adminCreateSellerAdmin, adminGetSellerAdmins, adminApproveSellerAdmin,
   // SellerAdmin portal

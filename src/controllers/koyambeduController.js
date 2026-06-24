@@ -1343,26 +1343,31 @@ const _createProductForSeller = async (seller, body) => {
     const platPct = Number(platformChargePercent)    || 10;
     const logPct  = Number(logisticsChargePercent)   || 10;
 
-    for (let i = 0; i < Math.min(variants.length, 4); i++) {
+    const total = Math.min(variants.length, 4);
+    for (let i = 0; i < total; i++) {
       const v = variants[i];
-      if (!v.basePrice || !v.fromQty || !v.toQty) {
-        throw Object.assign(new Error(`Variant ${i + 1}: basePrice, fromQty and toQty are required`), { statusCode: 400 });
+      const isLast = i === total - 1;
+      // Last variant may have empty toQty → open-ended tier (no upper limit)
+      if (!v.basePrice || !v.fromQty || (!v.toQty && !isLast)) {
+        throw Object.assign(new Error(`Variant ${i + 1}: basePrice and fromQty are required${isLast ? '' : ', toQty also required for non-last tiers'}`), { statusCode: 400 });
       }
-      if (Number(v.fromQty) >= Number(v.toQty)) {
+      const toQty = v.toQty ? Number(v.toQty) : null;
+      if (toQty !== null && Number(v.fromQty) >= toQty) {
         throw Object.assign(new Error(`Variant ${i + 1}: fromQty must be less than toQty`), { statusCode: 400 });
       }
       const fp = calcVariantFinalPrice(v.basePrice, procPct, platPct, logPct);
       processedVariants.push({
         basePrice:  Number(v.basePrice),
         fromQty:    Number(v.fromQty),
-        toQty:      Number(v.toQty),
+        toQty,
         finalPrice: fp,
       });
     }
 
-    // Validate no overlapping ranges
+    // Validate no overlapping ranges (skip check when previous toQty is null — open-ended)
     for (let i = 1; i < processedVariants.length; i++) {
-      if (processedVariants[i].fromQty <= processedVariants[i - 1].toQty) {
+      const prevToQty = processedVariants[i - 1].toQty;
+      if (prevToQty !== null && processedVariants[i].fromQty <= prevToQty) {
         throw Object.assign(new Error(`Variant ${i + 1}: qty range overlaps with previous variant`), { statusCode: 400 });
       }
     }
@@ -1371,7 +1376,7 @@ const _createProductForSeller = async (seller, body) => {
     const finalPrices = processedVariants.map(v => v.finalPrice);
     derivedCurrentPrice = Math.min(...finalPrices);
     derivedMinQty = processedVariants[0].fromQty;
-    derivedMaxQty = processedVariants[processedVariants.length - 1].toQty;
+    derivedMaxQty = processedVariants[processedVariants.length - 1].toQty || null;
   } else if (derivedCurrentPrice == null) {
     throw Object.assign(new Error('Either variants or currentPrice is required'), { statusCode: 400 });
   }
@@ -1472,9 +1477,9 @@ const adminUpdateProduct = async (req, res) => {
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
   const allowed = [
-    'name','nameTamil','unit','unitLabel','stockQty',
-    'isAvailable','isSameDay','isNextDay',
-    'sameDayCutoff','weightKg','badges','description','images',
+    'name','nameTamil','unit','unitLabel','description','badges',
+    'categoryId','stockQty','isAvailable','isSameDay','isNextDay',
+    'sameDayCutoff','weightKg','images',
   ];
   for (const k of allowed) {
     if (req.body[k] !== undefined) product[k] = req.body[k];
@@ -1485,10 +1490,11 @@ const adminUpdateProduct = async (req, res) => {
     const procPct = Number(req.body.procurementChargePercent ?? product.procurementChargePercent) || 15;
     const platPct = Number(req.body.platformChargePercent    ?? product.platformChargePercent)    || 10;
     const logPct  = Number(req.body.logisticsChargePercent   ?? product.logisticsChargePercent)   || 10;
-    const processed = req.body.variants.slice(0, 4).map(v => ({
+    const allVars = req.body.variants.slice(0, 4);
+    const processed = allVars.map((v, i) => ({
       basePrice:  Number(v.basePrice),
       fromQty:    Number(v.fromQty),
-      toQty:      Number(v.toQty),
+      toQty:      (v.toQty !== '' && v.toQty != null) ? Number(v.toQty) : null, // null = open-ended last tier
       finalPrice: calcVariantFinalPrice(v.basePrice, procPct, platPct, logPct),
     }));
     product.variants = processed;
@@ -1497,7 +1503,7 @@ const adminUpdateProduct = async (req, res) => {
     product.logisticsChargePercent   = logPct;
     product.currentPrice = Math.min(...processed.map(v => v.finalPrice));
     product.minQty = processed[0].fromQty;
-    product.maxQty = processed[processed.length - 1].toQty;
+    product.maxQty = processed[processed.length - 1].toQty || null;
     product.priceUpdatedAt = new Date();
   } else if (req.body.currentPrice !== undefined) {
     product.currentPrice = Number(req.body.currentPrice);
@@ -1559,7 +1565,10 @@ const sellerAdminUpdateProduct = async (req, res) => {
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
   // SellerAdmin can update: stock, availability, delivery options, images, variants
-  const allowed = ['stockQty','isAvailable','isSameDay','isNextDay','sameDayCutoff','weightKg','images'];
+  const allowed = [
+    'name','nameTamil','unit','unitLabel','description','badges',
+    'categoryId','stockQty','isAvailable','isSameDay','isNextDay','sameDayCutoff','weightKg','images',
+  ];
   for (const k of allowed) {
     if (req.body[k] !== undefined) product[k] = req.body[k];
   }
@@ -1572,7 +1581,7 @@ const sellerAdminUpdateProduct = async (req, res) => {
     const processed = req.body.variants.slice(0, 4).map(v => ({
       basePrice:  Number(v.basePrice),
       fromQty:    Number(v.fromQty),
-      toQty:      Number(v.toQty),
+      toQty:      (v.toQty !== '' && v.toQty != null) ? Number(v.toQty) : null,
       finalPrice: calcVariantFinalPrice(v.basePrice, procPct, platPct, logPct),
     }));
     product.variants = processed;
@@ -1581,7 +1590,7 @@ const sellerAdminUpdateProduct = async (req, res) => {
     product.logisticsChargePercent   = logPct;
     product.currentPrice = Math.min(...processed.map(v => v.finalPrice));
     product.minQty = processed[0].fromQty;
-    product.maxQty = processed[processed.length - 1].toQty;
+    product.maxQty = processed[processed.length - 1].toQty || null;
     product.priceUpdatedAt = new Date();
   }
 

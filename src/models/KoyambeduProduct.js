@@ -35,7 +35,7 @@ const koyambeduProductSchema = new Schema({
   variants: [{
     basePrice:  { type: Number, required: true },
     fromQty:    { type: Number, required: true },
-    toQty:      { type: Number, required: true },
+    toQty:      { type: Number, default: null }, // null = open-ended last tier
     finalPrice: { type: Number, default: 0 },   // auto-computed
   }],
 

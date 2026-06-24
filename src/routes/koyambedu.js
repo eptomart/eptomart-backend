@@ -98,8 +98,9 @@ router.get ('/seller-admin/categories',                            protectSeller
 router.post('/seller-admin/categories',                            protectSellerAdmin, ctrl.sellerAdminCreateCategory);
 router.get  ('/seller-admin/sellers/:sellerId/products',            protectSellerAdmin, ctrl.sellerAdminGetProducts);
 router.post ('/seller-admin/sellers/:sellerId/products',            protectSellerAdmin, ctrl.sellerAdminCreateProduct);
-router.put  ('/seller-admin/sellers/:sellerId/products/:productId', protectSellerAdmin, ctrl.sellerAdminUpdateProduct);
-router.patch('/seller-admin/sellers/:sellerId/edit-request',        protectSellerAdmin, ctrl.sellerAdminRequestEdit);
+router.put  ('/seller-admin/sellers/:sellerId/products/:productId',        protectSellerAdmin, ctrl.sellerAdminUpdateProduct);
+router.patch('/seller-admin/sellers/:sellerId/products/:productId/toggle', protectSellerAdmin, ctrl.sellerAdminToggleProduct);
+router.patch('/seller-admin/sellers/:sellerId/edit-request',               protectSellerAdmin, ctrl.sellerAdminRequestEdit);
 
 // ══════════════════════════════════════════════
 // ADMIN — admin or superAdmin
@@ -118,9 +119,10 @@ router.put  ('/admin/categories/:catId',          protectAdmin, ctrl.adminEditCa
 router.patch('/admin/categories/:catId/approve',  protectAdmin, ctrl.adminApproveCategory);
 router.get  ('/admin/analytics',                  protectAdmin, ctrl.adminAnalytics);
 router.get  ('/admin/products',                   protectAdmin, ctrl.adminGetAllProducts);
-router.put  ('/admin/products/:productId',         protectAdmin, ctrl.adminUpdateProduct);
-router.patch('/admin/products/:productId/toggle',  protectAdmin, ctrl.adminToggleProduct);
-router.post ('/admin/sellers/:sellerId/products',  protectAdmin, ctrl.adminCreateProduct);
+router.put   ('/admin/products/:productId',        protectAdmin,      ctrl.adminUpdateProduct);
+router.patch ('/admin/products/:productId/toggle', protectAdmin,      ctrl.adminToggleProduct);
+router.delete('/admin/products/:productId',        protectSuperAdmin, ctrl.adminDeleteProduct);
+router.post  ('/admin/sellers/:sellerId/products', protectAdmin,      ctrl.adminCreateProduct);
 
 // SellerAdmin management
 router.post ('/admin/sellers/:sellerId/review-edit', protectSuperAdmin, ctrl.adminReviewSellerEdit); // SuperAdmin approves/rejects SA edit request

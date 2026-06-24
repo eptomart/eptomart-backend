@@ -26,7 +26,7 @@ const {
 // ── Delivery constants ───────────────────────
 const KOYAMBEDU_LAT  = 13.0748;
 const KOYAMBEDU_LNG  = 80.2136;
-const MAX_RADIUS_KM  = 7;
+// No delivery distance limit — serve all areas
 const MIN_WEIGHT_KG  = 1;
 const MAX_WEIGHT_KG  = 90;
 
@@ -217,16 +217,7 @@ const checkDeliveryAvailability = async (req, res) => {
 
   const distanceKm = haversineKm(Number(lat), Number(lng), KOYAMBEDU_LAT, KOYAMBEDU_LNG);
 
-  if (distanceKm > MAX_RADIUS_KM) {
-    return res.json({
-      success: true,
-      available: false,
-      distanceKm: Math.round(distanceKm * 10) / 10,
-      message: 'We will extend our service soon to your area.',
-    });
-  }
-
-  // Distance-based delivery charge: ₹249 per 8 km radius
+  // Distance-based delivery charge: ₹125 per 4 km radius
   const kmRounded    = Math.round(distanceKm * 10) / 10;
   const deliveryCharge = Math.ceil(distanceKm / 4) * 125;
 
@@ -384,14 +375,6 @@ const placeOrder = async (req, res) => {
     Number(buyerLocation.lat), Number(buyerLocation.lng),
     KOYAMBEDU_LAT, KOYAMBEDU_LNG
   );
-  if (distanceKm > MAX_RADIUS_KM) {
-    return res.status(400).json({
-      success: false,
-      message: 'We will extend our service soon to your area.',
-      distanceKm: Math.round(distanceKm * 10) / 10,
-    });
-  }
-
   // ── 3. Address ────────────────────────────────────────────
   if (!shippingAddress?.fullName || !shippingAddress?.addressLine1 || !shippingAddress?.pincode) {
     return res.status(400).json({ success: false, message: 'Full shipping address required' });
@@ -1540,6 +1523,26 @@ const adminCreateProduct = async (req, res) => {
   res.status(201).json({ success: true, product });
 };
 
+/** PATCH /api/koyambedu/seller-admin/sellers/:sellerId/products/:productId/toggle — toggle availability */
+const sellerAdminToggleProduct = async (req, res) => {
+  const sa = await KoyambeduSellerAdmin.findOne({ user: req.user._id, status: 'approved' });
+  if (!sa) return res.status(403).json({ success: false, message: 'SellerAdmin not approved' });
+  const seller = await KoyambeduSeller.findOne({ _id: req.params.sellerId, createdBySellerAdmin: sa._id });
+  if (!seller) return res.status(403).json({ success: false, message: 'Seller not managed by this SellerAdmin' });
+  const product = await KoyambeduProduct.findOne({ _id: req.params.productId, seller: seller._id });
+  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+  product.isAvailable = !product.isAvailable;
+  await product.save();
+  res.json({ success: true, isAvailable: product.isAvailable });
+};
+
+/** DELETE /api/koyambedu/admin/products/:productId — super admin hard-delete */
+const adminDeleteProduct = async (req, res) => {
+  const product = await KoyambeduProduct.findByIdAndDelete(req.params.productId);
+  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+  res.json({ success: true, message: 'Product deleted' });
+};
+
 /** PUT /api/koyambedu/seller-admin/sellers/:sellerId/products/:productId — update product (no buyer info) */
 const sellerAdminUpdateProduct = async (req, res) => {
   const sa = await KoyambeduSellerAdmin.findOne({ user: req.user._id, status: 'approved' });
@@ -2528,11 +2531,11 @@ module.exports = {
   adminUserSearch, adminCreateSellerAdmin, adminGetSellerAdmins, adminApproveSellerAdmin,
   // SellerAdmin portal
   sellerAdminGetProfile, sellerAdminGetSellers, sellerAdminCreateSeller,
-  sellerAdminGetProducts, sellerAdminUpdateProduct, sellerAdminCreateProduct,
+  sellerAdminGetProducts, sellerAdminUpdateProduct, sellerAdminCreateProduct, sellerAdminToggleProduct,
   sellerAdminCreateCategory, sellerAdminGetCategories,
   sellerAdminRequestEdit,
   // Admin product management
-  adminGetAllProducts, adminUpdateProduct, adminToggleProduct, adminCreateProduct,
+  adminGetAllProducts, adminUpdateProduct, adminToggleProduct, adminCreateProduct, adminDeleteProduct,
   // Admin seller-edit review (SuperAdmin only)
   adminReviewSellerEdit,
   // AI

@@ -433,7 +433,10 @@ const placeOrder = async (req, res) => {
     if (!p?.isActive || !p?.isAvailable || sl?.status !== 'approved' || !sl?.isActive) {
       return res.status(400).json({ success: false, message: `"${p?.name || 'A product'}" is currently unavailable` });
     }
-    const lineTotal    = p.currentPrice * ci.quantity;
+    // Use cart's unitPrice (set at add-to-cart time for variant products);
+    // fall back to product's currentPrice for non-variant products
+    const unitPrice    = ci.unitPrice || p.currentPrice || 0;
+    const lineTotal    = unitPrice * ci.quantity;
     const commission   = (sl.commissionRate || 8) / 100;
     const sellerPayout = lineTotal * (1 - commission);
     subtotal += lineTotal;
@@ -446,8 +449,8 @@ const placeOrder = async (req, res) => {
       unitLabel:    p.unitLabel,
       quantity:     ci.quantity,
       deliveryType: ci.deliveryType,
-      orderedPrice: p.currentPrice,
-      finalPrice:   p.currentPrice,
+      orderedPrice: unitPrice,
+      finalPrice:   unitPrice,
       sellerPayout: Math.round(sellerPayout * 100) / 100,
     });
   }

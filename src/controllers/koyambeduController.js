@@ -304,19 +304,23 @@ const updateCart = async (req, res) => {
 
   const idx = cart.items.findIndex(i => String(i.product) === String(productId));
 
-  if (quantity <= 0) {
+  const qtyNum = Number(quantity);
+
+  if (qtyNum <= 0) {
+    // Explicit remove
     if (idx > -1) cart.items.splice(idx, 1);
   } else {
-    const qtyNum = Number(quantity);
-    // null maxQty means open-ended (no upper cap) — avoid Math.min(null, N) = 0 trap
+    // null maxQty = open-ended — avoid Math.min(null, N) = 0 trap
     const maxQtyVal = (product.maxQty != null) ? product.maxQty : Infinity;
-    const qty = Math.max(product.minQty || 0, Math.min(maxQtyVal, qtyNum));
+    // Do NOT clamp to minQty here — cart stepper should be free to decrement;
+    // if the result is below minQty the frontend already handles removal via qty=0.
+    const qty = Math.min(maxQtyVal, qtyNum);
 
     // Determine unit price from the matching variant tier, fall back to currentPrice
     let unitPrice = product.currentPrice || 0;
     if (product.variants?.length > 0) {
       const matchingVariant = product.variants.find(v => {
-        if (!v.toQty) return qty >= v.fromQty;          // open-ended last tier
+        if (!v.toQty) return qty >= v.fromQty;   // open-ended last tier
         return qty >= v.fromQty && qty <= v.toQty;
       });
       if (matchingVariant?.finalPrice) unitPrice = matchingVariant.finalPrice;
@@ -336,6 +340,9 @@ const updateCart = async (req, res) => {
   }
 
   await cart.save();
+
+  // Populate product so frontend stepper gets full product data (images, qtyStep, etc.)
+  await cart.populate('items.product', 'name unit images qtyStep minQty maxQty currentPrice variants isActive isAvailable');
   res.json({ success: true, cart });
 };
 

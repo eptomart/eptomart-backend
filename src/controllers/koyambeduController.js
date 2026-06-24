@@ -91,7 +91,6 @@ const maskOrder = (order) => {
     _id:         it._id,
     name:        it.name,
     unit:        it.unit,
-    unitLabel:   it.unitLabel,
     quantity:    it.quantity,
     deliveryType:it.deliveryType,
     orderedPrice:it.orderedPrice,
@@ -263,7 +262,7 @@ const getCart = async (req, res) => {
   let cart = await KoyambeduCart.findOne({ user: req.user._id })
     .populate({
       path: 'items.product',
-      select: 'name nameTamil currentPrice unit unitLabel minQty maxQty qtyStep isAvailable isActive isSameDay isNextDay images weightKg',
+      select: 'name nameTamil currentPrice unit minQty maxQty qtyStep isAvailable isActive isSameDay isNextDay images weightKg',
       populate: { path: 'seller', select: 'businessName isActive status' },
     }).lean();
   if (!cart) cart = { items: [] };
@@ -308,7 +307,6 @@ const updateCart = async (req, res) => {
       name:        product.name,
       unitPrice:   product.currentPrice,
       unit:        product.unit,
-      unitLabel:   product.unitLabel,
       quantity:    qty,
       deliveryType,
     };
@@ -446,7 +444,6 @@ const placeOrder = async (req, res) => {
       seller:       sl._id,
       name:         p.name,
       unit:         p.unit,
-      unitLabel:    p.unitLabel,
       quantity:     ci.quantity,
       deliveryType: ci.deliveryType,
       orderedPrice: unitPrice,
@@ -743,7 +740,7 @@ const createSellerProduct = async (req, res) => {
   if (!seller) return res.status(403).json({ success: false, message: 'Seller not approved' });
 
   const {
-    categoryId, name, nameTamil, description, unit, unitLabel,
+    categoryId, name, nameTamil, description, unit,
     minQty, maxQty, qtyStep, marketPriceMin, marketPriceMax, currentPrice,
     stockQty, freshArrivalTime, isSameDay, isNextDay, sameDayCutoff,
     badges, tags, isBulkAvailable, bulkMinQty, bulkPricePerUnit, isRecurringAllowed,
@@ -758,7 +755,7 @@ const createSellerProduct = async (req, res) => {
 
   const product = await KoyambeduProduct.create({
     seller: seller._id, category: category._id,
-    name, nameTamil, description, unit: unit || 'kg', unitLabel: unitLabel || unit || 'kg',
+    name, nameTamil, description, unit: unit || 'kg',
     minQty: minQty || 0.5, maxQty: maxQty || 50, qtyStep: qtyStep || 0.5,
     weightKg: req.body.weightKg != null ? Number(req.body.weightKg) : (unit === 'g' ? 0.001 : 1),
     marketPriceMin, marketPriceMax, currentPrice: Number(currentPrice),
@@ -783,7 +780,7 @@ const updateSellerProduct = async (req, res) => {
   const product = await KoyambeduProduct.findOne({ _id: req.params.productId, seller: seller._id });
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
-  const allowed = ['name','nameTamil','description','unit','unitLabel','minQty','maxQty','qtyStep',
+  const allowed = ['name','nameTamil','description','unit','minQty','maxQty','qtyStep',
     'marketPriceMin','marketPriceMax','currentPrice','stockQty','freshArrivalTime',
     'isSameDay','isNextDay','sameDayCutoff','badges','tags','isActive','isAvailable',
     'isBulkAvailable','bulkMinQty','bulkPricePerUnit','isRecurringAllowed','weightKg','images'];
@@ -1312,7 +1309,7 @@ const calcVariantFinalPrice = (basePrice, procPct, platPct, logPct) => {
 // ── Shared product-creation helper ──────────────────────────────────────────
 const _createProductForSeller = async (seller, body) => {
   const {
-    categoryId, name, nameTamil, description, unit, unitLabel,
+    categoryId, name, nameTamil, description, unit,
     stockQty, freshArrivalTime, isSameDay, isNextDay, sameDayCutoff,
     badges, tags, weightKg,
     // Variant pricing
@@ -1386,7 +1383,6 @@ const _createProductForSeller = async (seller, body) => {
     category: category._id,
     name, nameTamil, description,
     unit:      unit      || 'kg',
-    unitLabel: unitLabel || unit || 'kg',
     minQty:    derivedMinQty,
     maxQty:    derivedMaxQty,
     qtyStep:   qtyStep   || (processedVariants.length > 0 ? processedVariants[0].fromQty : 0.5),
@@ -1477,7 +1473,7 @@ const adminUpdateProduct = async (req, res) => {
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
   const allowed = [
-    'name','nameTamil','unit','unitLabel','description','badges',
+    'name','nameTamil','unit','description','badges',
     'categoryId','stockQty','isAvailable','isSameDay','isNextDay',
     'sameDayCutoff','weightKg','images',
   ];
@@ -1566,7 +1562,7 @@ const sellerAdminUpdateProduct = async (req, res) => {
 
   // SellerAdmin can update: stock, availability, delivery options, images, variants
   const allowed = [
-    'name','nameTamil','unit','unitLabel','description','badges',
+    'name','nameTamil','unit','description','badges',
     'categoryId','stockQty','isAvailable','isSameDay','isNextDay','sameDayCutoff','weightKg','images',
   ];
   for (const k of allowed) {
@@ -1813,7 +1809,7 @@ const _notifySellerNewOrder = async (order) => {
 
       const sellerItems = fullOrder.items.filter(i => String(i.seller?._id || i.seller) === sid);
       const total       = sellerItems.reduce((s, i) => s + (i.finalPrice || i.orderedPrice || 0) * i.quantity, 0);
-      const itemSummary = sellerItems.map(i => `${i.name} ×${i.quantity}${i.unitLabel || i.unit ? ` ${i.unitLabel || i.unit}` : ''}`).join(', ');
+      const itemSummary = sellerItems.map(i => `${i.name} ×${i.quantity}${i.unit ? ` ${i.unit}` : ''}`).join(', ');
 
       waSend(seller.contact.phone, [
         seller.businessName,
@@ -2287,7 +2283,7 @@ const procurementReport = async (req, res) => {
       cutoffCycle: cycle,
       paymentStatus: 'paid',
       orderStatus: { $nin: ['cancelled'] },
-    }).populate('items.product', 'name unit unitLabel').lean();
+    }).populate('items.product', 'name unit').lean();
 
     // Aggregate by product
     const summary = {};
@@ -2299,7 +2295,7 @@ const procurementReport = async (req, res) => {
             productId:   key,
             productName: item.name,
             unit:        item.unit || 'kg',
-            unitLabel:   item.unitLabel || item.unit || 'kg',
+            unit:        item.unit || 'kg',
             totalQty:    0,
             orderCount:  0,
           };

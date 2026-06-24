@@ -459,7 +459,16 @@ const placeOrder = async (req, res) => {
     });
   }
 
-  // ── 7. Delivery charge (distance-based: ₹249 per 8 km radius) ──
+  // ── 7. Minimum order check ────────────────────────────────────
+  const MIN_ORDER_VALUE = 1500;
+  if (subtotal < MIN_ORDER_VALUE) {
+    return res.status(400).json({
+      success: false,
+      message: `Minimum order value is ₹${MIN_ORDER_VALUE.toLocaleString('en-IN')}. Your cart total is ₹${subtotal.toFixed(0)}.`,
+    });
+  }
+
+  // ── 7b. Delivery charge (distance-based: ₹249 per 8 km radius) ──
   const deliveryCharge = Math.ceil(distanceKm / 4) * 125;
   const platformFee    = 15;
   const deliveryType   = deliveryTypes.size > 1 ? 'mixed' : [...deliveryTypes][0];

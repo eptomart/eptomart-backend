@@ -307,12 +307,26 @@ const updateCart = async (req, res) => {
   if (quantity <= 0) {
     if (idx > -1) cart.items.splice(idx, 1);
   } else {
-    const qty = Math.max(product.minQty, Math.min(product.maxQty, Number(quantity)));
+    const qtyNum = Number(quantity);
+    // null maxQty means open-ended (no upper cap) — avoid Math.min(null, N) = 0 trap
+    const maxQtyVal = (product.maxQty != null) ? product.maxQty : Infinity;
+    const qty = Math.max(product.minQty || 0, Math.min(maxQtyVal, qtyNum));
+
+    // Determine unit price from the matching variant tier, fall back to currentPrice
+    let unitPrice = product.currentPrice || 0;
+    if (product.variants?.length > 0) {
+      const matchingVariant = product.variants.find(v => {
+        if (!v.toQty) return qty >= v.fromQty;          // open-ended last tier
+        return qty >= v.fromQty && qty <= v.toQty;
+      });
+      if (matchingVariant?.finalPrice) unitPrice = matchingVariant.finalPrice;
+    }
+
     const itemData = {
       product:     product._id,
       seller:      product.seller._id,
       name:        product.name,
-      unitPrice:   product.currentPrice,
+      unitPrice,
       unit:        product.unit,
       quantity:    qty,
       deliveryType,

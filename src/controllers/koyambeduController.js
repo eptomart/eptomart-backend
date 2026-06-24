@@ -1317,21 +1317,78 @@ const sellerAdminCreateSeller = async (req, res) => {
   res.status(201).json({ success: true, message: 'Seller registered. Awaiting SuperAdmin approval.', seller });
 };
 
+// ── Variant price calculator ─────────────────────────────────────────────────
+const calcVariantFinalPrice = (basePrice, procPct, platPct, logPct) => {
+  const total = (Number(procPct) || 0) + (Number(platPct) || 0) + (Number(logPct) || 0);
+  return Math.round(Number(basePrice) * (1 + total / 100) * 100) / 100;
+};
+
 // ── Shared product-creation helper ──────────────────────────────────────────
 const _createProductForSeller = async (seller, body) => {
   const {
     categoryId, name, nameTamil, description, unit, unitLabel,
-    minQty, maxQty, qtyStep, marketPriceMin, marketPriceMax, currentPrice,
     stockQty, freshArrivalTime, isSameDay, isNextDay, sameDayCutoff,
-    badges, tags, isBulkAvailable, bulkMinQty, bulkPricePerUnit, weightKg,
+    badges, tags, weightKg,
+    // Variant pricing
+    variants,
+    procurementChargePercent,
+    platformChargePercent,
+    logisticsChargePercent,
+    // Legacy fallback (single-price products)
+    currentPrice, minQty, maxQty, qtyStep,
   } = body;
 
-  if (!categoryId || !name || currentPrice == null) {
-    throw Object.assign(new Error('Category, name and price are required'), { statusCode: 400 });
+  if (!categoryId || !name) {
+    throw Object.assign(new Error('Category and name are required'), { statusCode: 400 });
   }
 
   const category = await KoyambeduCategory.findOne({ _id: categoryId, isActive: true });
   if (!category) throw Object.assign(new Error('Invalid or inactive category'), { statusCode: 400 });
+
+  // ── Variant mode ──────────────────────────────────────────────────────────
+  let processedVariants = [];
+  let derivedCurrentPrice = currentPrice != null ? Number(currentPrice) : null;
+  let derivedMinQty = minQty || 0.5;
+  let derivedMaxQty = maxQty || 50;
+
+  if (variants && Array.isArray(variants) && variants.length > 0) {
+    // Validate + compute finalPrice for each variant
+    const procPct = Number(procurementChargePercent) || 15;
+    const platPct = Number(platformChargePercent)    || 10;
+    const logPct  = Number(logisticsChargePercent)   || 10;
+
+    for (let i = 0; i < Math.min(variants.length, 4); i++) {
+      const v = variants[i];
+      if (!v.basePrice || !v.fromQty || !v.toQty) {
+        throw Object.assign(new Error(`Variant ${i + 1}: basePrice, fromQty and toQty are required`), { statusCode: 400 });
+      }
+      if (Number(v.fromQty) >= Number(v.toQty)) {
+        throw Object.assign(new Error(`Variant ${i + 1}: fromQty must be less than toQty`), { statusCode: 400 });
+      }
+      const fp = calcVariantFinalPrice(v.basePrice, procPct, platPct, logPct);
+      processedVariants.push({
+        basePrice:  Number(v.basePrice),
+        fromQty:    Number(v.fromQty),
+        toQty:      Number(v.toQty),
+        finalPrice: fp,
+      });
+    }
+
+    // Validate no overlapping ranges
+    for (let i = 1; i < processedVariants.length; i++) {
+      if (processedVariants[i].fromQty <= processedVariants[i - 1].toQty) {
+        throw Object.assign(new Error(`Variant ${i + 1}: qty range overlaps with previous variant`), { statusCode: 400 });
+      }
+    }
+
+    // Derive product-level fields from variants
+    const finalPrices = processedVariants.map(v => v.finalPrice);
+    derivedCurrentPrice = Math.min(...finalPrices);
+    derivedMinQty = processedVariants[0].fromQty;
+    derivedMaxQty = processedVariants[processedVariants.length - 1].toQty;
+  } else if (derivedCurrentPrice == null) {
+    throw Object.assign(new Error('Either variants or currentPrice is required'), { statusCode: 400 });
+  }
 
   return KoyambeduProduct.create({
     seller:   seller._id,
@@ -1339,12 +1396,15 @@ const _createProductForSeller = async (seller, body) => {
     name, nameTamil, description,
     unit:      unit      || 'kg',
     unitLabel: unitLabel || unit || 'kg',
-    minQty:    minQty    || 0.5,
-    maxQty:    maxQty    || 50,
-    qtyStep:   qtyStep   || 0.5,
+    minQty:    derivedMinQty,
+    maxQty:    derivedMaxQty,
+    qtyStep:   qtyStep   || (processedVariants.length > 0 ? processedVariants[0].fromQty : 0.5),
     weightKg:  weightKg  != null ? Number(weightKg) : (unit === 'g' ? 0.001 : 1),
-    marketPriceMin, marketPriceMax,
-    currentPrice: Number(currentPrice),
+    currentPrice: derivedCurrentPrice,
+    variants:     processedVariants,
+    procurementChargePercent: Number(procurementChargePercent) || 15,
+    platformChargePercent:    Number(platformChargePercent)    || 10,
+    logisticsChargePercent:   Number(logisticsChargePercent)   || 10,
     stockQty:     stockQty || 0,
     freshArrivalTime: freshArrivalTime || '',
     freshArrivalDate: freshArrivalTime ? new Date() : undefined,
@@ -1353,8 +1413,6 @@ const _createProductForSeller = async (seller, body) => {
     sameDayCutoff: sameDayCutoff || seller.sameDayCutoff || '10:00',
     badges: badges || [],
     tags:   tags   || [],
-    isBulkAvailable: isBulkAvailable || false,
-    bulkMinQty, bulkPricePerUnit,
     images: body.images || [],
   });
 };
@@ -1428,15 +1486,38 @@ const adminUpdateProduct = async (req, res) => {
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
   const allowed = [
-    'name','nameTamil','unit','unitLabel','currentPrice','stockQty',
-    'minQty','maxQty','qtyStep','isAvailable','isSameDay','isNextDay',
+    'name','nameTamil','unit','unitLabel','stockQty',
+    'isAvailable','isSameDay','isNextDay',
     'sameDayCutoff','weightKg','badges','description','images',
-    'marketPriceMin','marketPriceMax',
   ];
   for (const k of allowed) {
     if (req.body[k] !== undefined) product[k] = req.body[k];
   }
-  if (req.body.currentPrice !== undefined) product.priceUpdatedAt = new Date();
+
+  // Variant update
+  if (req.body.variants && Array.isArray(req.body.variants) && req.body.variants.length > 0) {
+    const procPct = Number(req.body.procurementChargePercent ?? product.procurementChargePercent) || 15;
+    const platPct = Number(req.body.platformChargePercent    ?? product.platformChargePercent)    || 10;
+    const logPct  = Number(req.body.logisticsChargePercent   ?? product.logisticsChargePercent)   || 10;
+    const processed = req.body.variants.slice(0, 4).map(v => ({
+      basePrice:  Number(v.basePrice),
+      fromQty:    Number(v.fromQty),
+      toQty:      Number(v.toQty),
+      finalPrice: calcVariantFinalPrice(v.basePrice, procPct, platPct, logPct),
+    }));
+    product.variants = processed;
+    product.procurementChargePercent = procPct;
+    product.platformChargePercent    = platPct;
+    product.logisticsChargePercent   = logPct;
+    product.currentPrice = Math.min(...processed.map(v => v.finalPrice));
+    product.minQty = processed[0].fromQty;
+    product.maxQty = processed[processed.length - 1].toQty;
+    product.priceUpdatedAt = new Date();
+  } else if (req.body.currentPrice !== undefined) {
+    product.currentPrice = Number(req.body.currentPrice);
+    product.priceUpdatedAt = new Date();
+  }
+
   await product.save();
   res.json({ success: true, product });
 };
@@ -1471,15 +1552,33 @@ const sellerAdminUpdateProduct = async (req, res) => {
   const product = await KoyambeduProduct.findOne({ _id: req.params.productId, seller: seller._id });
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
-  // SellerAdmin can update: price, stock, minQty, isAvailable, delivery options, images
-  const allowed = [
-    'currentPrice','stockQty','minQty','maxQty','qtyStep','isAvailable',
-    'isSameDay','isNextDay','sameDayCutoff','weightKg','marketPriceMin','marketPriceMax','images',
-  ];
+  // SellerAdmin can update: stock, availability, delivery options, images, variants
+  const allowed = ['stockQty','isAvailable','isSameDay','isNextDay','sameDayCutoff','weightKg','images'];
   for (const k of allowed) {
     if (req.body[k] !== undefined) product[k] = req.body[k];
   }
-  if (req.body.currentPrice) product.priceUpdatedAt = new Date();
+
+  // Variant update (SellerAdmin can re-price variants)
+  if (req.body.variants && Array.isArray(req.body.variants) && req.body.variants.length > 0) {
+    const procPct = Number(req.body.procurementChargePercent ?? product.procurementChargePercent) || 15;
+    const platPct = Number(req.body.platformChargePercent    ?? product.platformChargePercent)    || 10;
+    const logPct  = Number(req.body.logisticsChargePercent   ?? product.logisticsChargePercent)   || 10;
+    const processed = req.body.variants.slice(0, 4).map(v => ({
+      basePrice:  Number(v.basePrice),
+      fromQty:    Number(v.fromQty),
+      toQty:      Number(v.toQty),
+      finalPrice: calcVariantFinalPrice(v.basePrice, procPct, platPct, logPct),
+    }));
+    product.variants = processed;
+    product.procurementChargePercent = procPct;
+    product.platformChargePercent    = platPct;
+    product.logisticsChargePercent   = logPct;
+    product.currentPrice = Math.min(...processed.map(v => v.finalPrice));
+    product.minQty = processed[0].fromQty;
+    product.maxQty = processed[processed.length - 1].toQty;
+    product.priceUpdatedAt = new Date();
+  }
+
   await product.save();
   res.json({ success: true, product });
 };

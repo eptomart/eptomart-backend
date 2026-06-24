@@ -25,12 +25,26 @@ const koyambeduProductSchema = new Schema({
   // Product Code (auto-generated, editable)
   productCode: { type: String, trim: true, uppercase: true },
 
-  // Dynamic Pricing — formula: finalPrice = basePrice + platformFee + logisticsFee + sellerMargin
-  basePrice:            { type: Number, default: 0 },      // raw cost price
-  platformFeePercent:   { type: Number, default: 10 },     // % of basePrice
-  logisticsPercent:     { type: Number, default: 10 },     // % of basePrice
-  sellerMarginPercent:  { type: Number, default: 15 },     // % of basePrice
-  finalPrice:           { type: Number, default: 0 },      // computed selling price
+  // ── Charge percentages (product-level, apply to all variants) ──────────────
+  procurementChargePercent: { type: Number, default: 15 },  // % of basePrice
+  platformChargePercent:    { type: Number, default: 10 },  // % of basePrice
+  logisticsChargePercent:   { type: Number, default: 10 },  // % of basePrice
+
+  // ── Variant Pricing (up to 4 tiers) ────────────────────────────────────────
+  // finalPrice = basePrice × (1 + (procurement + platform + logistics) / 100)
+  variants: [{
+    basePrice:  { type: Number, required: true },
+    fromQty:    { type: Number, required: true },
+    toQty:      { type: Number, required: true },
+    finalPrice: { type: Number, default: 0 },   // auto-computed
+  }],
+
+  // Legacy single-price fields (kept for backward compat + derived from variants)
+  basePrice:            { type: Number, default: 0 },
+  platformFeePercent:   { type: Number, default: 10 },
+  logisticsPercent:     { type: Number, default: 10 },
+  sellerMarginPercent:  { type: Number, default: 15 },
+  finalPrice:           { type: Number, default: 0 },
 
   // Forecast price (admin sets, approve to make it today's price)
   forecastPrice:        { type: Number, default: 0 },

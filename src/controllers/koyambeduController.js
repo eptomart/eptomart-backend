@@ -1320,7 +1320,7 @@ const sellerAdminCreateSeller = async (req, res) => {
 // ── Variant price calculator ─────────────────────────────────────────────────
 const calcVariantFinalPrice = (basePrice, procPct, platPct, logPct) => {
   const total = (Number(procPct) || 0) + (Number(platPct) || 0) + (Number(logPct) || 0);
-  return Math.round(Number(basePrice) * (1 + total / 100) * 100) / 100;
+  return Math.round(Number(basePrice) * (1 + total / 100)); // always whole number
 };
 
 // ── Shared product-creation helper ──────────────────────────────────────────

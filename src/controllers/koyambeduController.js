@@ -122,34 +122,41 @@ const getCategories = async (req, res) => {
 
 /** GET /api/koyambedu/products?category=&search=&deliveryType=&page= */
 const getProducts = async (req, res) => {
-  const { category, search, deliveryType, page = 1, limit = 20, sort = 'default' } = req.query;
+  try {
+    const { category, search, deliveryType, page = 1, limit = 20, sort = 'default' } = req.query;
 
-  const filter = { isActive: true, isAvailable: true };
-  if (category) filter.category = category;
-  if (deliveryType === 'today')    filter.isSameDay = true;
-  if (deliveryType === 'tomorrow') filter.isNextDay = true;
-  if (search) filter.$text = { $search: search };
+    const filter = { isActive: true, isAvailable: true };
+    if (category) filter.category = category;
+    if (deliveryType === 'today')    filter.isSameDay = true;
+    if (deliveryType === 'tomorrow') filter.isNextDay = true;
+    if (search) {
+      const re = new RegExp(search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      filter.$or = [{ name: re }, { nameTamil: re }, { description: re }];
+    }
 
-  const sortMap = {
-    price_asc:  { currentPrice: 1 },
-    price_desc: { currentPrice: -1 },
-    fresh:      { freshArrivalDate: -1 },
-    popular:    { totalOrders: -1 },
-    default:    { freshArrivalDate: -1, totalOrders: -1 },
-  };
+    const sortMap = {
+      price_asc:  { currentPrice: 1 },
+      price_desc: { currentPrice: -1 },
+      fresh:      { freshArrivalDate: -1 },
+      popular:    { totalOrders: -1 },
+      default:    { freshArrivalDate: -1, totalOrders: -1 },
+    };
 
-  const skip = (Number(page) - 1) * Number(limit);
-  const [products, total] = await Promise.all([
-    KoyambeduProduct.find(filter)
-      .populate('seller', 'businessName stallNumber marketSection rating servicePincodes')
-      .populate('category', 'name icon')
-      .sort(sortMap[sort] || sortMap.default)
-      .skip(skip)
-      .limit(Number(limit))
-      .lean(),
-    KoyambeduProduct.countDocuments(filter),
-  ]);
-  res.json({ success: true, products, total, page: Number(page), pages: Math.ceil(total / limit) });
+    const skip = (Number(page) - 1) * Number(limit);
+    const [products, total] = await Promise.all([
+      KoyambeduProduct.find(filter)
+        .populate('seller', 'businessName stallNumber marketSection rating servicePincodes')
+        .populate('category', 'name icon')
+        .sort(sortMap[sort] || sortMap.default)
+        .skip(skip)
+        .limit(Number(limit))
+        .lean(),
+      KoyambeduProduct.countDocuments(filter),
+    ]);
+    res.json({ success: true, products, total, page: Number(page), pages: Math.ceil(total / limit) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 };
 
 /** GET /api/koyambedu/products/featured — home page sections */

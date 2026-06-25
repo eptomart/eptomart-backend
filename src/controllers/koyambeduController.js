@@ -1521,6 +1521,13 @@ const adminUpdateProduct = async (req, res) => {
       toQty:      (v.toQty !== '' && v.toQty != null) ? Number(v.toQty) : null, // null = open-ended last tier
       finalPrice: calcVariantFinalPrice(v.basePrice, procPct, platPct, logPct),
     }));
+    // Validate no overlapping ranges
+    for (let i = 1; i < processed.length; i++) {
+      const prevToQty = processed[i - 1].toQty;
+      if (prevToQty !== null && processed[i].fromQty <= prevToQty) {
+        return res.status(400).json({ success: false, message: `Variant ${i + 1}: qty range overlaps with the previous tier — start must be at least ${prevToQty + 1}` });
+      }
+    }
     product.variants = processed;
     product.procurementChargePercent = procPct;
     product.platformChargePercent    = platPct;
@@ -1608,6 +1615,13 @@ const sellerAdminUpdateProduct = async (req, res) => {
       toQty:      (v.toQty !== '' && v.toQty != null) ? Number(v.toQty) : null,
       finalPrice: calcVariantFinalPrice(v.basePrice, procPct, platPct, logPct),
     }));
+    // Validate no overlapping ranges
+    for (let i = 1; i < processed.length; i++) {
+      const prevToQty = processed[i - 1].toQty;
+      if (prevToQty !== null && processed[i].fromQty <= prevToQty) {
+        return res.status(400).json({ success: false, message: `Variant ${i + 1}: qty range overlaps with the previous tier — start must be at least ${prevToQty + 1}` });
+      }
+    }
     product.variants = processed;
     product.procurementChargePercent = procPct;
     product.platformChargePercent    = platPct;

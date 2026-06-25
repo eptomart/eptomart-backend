@@ -28,7 +28,6 @@ const KOYAMBEDU_LAT  = 13.0748;
 const KOYAMBEDU_LNG  = 80.2136;
 // No delivery distance limit — serve all areas
 const MIN_WEIGHT_KG  = 1;
-const MAX_WEIGHT_KG  = 90;
 
 /** Haversine distance in km */
 const haversineKm = (lat1, lon1, lat2, lon2) => {
@@ -50,7 +49,6 @@ const itemWeightKg = (item) => {
 /** Delivery charge based on total weight */
 const calcDeliveryCharge = (totalKg) => {
   if (totalKg < MIN_WEIGHT_KG)  return { blocked: true,  reason: 'below_min', charge: 0 };
-  if (totalKg > MAX_WEIGHT_KG)  return { blocked: true,  reason: 'above_max', charge: 0 };
   if (totalKg >= 20)            return { blocked: false,  reason: null,        charge: 249 };
   return                               { blocked: false,  reason: null,        charge: 149 };
 };
@@ -439,13 +437,6 @@ const placeOrder = async (req, res) => {
 
   if (totalWeightKg < MIN_WEIGHT_KG) {
     return res.status(400).json({ success: false, message: 'Minimum order quantity is 1 kg.' });
-  }
-  if (totalWeightKg > MAX_WEIGHT_KG) {
-    return res.status(400).json({
-      success: false,
-      message: 'For orders above 90 kg, please contact us.',
-      contactRequired: true,
-    });
   }
 
   // ── 6. Build order items ──────────────────────────────────

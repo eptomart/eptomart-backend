@@ -1882,6 +1882,19 @@ const _notifySellerNewOrder = async (order) => {
         `Order #${fullOrder.orderId}: ${allItems}. Delivery area: ${areaLabel}. Date: ${delivDate}. Total: ₹${fullOrder.pricing?.total?.toLocaleString('en-IN') || '-'}. Manage at eptomart.com/admin`,
       ]);
     }
+
+    // 4. Notify buyer — order confirmation
+    const buyerPhone = fullOrder.buyer?.phone || fullOrder.shippingAddress?.phone;
+    const buyerName  = fullOrder.buyer?.name  || fullOrder.shippingAddress?.fullName || 'Customer';
+    if (buyerPhone) {
+      const total = fullOrder.pricing?.total?.toLocaleString('en-IN') || '-';
+      waSend(buyerPhone, [
+        buyerName,
+        fullOrder.orderId,
+        'Order Placed Successfully ✅',
+        `Thank you for your order! Order #${fullOrder.orderId}: ${allItems}. Delivery on ${delivDate}. Total: ₹${total}. Track your order at eptomart.com/koyambedu/orders`,
+      ]);
+    }
   } catch (err) {
     console.error('[KBD] Seller notify error:', err.message);
   }

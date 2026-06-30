@@ -132,6 +132,15 @@ const koyambeduOrderSchema = new Schema({
   adminNotes: String,
   cancelReason: String,
 
+  // ── Internal cost tracking (admin only — never exposed to customer) ──────────
+  adminCosts: {
+    actualDeliveryCost: { type: Number, default: 0 },  // actual cost paid to delivery partner
+    miscExpenses:       { type: Number, default: 0 },  // packing, handling, other
+    costNote:           { type: String },               // optional internal note
+    updatedAt:          { type: Date },
+    updatedBy:          { type: Schema.Types.ObjectId, ref: 'User' },
+  },
+
   // Timestamps
   placedAt:    { type: Date, default: Date.now },
   confirmedAt: Date,

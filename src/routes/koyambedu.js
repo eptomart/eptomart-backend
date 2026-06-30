@@ -144,6 +144,13 @@ router.post ('/admin/seller-admins',              protectAdmin,      ctrl.adminC
 router.get  ('/admin/seller-admins',              protectAdmin,      ctrl.adminGetSellerAdmins);     // any admin can list
 router.patch('/admin/seller-admins/:saId/approve',protectSuperAdmin, ctrl.adminApproveSellerAdmin); // superAdmin only to approve/reject
 
+// ── Admin cost update (internal, never shown to customer) ────────
+router.patch('/admin/orders/:orderId/costs',             protectAdmin, ctrl.adminUpdateOrderCosts);
+// ── Reports ───────────────────────────────────────────────────────
+router.get('/admin/reports/order-report',            protectAdmin, ctrl.adminOrderReport);
+router.get('/admin/reports/product-consolidation',   protectAdmin, ctrl.adminProductConsolidationReport);
+router.get('/admin/reports/cashflow',                protectAdmin, ctrl.adminCashflowReport);
+
 // ── SuperAdmin: wipe all Koyambedu data ──────
 router.delete('/admin/wipe-all', protectSuperAdmin, ctrl.adminWipeAll);
 

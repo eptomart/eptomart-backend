@@ -2936,4 +2936,301 @@ module.exports = {
   dashboardStats,
   // F12: Special Requests
   submitSpecialRequest, getSpecialRequests, updateSpecialRequest,
+  // Admin costs
+  adminUpdateOrderCosts,
+  // Reports
+  adminOrderReport, adminProductConsolidationReport, adminCashflowReport,
 };
+
+// ══════════════════════════════════════════════════════════════════
+// ADMIN COST UPDATE — internal only, never shown to customer
+// PATCH /admin/orders/:orderId/costs
+// ══════════════════════════════════════════════════════════════════
+async function adminUpdateOrderCosts(req, res) {
+  try {
+    const { actualDeliveryCost, miscExpenses, costNote } = req.body;
+    const order = await KoyambeduOrder.findById(req.params.orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    order.adminCosts = {
+      actualDeliveryCost: Number(actualDeliveryCost) || 0,
+      miscExpenses:       Number(miscExpenses)       || 0,
+      costNote:           costNote || '',
+      updatedAt:          new Date(),
+      updatedBy:          req.user._id,
+    };
+    await order.save();
+    res.json({ success: true, adminCosts: order.adminCosts });
+  } catch (err) {
+    console.error('adminUpdateOrderCosts:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ADMIN ORDER REPORT
+// GET /admin/reports/order-report
+// Query: deliveryDate (required), slot (optional), sellerAdmin (optional SA id)
+// Returns orders grouped by seller admin
+// ══════════════════════════════════════════════════════════════════
+async function adminOrderReport(req, res) {
+  try {
+    const { deliveryDate, slot, sellerAdmin } = req.query;
+    if (!deliveryDate) return res.status(400).json({ success: false, message: 'deliveryDate required' });
+
+    // Date range for the delivery date
+    const start = new Date(deliveryDate); start.setHours(0, 0, 0, 0);
+    const end   = new Date(deliveryDate); end.setHours(23, 59, 59, 999);
+    const filter = {
+      deliveryDate: { $gte: start, $lte: end },
+      orderStatus:  { $nin: ['cancelled', 'refund_initiated'] },
+    };
+    if (slot) filter.deliverySlot = slot;
+
+    // Filter by seller admin if specified
+    let saSellerIds = null;
+    if (sellerAdmin) {
+      const sellers = await KoyambeduSeller.find({ createdBySellerAdmin: sellerAdmin }).select('_id').lean();
+      saSellerIds = sellers.map(s => s._id.toString());
+      filter['items.seller'] = { $in: sellers.map(s => s._id) };
+    }
+
+    const orders = await KoyambeduOrder.find(filter)
+      .populate('buyer', 'name email')
+      .populate('items.seller', 'businessName name createdBySellerAdmin')
+      .lean();
+
+    // Get all SA info
+    const allSAs = await KoyambeduSellerAdmin.find({}).select('_id name businessName').lean();
+    const saMap  = Object.fromEntries(allSAs.map(sa => [sa._id.toString(), sa]));
+
+    // Group orders by SA
+    const grouped = {}; // saId → { sa, orders: [] }
+    for (const order of orders) {
+      // Determine which SAs are involved in this order
+      const sas = new Set();
+      for (const item of order.items || []) {
+        const sellerId = item.seller?._id?.toString() || item.seller?.toString();
+        const saId     = item.seller?.createdBySellerAdmin?.toString();
+        if (saId) sas.add(saId);
+      }
+      // If SA filter: only include orders that have items from this SA
+      const saIds = [...sas];
+      const targetSAs = sellerAdmin ? saIds.filter(id => id === sellerAdmin) : saIds;
+
+      for (const saId of targetSAs) {
+        if (!grouped[saId]) grouped[saId] = { sa: saMap[saId] || { _id: saId, name: 'Unknown SA' }, orders: [] };
+        // Filter items to only this SA's sellers
+        const saItems = order.items.filter(it => it.seller?.createdBySellerAdmin?.toString() === saId);
+        grouped[saId].orders.push({
+          orderId:         order.orderId,
+          orderStatus:     order.orderStatus,
+          deliveryDate:    order.deliveryDate,
+          deliverySlot:    order.deliverySlot,
+          shippingAddress: order.shippingAddress,
+          pricing:         order.pricing,
+          adminCosts:      order.adminCosts,
+          items: saItems.map(it => ({
+            name:         it.name,
+            unit:         it.unit || it.unitLabel,
+            quantity:     it.quantity,
+            orderedPrice: it.finalPrice || it.orderedPrice,
+            lineTotal:    ((it.finalPrice || it.orderedPrice) * it.quantity),
+            sellerPayout: it.sellerPayout,
+          })),
+          saSubtotal: saItems.reduce((s, it) => s + (it.finalPrice || it.orderedPrice) * it.quantity, 0),
+        });
+      }
+    }
+
+    res.json({ success: true, report: Object.values(grouped), deliveryDate, slot: slot || 'All slots' });
+  } catch (err) {
+    console.error('adminOrderReport:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PRODUCT CONSOLIDATION REPORT
+// GET /admin/reports/product-consolidation
+// Query: deliveryDate (required), slot (required), sellerAdmin (optional — null = all SAs)
+// Returns: list of products with total quantity needed
+// ══════════════════════════════════════════════════════════════════
+async function adminProductConsolidationReport(req, res) {
+  try {
+    const { deliveryDate, slot, sellerAdmin } = req.query;
+    if (!deliveryDate || !slot) return res.status(400).json({ success: false, message: 'deliveryDate and slot required' });
+
+    const start = new Date(deliveryDate); start.setHours(0, 0, 0, 0);
+    const end   = new Date(deliveryDate); end.setHours(23, 59, 59, 999);
+    const filter = {
+      deliveryDate: { $gte: start, $lte: end },
+      deliverySlot: slot,
+      orderStatus:  { $nin: ['cancelled', 'refund_initiated'] },
+    };
+
+    let saSellerIds = null;
+    let saInfo = null;
+    if (sellerAdmin) {
+      const sellers = await KoyambeduSeller.find({ createdBySellerAdmin: sellerAdmin }).select('_id').lean();
+      saSellerIds = sellers.map(s => s._id.toString());
+      filter['items.seller'] = { $in: sellers.map(s => s._id) };
+      saInfo = await KoyambeduSellerAdmin.findById(sellerAdmin).select('name businessName').lean();
+    }
+
+    const orders = await KoyambeduOrder.find(filter)
+      .populate('items.seller', 'createdBySellerAdmin businessName')
+      .lean();
+
+    // Aggregate products
+    const productMap = {}; // productName+unit → { name, unit, totalQty, totalValue, sellerPayout }
+    for (const order of orders) {
+      for (const item of order.items || []) {
+        if (item.status === 'declined') continue;
+        // If SA filter, skip items not belonging to this SA
+        if (saSellerIds) {
+          const sid = item.seller?._id?.toString() || item.seller?.toString();
+          if (!saSellerIds.includes(sid)) continue;
+        }
+        const key = `${item.name}__${item.unit || 'unit'}`;
+        if (!productMap[key]) productMap[key] = { name: item.name, unit: item.unit || item.unitLabel || 'unit', totalQty: 0, totalValue: 0, totalPayout: 0, orderCount: 0 };
+        productMap[key].totalQty   += item.quantity;
+        productMap[key].totalValue += (item.finalPrice || item.orderedPrice) * item.quantity;
+        productMap[key].totalPayout += item.sellerPayout || 0;
+        productMap[key].orderCount++;
+      }
+    }
+
+    const products = Object.values(productMap).sort((a, b) => b.totalQty - a.totalQty);
+    res.json({
+      success: true,
+      sellerAdmin:  saInfo || 'All Seller Admins',
+      deliveryDate,
+      slot,
+      orderCount:   orders.length,
+      products,
+    });
+  } catch (err) {
+    console.error('adminProductConsolidationReport:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// CASHFLOW REPORT
+// GET /admin/reports/cashflow
+// Query: type (date|date-slot), deliveryDate (required), slot (required if type=date-slot)
+//        reportFor (received | procurement | commission | delivery-expense)
+// ══════════════════════════════════════════════════════════════════
+async function adminCashflowReport(req, res) {
+  try {
+    const { deliveryDate, slot, reportType } = req.query;
+    // reportType: received | procurement | commission | delivery-expense
+    if (!deliveryDate) return res.status(400).json({ success: false, message: 'deliveryDate required' });
+    if (slot === undefined && ['slot'].includes(reportType)) return res.status(400).json({ success: false, message: 'slot required' });
+
+    const start = new Date(deliveryDate); start.setHours(0, 0, 0, 0);
+    const end   = new Date(deliveryDate); end.setHours(23, 59, 59, 999);
+    const filter = {
+      deliveryDate: { $gte: start, $lte: end },
+      orderStatus:  { $nin: ['cancelled', 'refund_initiated'] },
+    };
+    if (slot) filter.deliverySlot = slot;
+
+    const orders = await KoyambeduOrder.find(filter)
+      .populate('items.seller', 'businessName name createdBySellerAdmin')
+      .lean();
+
+    const allSAs = await KoyambeduSellerAdmin.find({}).select('_id name businessName').lean();
+    const saMap  = Object.fromEntries(allSAs.map(sa => [sa._id.toString(), sa]));
+
+    // Build per-SA buckets
+    const saBuckets = {}; // saId → { sa, procurementCost, saCommission, eptomartCommission, orderCount }
+    let totalReceived = 0, totalProcurement = 0, totalSaCommission = 0, totalEptomartCommission = 0, totalDeliveryCollected = 0, totalActualDelivery = 0, totalMisc = 0, totalPlatformFee = 0;
+
+    for (const order of orders) {
+      const recv = order.pricing?.total || 0;
+      totalReceived += recv;
+      totalDeliveryCollected += order.pricing?.deliveryCharge || 0;
+      totalPlatformFee += order.pricing?.platformFee || 0;
+      totalActualDelivery += order.adminCosts?.actualDeliveryCost || 0;
+      totalMisc += order.adminCosts?.miscExpenses || 0;
+
+      for (const item of order.items || []) {
+        if (item.status === 'declined') continue;
+        const saId = item.seller?.createdBySellerAdmin?.toString();
+        if (!saId) continue;
+        if (!saBuckets[saId]) saBuckets[saId] = { sa: saMap[saId] || { _id: saId, name: 'Unknown SA' }, procurementCost: 0, saCommission: 0, eptomartCommission: 0, orderCount: new Set() };
+        const lineTotal    = (item.finalPrice || item.orderedPrice) * item.quantity;
+        const sellerPayout = item.sellerPayout || 0;
+        const grossMargin  = lineTotal - sellerPayout;
+        // SA commission = procurement margin (procurementChargePercent portion of margin)
+        // Approximate: 15/(15+10+10) = 15/35 ≈ 43% of gross margin goes to SA
+        // Eptomart gets: 20/35 ≈ 57%  (platform 10% + logistics 10% split of 35% margin)
+        const SA_RATIO = 15 / 35;
+        const saComm   = grossMargin * SA_RATIO;
+        const epComm   = grossMargin * (1 - SA_RATIO);
+        saBuckets[saId].procurementCost    += sellerPayout;
+        saBuckets[saId].saCommission       += saComm;
+        saBuckets[saId].eptomartCommission += epComm;
+        saBuckets[saId].orderCount.add(order._id.toString());
+        totalProcurement    += sellerPayout;
+        totalSaCommission   += saComm;
+        totalEptomartCommission += epComm;
+      }
+    }
+
+    const saSummary = Object.values(saBuckets).map(b => ({
+      sa:                    b.sa,
+      orderCount:            b.orderCount.size,
+      procurementCost:       Math.round(b.procurementCost * 100) / 100,
+      saCommission:          Math.round(b.saCommission * 100) / 100,
+      totalToSA:             Math.round((b.procurementCost + b.saCommission) * 100) / 100,
+      eptomartCommission:    Math.round(b.eptomartCommission * 100) / 100,
+    }));
+
+    // Per-order delivery expense
+    const deliveryExpenses = orders.map(o => ({
+      orderId:            o.orderId,
+      deliverySlot:       o.deliverySlot,
+      deliveryCharge:     o.pricing?.deliveryCharge || 0,
+      actualDeliveryCost: o.adminCosts?.actualDeliveryCost || 0,
+      miscExpenses:       o.adminCosts?.miscExpenses || 0,
+      netDeliveryProfit:  (o.pricing?.deliveryCharge || 0) - (o.adminCosts?.actualDeliveryCost || 0) - (o.adminCosts?.miscExpenses || 0),
+      shippingAddress:    `${o.shippingAddress?.city || ''}, ${o.shippingAddress?.pincode || ''}`,
+    }));
+
+    res.json({
+      success: true,
+      deliveryDate,
+      slot:              slot || 'All slots',
+      summary: {
+        orderCount:              orders.length,
+        totalReceived:           Math.round(totalReceived * 100) / 100,
+        totalProcurement:        Math.round(totalProcurement * 100) / 100,
+        totalSaCommission:       Math.round(totalSaCommission * 100) / 100,
+        totalEptomartCommission: Math.round(totalEptomartCommission * 100) / 100,
+        totalDeliveryCollected:  Math.round(totalDeliveryCollected * 100) / 100,
+        totalActualDelivery:     Math.round(totalActualDelivery * 100) / 100,
+        totalMiscExpenses:       Math.round(totalMisc * 100) / 100,
+        totalPlatformFee:        Math.round(totalPlatformFee * 100) / 100,
+        netDeliveryProfit:       Math.round((totalDeliveryCollected - totalActualDelivery - totalMisc) * 100) / 100,
+        eptomartNetProfit:       Math.round((totalEptomartCommission + totalPlatformFee + totalDeliveryCollected - totalActualDelivery - totalMisc) * 100) / 100,
+      },
+      saSummary,
+      deliveryExpenses,
+      orders: orders.map(o => ({
+        orderId:        o.orderId,
+        total:          o.pricing?.total,
+        deliveryCharge: o.pricing?.deliveryCharge,
+        platformFee:    o.pricing?.platformFee,
+        deliverySlot:   o.deliverySlot,
+        adminCosts:     o.adminCosts,
+        paymentMethod:  o.paymentMethod,
+        paymentStatus:  o.paymentStatus,
+      })),
+    });
+  } catch (err) {
+    console.error('adminCashflowReport:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+}

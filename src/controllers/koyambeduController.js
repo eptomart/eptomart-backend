@@ -2793,6 +2793,9 @@ const adminPartialRefund = async (req, res) => {
     if (!refundAmount || refundAmount <= 0) {
       return res.status(400).json({ success: false, message: 'Enter a valid refund amount' });
     }
+    if (!reason?.trim()) {
+      return res.status(400).json({ success: false, message: 'Reason is required before initiating a refund' });
+    }
 
     const order = await KoyambeduOrder.findById(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });

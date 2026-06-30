@@ -2781,6 +2781,141 @@ const adminUpdateRefundRequest = async (req, res) => {
   res.json({ success: true, message: 'Updated' });
 };
 
+/**
+ * PATCH /admin/orders/:orderId/partial-refund
+ * Initiate a partial refund via Razorpay to source (card/UPI/net-banking).
+ * Body: { amount: Number (₹), reason: String }
+ */
+const adminPartialRefund = async (req, res) => {
+  try {
+    const { amount, reason } = req.body;
+    const refundAmount = Number(amount);
+    if (!refundAmount || refundAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'Enter a valid refund amount' });
+    }
+
+    const order = await KoyambeduOrder.findById(req.params.orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    // Only Razorpay payments can be refunded to source
+    if (order.paymentMethod !== 'razorpay') {
+      return res.status(400).json({ success: false, message: 'Partial refund to source is only available for Razorpay payments. For COD, credit the wallet manually.' });
+    }
+    if (order.paymentStatus !== 'paid') {
+      return res.status(400).json({ success: false, message: 'Payment has not been captured yet or order is already fully refunded.' });
+    }
+
+    const paymentId = order.paymentDetails?.razorpayPaymentId;
+    if (!paymentId) {
+      return res.status(400).json({ success: false, message: 'Razorpay payment ID not found on this order.' });
+    }
+
+    // Check requested amount doesn't exceed order total minus already-refunded amounts
+    const alreadyRefunded = (order.partialRefunds || [])
+      .filter(r => r.status === 'initiated')
+      .reduce((s, r) => s + r.amount, 0);
+    const maxRefundable = (order.pricing?.total || 0) - alreadyRefunded;
+    if (refundAmount > maxRefundable) {
+      return res.status(400).json({ success: false, message: `Maximum refundable amount is ₹${maxRefundable.toFixed(2)} (already refunded: ₹${alreadyRefunded.toFixed(2)})` });
+    }
+
+    // Call Razorpay refund API
+    const rzpKeyId     = process.env.RAZORPAY_KEY_ID;
+    const rzpKeySecret = process.env.RAZORPAY_KEY_SECRET;
+    if (!rzpKeyId || !rzpKeySecret) {
+      return res.status(503).json({ success: false, message: 'Razorpay credentials not configured' });
+    }
+
+    const https = require('https');
+    const amountPaise = Math.round(refundAmount * 100);
+    const body = JSON.stringify({ amount: amountPaise, speed: 'normal', notes: { reason: reason || 'Partial refund by admin', orderId: order.orderId } });
+    const auth = Buffer.from(`${rzpKeyId}:${rzpKeySecret}`).toString('base64');
+
+    const rzpResponse = await new Promise((resolve, reject) => {
+      const hreq = https.request({
+        hostname: 'api.razorpay.com',
+        path:     `/v1/payments/${paymentId}/refund`,
+        method:   'POST',
+        headers:  {
+          'Content-Type':   'application/json',
+          'Authorization':  `Basic ${auth}`,
+          'Content-Length': Buffer.byteLength(body),
+        },
+      }, (hres) => {
+        let d = '';
+        hres.on('data', c => d += c);
+        hres.on('end', () => {
+          try { resolve({ status: hres.statusCode, body: JSON.parse(d || '{}') }); }
+          catch { resolve({ status: hres.statusCode, body: { error: d } }); }
+        });
+      });
+      hreq.on('error', reject);
+      hreq.write(body);
+      hreq.end();
+    });
+
+    if (rzpResponse.status >= 400) {
+      const errMsg = rzpResponse.body?.error?.description || rzpResponse.body?.error || 'Razorpay refund failed';
+      return res.status(502).json({ success: false, message: `Razorpay error: ${errMsg}` });
+    }
+
+    // Record the refund
+    const refundRecord = {
+      amount,
+      reason: reason || '',
+      razorpayRefundId: rzpResponse.body?.id || '',
+      status:      'initiated',
+      initiatedAt: new Date(),
+      initiatedBy: req.user._id,
+    };
+    order.partialRefunds.push(refundRecord);
+    // Update order-level refund note
+    order.adminNotes = [order.adminNotes, `Partial refund ₹${amount} initiated (${new Date().toLocaleDateString('en-IN')})`].filter(Boolean).join(' | ');
+    await order.save();
+
+    res.json({
+      success: true,
+      message: `₹${amount} refund initiated to source via Razorpay`,
+      refundId: rzpResponse.body?.id,
+      partialRefunds: order.partialRefunds,
+    });
+  } catch (err) {
+    console.error('adminPartialRefund:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/** PATCH /seller-admin/orders/:orderId/status — SA can move order through fulfilment statuses */
+const sellerAdminUpdateOrderStatus = async (req, res) => {
+  try {
+    const sa = req.kbdSellerAdmin;
+    const { status, deliveryPartner, adminNotes } = req.body;
+
+    const ALLOWED = ['confirmed', 'packing', 'dispatched', 'delivered'];
+    if (!ALLOWED.includes(status)) {
+      return res.status(400).json({ success: false, message: `Status must be one of: ${ALLOWED.join(', ')}` });
+    }
+
+    // Verify order has at least one item from this SA's sellers
+    const sellerIds = (await KoyambeduSeller.find({ createdBySellerAdmin: sa._id }).select('_id').lean()).map(s => s._id);
+    const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, 'items.seller': { $in: sellerIds } });
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found or not yours' });
+
+    order.orderStatus = status;
+    if (deliveryPartner) order.deliveryPartner = deliveryPartner;
+    if (adminNotes)      order.adminNotes      = adminNotes;
+    if (status === 'dispatched')  order.dispatchedAt = new Date();
+    if (status === 'delivered')   order.deliveredAt  = new Date();
+    if (status === 'confirmed')   order.confirmedAt  = new Date();
+
+    await order.save();
+    res.json({ success: true, order: { _id: order._id, orderStatus: order.orderStatus } });
+  } catch (err) {
+    console.error('sellerAdminUpdateOrderStatus:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 /** GET /api/koyambedu/orders/:orderId/invoice — generate PDF invoice for buyer */
 const getOrderInvoice = async (req, res) => {
   const PDFDocument = require('pdfkit');
@@ -2910,7 +3045,7 @@ module.exports = {
   // Admin — seller admins (SuperAdmin only)
   adminUserSearch, adminCreateSellerAdmin, adminGetSellerAdmins, adminApproveSellerAdmin,
   // SellerAdmin portal
-  sellerAdminGetProfile, sellerAdminGetSellers, sellerAdminCreateSeller, sellerAdminGetOrders,
+  sellerAdminGetProfile, sellerAdminGetSellers, sellerAdminCreateSeller, sellerAdminGetOrders, sellerAdminUpdateOrderStatus,
   sellerAdminGetProducts, sellerAdminUpdateProduct, sellerAdminCreateProduct, sellerAdminToggleProduct,
   sellerAdminCreateCategory, sellerAdminGetCategories,
   sellerAdminRequestEdit,
@@ -2938,6 +3073,8 @@ module.exports = {
   submitSpecialRequest, getSpecialRequests, updateSpecialRequest,
   // Admin costs
   adminUpdateOrderCosts,
+  // Partial refund
+  adminPartialRefund,
   // Reports
   adminOrderReport, adminProductConsolidationReport, adminCashflowReport,
 };

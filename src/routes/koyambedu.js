@@ -109,6 +109,7 @@ router.put  ('/seller-admin/sellers/:sellerId/products/:productId',        prote
 router.patch('/seller-admin/sellers/:sellerId/products/:productId/toggle', protectSellerAdmin, ctrl.sellerAdminToggleProduct);
 router.patch('/seller-admin/sellers/:sellerId/edit-request',               protectSellerAdmin, ctrl.sellerAdminRequestEdit);
 router.get  ('/seller-admin/orders',                                       protectSellerAdmin, ctrl.sellerAdminGetOrders);
+router.patch('/seller-admin/orders/:orderId/status',                       protectSellerAdmin, ctrl.sellerAdminUpdateOrderStatus);
 
 // ══════════════════════════════════════════════
 // ADMIN — admin or superAdmin
@@ -146,6 +147,8 @@ router.patch('/admin/seller-admins/:saId/approve',protectSuperAdmin, ctrl.adminA
 
 // ── Admin cost update (internal, never shown to customer) ────────
 router.patch('/admin/orders/:orderId/costs',             protectAdmin, ctrl.adminUpdateOrderCosts);
+// ── Partial Razorpay refund ────────────────────────────────────
+router.patch('/admin/orders/:orderId/partial-refund',    protectSuperAdmin, ctrl.adminPartialRefund);
 // ── Reports ───────────────────────────────────────────────────────
 router.get('/admin/reports/order-report',            protectAdmin, ctrl.adminOrderReport);
 router.get('/admin/reports/product-consolidation',   protectAdmin, ctrl.adminProductConsolidationReport);

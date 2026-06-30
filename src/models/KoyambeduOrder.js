@@ -120,13 +120,23 @@ const koyambeduOrderSchema = new Schema({
     refundAmount:     Number,
   },
 
-  // Refund
+  // Refund (full order refund — set by cancelOrder / _refundOrder)
   refund: {
     status:   { type: String, enum: ['not_applicable','initiated','completed','failed','manual_required'] },
     amount:   Number,
     reason:   String,
     initiatedAt: Date,
   },
+
+  // Partial refunds — admin-initiated, each records Razorpay refund ID
+  partialRefunds: [{
+    amount:         { type: Number, required: true },        // amount in ₹
+    reason:         { type: String },
+    razorpayRefundId: { type: String },                      // rzp refund id
+    status:         { type: String, enum: ['initiated','failed'], default: 'initiated' },
+    initiatedAt:    { type: Date, default: Date.now },
+    initiatedBy:    { type: Schema.Types.ObjectId, ref: 'User' },
+  }],
 
   // Admin notes
   adminNotes: String,

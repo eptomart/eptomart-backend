@@ -57,6 +57,13 @@ router.get   ('/my-orders',                 protect, ctrl.getMyOrders);
 router.get   ('/my-orders/:orderId',        protect, ctrl.getMyOrder);
 router.post  ('/orders/:orderId/approve-revision', protect, ctrl.approveRevision);
 router.post  ('/orders/:orderId/cancel',    protect, ctrl.cancelOrder);
+router.get   ('/orders/:orderId/invoice',   protect, ctrl.getOrderInvoice);
+
+// ══════════════════════════════════════════════
+// WALLET — customer
+// ══════════════════════════════════════════════
+router.get ('/wallet',                 protect, ctrl.getWallet);
+router.post('/wallet/refund-request',  protect, ctrl.requestWalletRefund);
 
 // ══════════════════════════════════════════════
 // AI — translate & describe (any logged-in user)
@@ -101,13 +108,19 @@ router.post ('/seller-admin/sellers/:sellerId/products',            protectSelle
 router.put  ('/seller-admin/sellers/:sellerId/products/:productId',        protectSellerAdmin, ctrl.sellerAdminUpdateProduct);
 router.patch('/seller-admin/sellers/:sellerId/products/:productId/toggle', protectSellerAdmin, ctrl.sellerAdminToggleProduct);
 router.patch('/seller-admin/sellers/:sellerId/edit-request',               protectSellerAdmin, ctrl.sellerAdminRequestEdit);
+router.get  ('/seller-admin/orders',                                       protectSellerAdmin, ctrl.sellerAdminGetOrders);
 
 // ══════════════════════════════════════════════
 // ADMIN — admin or superAdmin
 // ══════════════════════════════════════════════
 router.get  ('/admin/dashboard',                  protectAdmin, ctrl.adminDashboard);
 router.get  ('/admin/orders',                     protectAdmin, ctrl.adminGetOrders);
-router.patch('/admin/orders/:orderId/status',     protectAdmin, ctrl.adminUpdateOrderStatus);
+router.patch('/admin/orders/:orderId/status',                         protectAdmin, ctrl.adminUpdateOrderStatus);
+router.patch('/admin/orders/:orderId/items/:itemIndex/qty',           protectAdmin, ctrl.adminEditOrderItemQty);
+router.patch('/admin/orders/:orderId/items/:itemIndex/decline',       protectAdmin, ctrl.adminDeclineOrderItem);
+// Wallet refund request management (SuperAdmin)
+router.get  ('/admin/refund-requests',                                protectAdmin, ctrl.adminGetRefundRequests);
+router.patch('/admin/refund-requests/:walletId/:requestId',           protectAdmin, ctrl.adminUpdateRefundRequest);
 router.get  ('/admin/sellers',                    protectAdmin,      ctrl.adminGetSellers);
 router.post ('/admin/sellers',                    protectSuperAdmin, ctrl.adminCreateSeller);
 router.patch('/admin/sellers/:sellerId/approve',  protectAdmin,      ctrl.adminApproveSeller);
@@ -163,6 +176,10 @@ router.post ('/admin/forecast/:productId/approve',        protectAdmin,       ct
 // ══════════════════════════════════════════════
 // FEATURES 7–10 — Reports & Dashboard Stats
 // ══════════════════════════════════════════════
+// Admin daily price panel (with optional sellerAdmin filter)
+router.get  ('/admin/daily-price',            protectAdmin, ctrl.getDailyPricePanel);
+router.patch('/admin/daily-price/:productId', protectAdmin, ctrl.updateDailyPrice);
+router.post ('/admin/daily-price/bulk',       protectAdmin, ctrl.bulkUpdateDailyPrice);
 router.get('/admin/reports/procurement',        protectAdmin,       ctrl.procurementReport);
 router.get('/admin/reports/slot-wise',          protectAdmin,       ctrl.slotWiseReport);
 router.get('/admin/reports/destination',        protectAdmin,       ctrl.destinationReport);

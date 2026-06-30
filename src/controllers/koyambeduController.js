@@ -13,6 +13,7 @@ const KoyambeduCategory     = require('../models/KoyambeduCategory');
 const KoyambeduProduct      = require('../models/KoyambeduProduct');
 const KoyambeduCart         = require('../models/KoyambeduCart');
 const KoyambeduOrder        = require('../models/KoyambeduOrder');
+const KoyambeduWallet       = require('../models/KoyambeduWallet');
 const KoyambeduDeliverySlot = require('../models/KoyambeduDeliverySlot');
 const User                  = require('../models/User');
 const EptoFreshCoupon       = require('../models/EptoFreshCoupon');
@@ -681,8 +682,22 @@ const cancelOrder = async (req, res) => {
   order.orderStatus  = 'cancelled';
   order.cancelReason = req.body.reason || 'Cancelled by buyer';
   await order.save();
-  if (order.paymentStatus === 'paid' && order.paymentMethod === 'razorpay') {
-    setImmediate(() => _refundOrder(order).catch(() => {}));
+
+  const total = order.pricing?.total || 0;
+  if (order.paymentStatus === 'paid') {
+    if (order.paymentMethod === 'razorpay') {
+      // Gateway refund
+      setImmediate(() => _refundOrder(order).catch(() => {}));
+    } else {
+      // COD — credit wallet
+      setImmediate(async () => {
+        try {
+          let wallet = await KoyambeduWallet.findOne({ user: order.buyer });
+          if (!wallet) wallet = await KoyambeduWallet.create({ user: order.buyer });
+          await wallet.credit(total, 'order_cancelled', order.orderId, order._id, `Order ${order.orderId} cancelled`);
+        } catch(e) { console.error('Wallet credit failed', e); }
+      });
+    }
   }
   res.json({ success: true, message: 'Order cancelled' });
 };
@@ -1002,11 +1017,25 @@ const adminDashboard = async (req, res) => {
 
 /** GET /api/koyambedu/admin/orders */
 const adminGetOrders = async (req, res) => {
-  const { status, page = 1, limit = 20, deliveryType, search } = req.query;
+  const { status, page = 1, limit = 20, deliveryType, search, deliveryDate, deliverySlot, sellerAdmin, itemStatus } = req.query;
   const filter = {};
   if (status) filter.orderStatus = status;
   if (deliveryType) filter.deliveryType = deliveryType;
   if (search) filter.orderId = { $regex: search, $options: 'i' };
+  if (deliverySlot) filter.deliverySlot = deliverySlot;
+  if (itemStatus === 'declined') filter['items.status'] = 'declined';
+  if (deliveryDate) {
+    const d = new Date(deliveryDate);
+    filter.deliveryDate = { $gte: d, $lt: new Date(d.getTime() + 86400000) };
+  }
+  if (sellerAdmin) {
+    // Get all sellers under this SA
+    const sa = await KoyambeduSellerAdmin.findById(sellerAdmin).select('_id');
+    if (sa) {
+      const sellerIds = (await KoyambeduSeller.find({ createdBySellerAdmin: sa._id }).select('_id').lean()).map(s => s._id);
+      filter['items.seller'] = { $in: sellerIds };
+    }
+  }
 
   const skip = (Number(page) - 1) * Number(limit);
   const [orders, total] = await Promise.all([
@@ -1041,6 +1070,61 @@ const adminUpdateOrderStatus = async (req, res) => {
   }
 
   res.json({ success: true, order });
+};
+
+/** PATCH /api/koyambedu/admin/orders/:orderId/items/:itemIndex/qty — edit item quantity */
+const adminEditOrderItemQty = async (req, res) => {
+  const { newQty } = req.body;
+  if (!newQty || newQty < 1) return res.status(400).json({ success: false, message: 'newQty must be >= 1' });
+  const order = await KoyambeduOrder.findById(req.params.orderId);
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+  const item = order.items[Number(req.params.itemIndex)];
+  if (!item) return res.status(404).json({ success: false, message: 'Item not found' });
+
+  const price = item.finalPrice || item.orderedPrice || 0;
+  const oldLine = price * item.quantity;
+  item.quantity = newQty;
+  const newLine = price * newQty;
+  // Adjust pricing
+  if (order.pricing) {
+    order.pricing.subtotal = (order.pricing.subtotal || 0) - oldLine + newLine;
+    order.pricing.total    = (order.pricing.total    || 0) - oldLine + newLine;
+  }
+  await order.save();
+  res.json({ success: true, order });
+};
+
+/** PATCH /api/koyambedu/admin/orders/:orderId/items/:itemIndex/decline — decline item + credit wallet */
+const adminDeclineOrderItem = async (req, res) => {
+  const order = await KoyambeduOrder.findById(req.params.orderId)
+    .populate('buyer', 'name email phone');
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+  const item = order.items[Number(req.params.itemIndex)];
+  if (!item) return res.status(404).json({ success: false, message: 'Item not found' });
+  if (item.status === 'declined') return res.status(400).json({ success: false, message: 'Item already declined' });
+
+  const price   = item.finalPrice || item.orderedPrice || 0;
+  const refundAmount = price * item.quantity;
+
+  item.status = 'declined';
+  // Adjust pricing
+  if (order.pricing && refundAmount > 0) {
+    order.pricing.subtotal = Math.max(0, (order.pricing.subtotal || 0) - refundAmount);
+    order.pricing.total    = Math.max(0, (order.pricing.total    || 0) - refundAmount);
+  }
+  await order.save();
+
+  // Credit wallet
+  setImmediate(async () => {
+    try {
+      let wallet = await KoyambeduWallet.findOne({ user: order.buyer?._id || order.buyer });
+      if (!wallet) wallet = await KoyambeduWallet.create({ user: order.buyer?._id || order.buyer });
+      await wallet.credit(refundAmount, 'item_declined', order.orderId, order._id,
+        `${item.name} declined from order ${order.orderId}`);
+    } catch(e) { console.error('Wallet credit for declined item failed', e); }
+  });
+
+  res.json({ success: true, message: `${item.name} declined — ₹${refundAmount} credited to customer wallet`, order });
 };
 
 /** GET /api/koyambedu/admin/sellers */
@@ -1260,6 +1344,44 @@ const sellerAdminGetProfile = async (req, res) => {
   const sa = await KoyambeduSellerAdmin.findOne({ user: req.user._id });
   if (!sa) return res.status(404).json({ success: false, message: 'SellerAdmin profile not found' });
   res.json({ success: true, sellerAdmin: sa });
+};
+
+/** GET /api/koyambedu/seller-admin/orders — orders whose items belong to this SA's sellers */
+const sellerAdminGetOrders = async (req, res) => {
+  const sa = await KoyambeduSellerAdmin.findOne({ user: req.user._id, status: 'approved' });
+  if (!sa) return res.status(403).json({ success: false, message: 'SellerAdmin not approved' });
+
+  // Get sellers this SA manages
+  const sellers = await KoyambeduSeller.find({ createdBySellerAdmin: sa._id }).select('_id').lean();
+  const sellerIds = sellers.map(s => s._id);
+
+  // Build filter
+  const filter = { 'items.seller': { $in: sellerIds } };
+  const { orderDate, deliveryDate, deliverySlot } = req.query;
+  if (orderDate) {
+    const d = new Date(orderDate);
+    filter.createdAt = { $gte: d, $lt: new Date(d.getTime() + 86400000) };
+  }
+  if (deliveryDate) {
+    const d = new Date(deliveryDate);
+    filter.deliveryDate = { $gte: d, $lt: new Date(d.getTime() + 86400000) };
+  }
+  if (deliverySlot) filter.deliverySlot = deliverySlot;
+
+  const orders = await KoyambeduOrder.find(filter)
+    .populate('items.product', 'name images unit')
+    .populate('buyer', 'name phone email')
+    .sort({ createdAt: -1 })
+    .limit(200)
+    .lean();
+
+  // Filter items to only those belonging to SA's sellers
+  const enriched = orders.map(o => ({
+    ...o,
+    myItems: o.items.filter(it => sellerIds.some(id => String(id) === String(it.seller))),
+  }));
+
+  res.json({ success: true, orders: enriched });
 };
 
 /** GET /api/koyambedu/seller-admin/sellers — list sellers this SA created */
@@ -2093,10 +2215,19 @@ const KoyambeduPriceHistory = require('../models/KoyambeduPriceHistory');
 
 const getDailyPricePanel = async (req, res) => {
   try {
-    const sellers = await require('../models/KoyambeduSeller').find({}).select('_id name').lean();
-    const sellerIds = sellers.map(s => s._id);
+    // sellerAdmin query param: if admin-level call, can filter by SA id
+    const { sellerAdmin } = req.query;
+    let sellerIds;
+    if (sellerAdmin) {
+      const sellers = await KoyambeduSeller.find({ createdBySellerAdmin: sellerAdmin, status: 'approved' }).select('_id').lean();
+      sellerIds = sellers.map(s => s._id);
+    } else {
+      const sellers = await KoyambeduSeller.find({}).select('_id').lean();
+      sellerIds = sellers.map(s => s._id);
+    }
     const products = await KoyambeduProduct.find({ seller: { $in: sellerIds }, isActive: true })
-      .populate('seller', 'name')
+      .populate('seller', 'name businessName')
+      .populate('category', 'name')
       .select('name productCode currentPrice finalPrice basePrice sellerMarginPercent platformFeePercent logisticsPercent stockQty priceUpdatedAt')
       .lean();
     res.json({ success: true, products });
@@ -2565,6 +2696,190 @@ const updateSpecialRequest = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════
+// WALLET — customer-facing
+// ══════════════════════════════════════════════
+
+/** GET /api/koyambedu/wallet — get or create wallet for logged-in buyer */
+const getWallet = async (req, res) => {
+  let wallet = await KoyambeduWallet.findOne({ user: req.user._id }).lean();
+  if (!wallet) {
+    const created = await KoyambeduWallet.create({ user: req.user._id });
+    wallet = created.toObject();
+  }
+  res.json({ success: true, wallet });
+};
+
+/** POST /api/koyambedu/wallet/refund-request — customer requests refund of wallet balance */
+const requestWalletRefund = async (req, res) => {
+  const { amount, bankAccountName, bankAccountNumber, confirmAccountNumber, bankIfsc, bankName } = req.body;
+  if (!amount || !bankAccountName || !bankAccountNumber || !bankIfsc) {
+    return res.status(400).json({ success: false, message: 'amount, bankAccountName, bankAccountNumber, bankIfsc are required' });
+  }
+  if (bankAccountNumber !== confirmAccountNumber) {
+    return res.status(400).json({ success: false, message: 'Account numbers do not match' });
+  }
+  let wallet = await KoyambeduWallet.findOne({ user: req.user._id });
+  if (!wallet) return res.status(404).json({ success: false, message: 'Wallet not found' });
+  if (wallet.balance < amount) return res.status(400).json({ success: false, message: 'Insufficient balance' });
+
+  // Check for existing pending request
+  const pending = wallet.refundRequests.find(r => r.status === 'pending');
+  if (pending) return res.status(400).json({ success: false, message: 'You already have a pending refund request' });
+
+  wallet.refundRequests.push({ amount, bankAccountName, bankAccountNumber, bankIfsc, bankName: bankName || '' });
+  await wallet.save();
+  res.json({ success: true, message: 'Refund request submitted' });
+};
+
+// ══════════════════════════════════════════════
+// WALLET — admin-facing
+// ══════════════════════════════════════════════
+
+/** GET /api/koyambedu/admin/refund-requests — list pending refund requests */
+const adminGetRefundRequests = async (req, res) => {
+  const { status = 'pending' } = req.query;
+  const wallets = await KoyambeduWallet.find({ 'refundRequests.status': status })
+    .populate('user', 'name email phone')
+    .lean();
+  const requests = [];
+  wallets.forEach(w => {
+    w.refundRequests.filter(r => r.status === status).forEach(r => {
+      requests.push({ ...r, walletId: w._id, userId: w.user, walletBalance: w.balance });
+    });
+  });
+  requests.sort((a, b) => new Date(b.requestedAt) - new Date(a.requestedAt));
+  res.json({ success: true, requests });
+};
+
+/** PATCH /api/koyambedu/admin/refund-requests/:walletId/:requestId — confirm/cancel/mark-refunded */
+const adminUpdateRefundRequest = async (req, res) => {
+  const { walletId, requestId } = req.params;
+  const { action, adminNote } = req.body; // 'confirm', 'cancel', 'mark_refunded'
+  const wallet = await KoyambeduWallet.findById(walletId);
+  if (!wallet) return res.status(404).json({ success: false, message: 'Wallet not found' });
+  const rr = wallet.refundRequests.id(requestId);
+  if (!rr) return res.status(404).json({ success: false, message: 'Refund request not found' });
+
+  if (action === 'confirm') {
+    rr.status = 'confirmed';
+  } else if (action === 'cancel') {
+    rr.status = 'cancelled';
+  } else if (action === 'mark_refunded') {
+    if (rr.status !== 'confirmed') return res.status(400).json({ success: false, message: 'Confirm the request first' });
+    // Debit wallet
+    if (wallet.balance < rr.amount) return res.status(400).json({ success: false, message: 'Wallet balance insufficient for refund' });
+    wallet.balance -= rr.amount;
+    wallet.transactions.push({ type: 'debit', amount: rr.amount, reason: 'refund_paid', note: adminNote || 'Admin initiated bank transfer' });
+    rr.status = 'refunded';
+    rr.processedAt = new Date();
+  } else {
+    return res.status(400).json({ success: false, message: 'Invalid action' });
+  }
+  if (adminNote) rr.adminNote = adminNote;
+  await wallet.save();
+  res.json({ success: true, message: 'Updated' });
+};
+
+/** GET /api/koyambedu/orders/:orderId/invoice — generate PDF invoice for buyer */
+const getOrderInvoice = async (req, res) => {
+  const PDFDocument = require('pdfkit');
+  const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id })
+    .populate('buyer', 'name email phone')
+    .lean();
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  const doc = new PDFDocument({ size: 'A4', margin: 50 });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="Invoice-${order.orderId}.pdf"`);
+  doc.pipe(res);
+
+  // ── Header ───────────────────────────────────────────────
+  doc.fontSize(20).font('Helvetica-Bold').fillColor('#065f46').text('EPTOMART', 50, 50);
+  doc.fontSize(10).font('Helvetica').fillColor('#6b7280').text('Koyambedu Daily', 50, 75);
+  doc.fontSize(16).font('Helvetica-Bold').fillColor('#111827').text('TAX INVOICE', 400, 50, { align: 'right' });
+  doc.fontSize(10).font('Helvetica').fillColor('#6b7280').text(`Invoice #: ${order.orderId}`, 400, 75, { align: 'right' });
+  const orderDate = new Date(order.placedAt || order.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+  doc.text(`Date: ${orderDate}`, 400, 90, { align: 'right' });
+
+  doc.moveTo(50, 115).lineTo(545, 115).strokeColor('#e5e7eb').lineWidth(1).stroke();
+
+  // ── Bill To ───────────────────────────────────────────────
+  doc.moveDown(1.5);
+  doc.fontSize(10).font('Helvetica-Bold').fillColor('#374151').text('BILL TO:');
+  const addr = order.shippingAddress || {};
+  doc.fontSize(10).font('Helvetica').fillColor('#374151')
+    .text(addr.fullName || order.buyer?.name || '-')
+    .text([addr.address, addr.city, addr.state, addr.pincode].filter(Boolean).join(', '))
+    .text(`Phone: ${addr.phone || order.buyer?.phone || '-'}`);
+
+  // ── Delivery info ─────────────────────────────────────────
+  if (order.deliveryDate || order.deliverySlot) {
+    doc.moveDown(0.5);
+    if (order.deliveryDate) {
+      const dDate = new Date(order.deliveryDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+      doc.fontSize(10).font('Helvetica').fillColor('#374151').text(`Delivery Date: ${dDate}`);
+    }
+    if (order.deliverySlot) {
+      doc.text(`Delivery Slot: ${order.deliverySlot}`);
+    }
+  }
+
+  // ── Items table ───────────────────────────────────────────
+  const tableTop = doc.y + 20;
+  doc.fontSize(9).font('Helvetica-Bold').fillColor('#ffffff');
+  doc.rect(50, tableTop, 495, 20).fill('#065f46');
+  doc.text('Item', 55, tableTop + 6);
+  doc.text('Qty', 300, tableTop + 6);
+  doc.text('Unit Price', 360, tableTop + 6);
+  doc.text('Amount', 460, tableTop + 6);
+
+  let rowY = tableTop + 20;
+  let subtotal = 0;
+  (order.items || []).forEach((item, idx) => {
+    const price  = item.finalPrice || item.orderedPrice || 0;
+    const line   = price * item.quantity;
+    subtotal += line;
+    const fill   = idx % 2 === 0 ? '#f9fafb' : '#ffffff';
+    doc.rect(50, rowY, 495, 18).fill(fill);
+    doc.fontSize(9).font('Helvetica').fillColor(item.status === 'declined' ? '#9ca3af' : '#111827');
+    const name = item.status === 'declined' ? `${item.name} (Declined)` : item.name;
+    doc.text(name, 55, rowY + 5, { width: 240, ellipsis: true });
+    doc.text(`${item.quantity} ${item.unit}`, 300, rowY + 5);
+    doc.text(`₹${price.toFixed(2)}`, 360, rowY + 5);
+    doc.text(item.status === 'declined' ? '—' : `₹${line.toFixed(2)}`, 460, rowY + 5);
+    rowY += 18;
+  });
+
+  // ── Totals ────────────────────────────────────────────────
+  rowY += 10;
+  doc.moveTo(50, rowY).lineTo(545, rowY).strokeColor('#e5e7eb').lineWidth(0.5).stroke();
+  rowY += 8;
+
+  const pricing = order.pricing || {};
+  const rows = [
+    ['Subtotal', `₹${(pricing.subtotal || subtotal).toFixed(2)}`],
+    pricing.deliveryFee > 0 ? ['Delivery Fee', `₹${pricing.deliveryFee.toFixed(2)}`] : null,
+    pricing.platformFee > 0 ? ['Platform Fee', `₹${pricing.platformFee.toFixed(2)}`] : null,
+    pricing.walletCredit > 0 ? ['Wallet Credit', `-₹${pricing.walletCredit.toFixed(2)}`] : null,
+  ].filter(Boolean);
+  rows.forEach(([label, val]) => {
+    doc.fontSize(9).font('Helvetica').fillColor('#374151').text(label, 380, rowY).text(val, 460, rowY);
+    rowY += 14;
+  });
+  rowY += 4;
+  doc.fontSize(11).font('Helvetica-Bold').fillColor('#065f46')
+    .text('TOTAL', 380, rowY)
+    .text(`₹${(pricing.total || subtotal).toFixed(2)}`, 460, rowY);
+
+  // ── Footer ────────────────────────────────────────────────
+  doc.fontSize(8).font('Helvetica').fillColor('#9ca3af')
+    .text('Thank you for shopping with Eptomart — Koyambedu Daily', 50, 750, { align: 'center', width: 495 })
+    .text('This is a computer-generated invoice and does not require a signature.', 50, 762, { align: 'center', width: 495 });
+
+  doc.end();
+};
+
 // expose helpers for routes
 exports._calcFinalPrice       = calcFinalPrice;
 exports._getProcurementCycle  = getProcurementCycle;
@@ -2580,20 +2895,22 @@ module.exports = {
   getCart, updateCart, clearCart,
   // Buyer orders
   placeOrder, createRazorpayOrder, verifyPayment,
-  getMyOrders, getMyOrder, approveRevision, cancelOrder,
+  getMyOrders, getMyOrder, approveRevision, cancelOrder, getOrderInvoice,
   // Seller
   sellerRegister, getSellerProfile, updateSellerProfile,
   getSellerProducts, createSellerProduct, updateSellerProduct,
   toggleProductAvailability, deleteSellerProduct,
   getSellerOrders, confirmStock, requestPriceRevision, createSellerCategory,
   // Admin — sellers
-  adminDashboard, adminGetOrders, adminUpdateOrderStatus,
+  adminDashboard, adminGetOrders, adminUpdateOrderStatus, adminEditOrderItemQty, adminDeclineOrderItem,
+  // Wallet
+  getWallet, requestWalletRefund, adminGetRefundRequests, adminUpdateRefundRequest,
   adminGetSellers, adminCreateSeller, adminApproveSeller, adminToggleSeller, adminEditSellerContact,
   adminGetCategories, adminCreateCategory, adminEditCategory, adminApproveCategory, adminAnalytics,
   // Admin — seller admins (SuperAdmin only)
   adminUserSearch, adminCreateSellerAdmin, adminGetSellerAdmins, adminApproveSellerAdmin,
   // SellerAdmin portal
-  sellerAdminGetProfile, sellerAdminGetSellers, sellerAdminCreateSeller,
+  sellerAdminGetProfile, sellerAdminGetSellers, sellerAdminCreateSeller, sellerAdminGetOrders,
   sellerAdminGetProducts, sellerAdminUpdateProduct, sellerAdminCreateProduct, sellerAdminToggleProduct,
   sellerAdminCreateCategory, sellerAdminGetCategories,
   sellerAdminRequestEdit,

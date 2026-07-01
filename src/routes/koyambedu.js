@@ -58,6 +58,8 @@ router.get   ('/my-orders/:orderId',        protect, ctrl.getMyOrder);
 router.post  ('/orders/:orderId/approve-revision', protect, ctrl.approveRevision);
 router.post  ('/orders/:orderId/cancel',    protect, ctrl.cancelOrder);
 router.get   ('/orders/:orderId/invoice',   protect, ctrl.getOrderInvoice);
+router.get   ('/orders/:orderId/timeline',  protect, ctrl.getOrderTimeline);
+router.get   ('/orders/:orderId/calculation', protect, ctrl.getOrderCalculation);
 
 // ══════════════════════════════════════════════
 // WALLET — customer
@@ -110,13 +112,22 @@ router.patch('/seller-admin/sellers/:sellerId/products/:productId/toggle', prote
 router.patch('/seller-admin/sellers/:sellerId/edit-request',               protectSellerAdmin, ctrl.sellerAdminRequestEdit);
 router.get  ('/seller-admin/orders',                                       protectSellerAdmin, ctrl.sellerAdminGetOrders);
 router.patch('/seller-admin/orders/:orderId/status',                       protectSellerAdmin, ctrl.sellerAdminUpdateOrderStatus);
+// ── SA item-level review actions ────────────────────────────────────────
+router.patch('/seller-admin/orders/:orderId/items/:itemId/confirm',        protectSellerAdmin, ctrl.sellerAdminConfirmItem);
+router.patch('/seller-admin/orders/:orderId/items/:itemId/decline',        protectSellerAdmin, ctrl.sellerAdminDeclineItem);
+router.patch('/seller-admin/orders/:orderId/items/:itemId/reduce-qty',     protectSellerAdmin, ctrl.sellerAdminReduceItemQty);
+router.post ('/seller-admin/orders/:orderId/submit-review',                protectSellerAdmin, ctrl.sellerAdminSubmitForApproval);
 
 // ══════════════════════════════════════════════
 // ADMIN — admin or superAdmin
 // ══════════════════════════════════════════════
 router.get  ('/admin/dashboard',                  protectAdmin, ctrl.adminDashboard);
 router.get  ('/admin/orders',                     protectAdmin, ctrl.adminGetOrders);
+router.get  ('/admin/orders/pending-approval',    protectSuperAdmin, ctrl.adminGetPendingApprovalOrders);
 router.patch('/admin/orders/:orderId/status',                         protectAdmin, ctrl.adminUpdateOrderStatus);
+router.patch('/admin/orders/:orderId/delivered',                      protectAdmin, ctrl.adminMarkDelivered);
+router.patch('/admin/orders/:orderId/approve-review',                 protectSuperAdmin, ctrl.adminApproveOrderReview);
+router.patch('/admin/orders/:orderId/cancel',                         protectSuperAdmin, ctrl.adminCancelOrder);
 router.patch('/admin/orders/:orderId/items/:itemIndex/qty',           protectAdmin, ctrl.adminEditOrderItemQty);
 router.patch('/admin/orders/:orderId/items/:itemIndex/decline',       protectAdmin, ctrl.adminDeclineOrderItem);
 // Wallet refund request management (SuperAdmin)

@@ -7,6 +7,8 @@
 // ============================================
 'use strict';
 
+const { applyCalculation, calculateOrderTotals } = require('../utils/orderCalculationService');
+
 const KoyambeduSeller       = require('../models/KoyambeduSeller');
 const KoyambeduSellerAdmin  = require('../models/KoyambeduSellerAdmin');
 const KoyambeduCategory     = require('../models/KoyambeduCategory');
@@ -526,6 +528,29 @@ const placeOrder = async (req, res) => {
     }
   }
 
+  // Build itemsOrdered snapshot (immutable — never changes after save)
+  const itemsOrderedSnapshot = orderItems.map(it => ({
+    product:      it.product,
+    seller:       it.seller,
+    name:         it.name,
+    unit:         it.unit,
+    orderedQty:   it.quantity,
+    unitPrice:    it.orderedPrice,
+    lineTotal:    it.orderedPrice * it.quantity,
+    sellerPayout: it.sellerPayout,
+  }));
+
+  // Enrich items with orderedQty / confirmedQty / itemStatus fields
+  const enrichedItems = orderItems.map(it => ({
+    ...it,
+    orderedQty:   it.quantity,
+    confirmedQty: it.quantity,   // starts equal to orderedQty
+    declinedQty:  0,
+    itemStatus:   'pending',
+  }));
+
+  const pricingObj = { subtotal, deliveryCharge, deliveryDistance: Math.round(distanceKm * 10) / 10, platformFee, discount: couponDiscount, couponCode: appliedCoupon?.code || undefined, total };
+
   const order = new KoyambeduOrder({
     buyer:        req.user._id,
     buyerLocation: {
@@ -537,7 +562,8 @@ const placeOrder = async (req, res) => {
       distanceKm: Math.round(distanceKm * 10) / 10,
     },
     shippingAddress,
-    items:        orderItems,
+    itemsOrdered: itemsOrderedSnapshot,
+    items:        enrichedItems,
     deliveryType,
     deliveryDate:    parsedDeliveryDate,
     deliverySlot:    deliverySlot    || '09:00 AM – 11:59 AM',
@@ -548,9 +574,26 @@ const placeOrder = async (req, res) => {
     paymentMethod,
     paymentStatus:'pending',
     orderStatus:  'placed',
-    pricing:      { subtotal, deliveryCharge, deliveryDistance: Math.round(distanceKm * 10) / 10, platformFee, discount: couponDiscount, couponCode: appliedCoupon?.code || undefined, total },
+    pricing:      pricingObj,
     adminNotes:   notes || '',
+    invoices: {
+      proforma: {
+        number:      `PRO-${Date.now().toString(36).toUpperCase()}`,
+        generatedAt: new Date(),
+        isAvailable: true,
+      },
+    },
+    timeline: [{
+      event:       'order_placed',
+      description: `Order placed by customer`,
+      actor:       { role: 'customer', userId: req.user._id, name: req.user.name || '' },
+      timestamp:   new Date(),
+    }],
   });
+
+  // Compute calculatedPricing using the service
+  applyCalculation(order);
+
   await order.save();
 
   await KoyambeduCart.findOneAndUpdate({ user: req.user._id }, { items: [] });
@@ -1101,20 +1144,26 @@ const adminDeclineOrderItem = async (req, res) => {
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
   const item = order.items[Number(req.params.itemIndex)];
   if (!item) return res.status(404).json({ success: false, message: 'Item not found' });
-  if (item.status === 'declined') return res.status(400).json({ success: false, message: 'Item already declined' });
+  if (item.itemStatus === 'declined') return res.status(400).json({ success: false, message: 'Item already declined' });
 
-  const price   = item.finalPrice || item.orderedPrice || 0;
-  const refundAmount = price * item.quantity;
+  const price        = item.orderedPrice || item.finalPrice || 0;
+  const refundAmount = price * (item.orderedQty || item.quantity || 0);
 
-  item.status = 'declined';
-  // Adjust pricing
-  if (order.pricing && refundAmount > 0) {
-    order.pricing.subtotal = Math.max(0, (order.pricing.subtotal || 0) - refundAmount);
-    order.pricing.total    = Math.max(0, (order.pricing.total    || 0) - refundAmount);
-  }
+  item.itemStatus  = 'declined';
+  item.declinedQty = item.orderedQty || item.quantity || 0;
+  item.confirmedQty = 0;
+  item.declinedReason = req.body.reason || 'unavailable';
+
+  // Recalculate via service
+  applyCalculation(order);
+
+  // Log timeline + audit
+  order.timeline.push({ event: 'item_declined', description: `${item.name} declined by Super Admin`, actor: { role: 'super_admin', userId: req.user._id }, timestamp: new Date(), meta: { itemName: item.name, refundAmount } });
+  order.auditLog.push({ action: 'item_declined', actorRole: 'super_admin', actorId: req.user._id, timestamp: new Date(), previousValue: { itemStatus: 'pending' }, newValue: { itemStatus: 'declined' }, amount: refundAmount });
+
   await order.save();
 
-  // Credit wallet
+  // Credit wallet (fire-and-forget)
   setImmediate(async () => {
     try {
       let wallet = await KoyambeduWallet.findOne({ user: order.buyer?._id || order.buyer });
@@ -1123,6 +1172,9 @@ const adminDeclineOrderItem = async (req, res) => {
         `${item.name} declined from order ${order.orderId}`);
     } catch(e) { console.error('Wallet credit for declined item failed', e); }
   });
+
+  // WhatsApp notification
+  _notifyBuyerItemDeclined(order, item, refundAmount);
 
   res.json({ success: true, message: `${item.name} declined — ₹${refundAmount} credited to customer wallet`, order });
 };
@@ -3018,6 +3070,546 @@ const getOrderInvoice = async (req, res) => {
   doc.end();
 };
 
+// ══════════════════════════════════════════════
+// NOTIFICATION HELPERS — WhatsApp via Twilio WABA
+// ══════════════════════════════════════════════
+
+/** Send WhatsApp notification to buyer (fire-and-forget) */
+const _kbdNotify = (phone, event, params = []) => {
+  if (!phone) return;
+  const tpl = process.env.META_WHATSAPP_STATUS_TEMPLATE;
+  if (!tpl) return;
+  sendTemplateWhatsApp(phone, tpl, [
+    { type: 'body', parameters: params.map(t => ({ type: 'text', text: String(t) })) },
+  ]).catch(() => {});
+};
+
+const _getBuyerPhone = (order) => {
+  return order.buyer?.phone || order.shippingAddress?.phone || null;
+};
+
+const _notifyBuyerItemDeclined = (order, item, refundAmount) => {
+  _kbdNotify(_getBuyerPhone(order), 'item_declined', [
+    order.orderId, item.name, `₹${refundAmount.toFixed(2)}`,
+  ]);
+};
+
+const _notifyBuyerRefundProcessed = (order, amount, method) => {
+  _kbdNotify(_getBuyerPhone(order), 'refund_processed', [
+    order.orderId, `₹${amount.toFixed(2)}`, method,
+  ]);
+};
+
+const _notifyBuyerOrderApproved = (order) => {
+  _kbdNotify(_getBuyerPhone(order), 'order_confirmed', [order.orderId]);
+};
+
+const _notifyBuyerQtyReduced = (order, item, oldQty, newQty) => {
+  _kbdNotify(_getBuyerPhone(order), 'qty_reduced', [
+    order.orderId, item.name, `${oldQty}`, `${newQty}`, item.unit,
+  ]);
+};
+
+// ══════════════════════════════════════════════
+// SELLER ADMIN — Item-level review actions
+// ══════════════════════════════════════════════
+
+/**
+ * PATCH /seller-admin/orders/:orderId/items/:itemId/confirm
+ * SA confirms an item (marks it as confirmed at full orderedQty)
+ */
+const sellerAdminConfirmItem = async (req, res) => {
+  try {
+    const sa = req.kbdSellerAdmin;
+    const sellerIds = (await KoyambeduSeller.find({ createdBySellerAdmin: sa._id }).select('_id').lean()).map(s => s._id);
+
+    const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, 'items.seller': { $in: sellerIds } });
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found or not yours' });
+
+    const item = order.items.id(req.params.itemId);
+    if (!item) return res.status(404).json({ success: false, message: 'Item not found' });
+    if (!sellerIds.some(id => String(id) === String(item.seller))) {
+      return res.status(403).json({ success: false, message: 'This item does not belong to your sellers' });
+    }
+
+    item.itemStatus   = 'confirmed';
+    item.confirmedQty = item.orderedQty || item.quantity || 0;
+    item.declinedQty  = 0;
+    item.actionedBy   = sa._id;
+    item.actionedAt   = new Date();
+
+    applyCalculation(order);
+    order.timeline.push({ event: 'item_confirmed', description: `${item.name} confirmed by Seller Admin`, actor: { role: 'seller_admin', userId: req.user._id }, timestamp: new Date() });
+
+    await order.save();
+    res.json({ success: true, order });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * PATCH /seller-admin/orders/:orderId/items/:itemId/decline
+ * SA fully declines an item (marks unavailable)
+ * Refund amount is shown but NOT yet processed — waits for Super Admin approval
+ */
+const sellerAdminDeclineItem = async (req, res) => {
+  try {
+    const sa = req.kbdSellerAdmin;
+    const { reason = 'unavailable' } = req.body;
+    const sellerIds = (await KoyambeduSeller.find({ createdBySellerAdmin: sa._id }).select('_id').lean()).map(s => s._id);
+
+    const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, 'items.seller': { $in: sellerIds } });
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found or not yours' });
+
+    const item = order.items.id(req.params.itemId);
+    if (!item) return res.status(404).json({ success: false, message: 'Item not found' });
+    if (!sellerIds.some(id => String(id) === String(item.seller))) {
+      return res.status(403).json({ success: false, message: 'This item does not belong to your sellers' });
+    }
+    if (item.itemStatus === 'declined') {
+      return res.status(400).json({ success: false, message: 'Item is already declined' });
+    }
+
+    const price        = item.orderedPrice || item.finalPrice || 0;
+    const orderedQty   = item.orderedQty || item.quantity || 0;
+    const refundAmount = price * orderedQty;
+
+    item.itemStatus     = 'declined';
+    item.confirmedQty   = 0;
+    item.declinedQty    = orderedQty;
+    item.declinedReason = reason;
+    item.actionedBy     = sa._id;
+    item.actionedAt     = new Date();
+
+    applyCalculation(order);
+    order.timeline.push({ event: 'item_declined', description: `${item.name} declined by Seller Admin — pending Super Admin approval`, actor: { role: 'seller_admin', userId: req.user._id }, timestamp: new Date(), meta: { reason, refundAmount, pendingApproval: true } });
+
+    await order.save();
+
+    res.json({
+      success:        true,
+      message:        `${item.name} declined. Refund of ₹${refundAmount.toFixed(2)} will be processed after Super Admin approval.`,
+      refundAmount,
+      calculatedPricing: order.calculatedPricing,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * PATCH /seller-admin/orders/:orderId/items/:itemId/reduce-qty
+ * SA partially confirms an item (e.g., ordered 5kg, only 3kg available)
+ */
+const sellerAdminReduceItemQty = async (req, res) => {
+  try {
+    const sa = req.kbdSellerAdmin;
+    const { confirmedQty, reason = 'partial stock available' } = req.body;
+    const newQty = Number(confirmedQty);
+    if (isNaN(newQty) || newQty < 0) {
+      return res.status(400).json({ success: false, message: 'confirmedQty must be a non-negative number' });
+    }
+
+    const sellerIds = (await KoyambeduSeller.find({ createdBySellerAdmin: sa._id }).select('_id').lean()).map(s => s._id);
+    const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, 'items.seller': { $in: sellerIds } });
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found or not yours' });
+
+    const item = order.items.id(req.params.itemId);
+    if (!item) return res.status(404).json({ success: false, message: 'Item not found' });
+    if (!sellerIds.some(id => String(id) === String(item.seller))) {
+      return res.status(403).json({ success: false, message: 'This item does not belong to your sellers' });
+    }
+
+    const orderedQty = item.orderedQty || item.quantity || 0;
+    if (newQty > orderedQty) {
+      return res.status(400).json({ success: false, message: `Confirmed quantity (${newQty}) cannot exceed ordered quantity (${orderedQty})` });
+    }
+
+    const oldQty = item.confirmedQty || orderedQty;
+
+    if (newQty === 0) {
+      // Full decline
+      item.itemStatus   = 'declined';
+      item.confirmedQty = 0;
+      item.declinedQty  = orderedQty;
+    } else if (newQty === orderedQty) {
+      item.itemStatus   = 'confirmed';
+      item.confirmedQty = newQty;
+      item.declinedQty  = 0;
+    } else {
+      item.itemStatus   = 'partial';
+      item.confirmedQty = newQty;
+      item.declinedQty  = orderedQty - newQty;
+    }
+
+    item.declinedReason = reason;
+    item.actionedBy     = sa._id;
+    item.actionedAt     = new Date();
+
+    const price        = item.orderedPrice || item.finalPrice || 0;
+    const refundAmount = price * item.declinedQty;
+
+    applyCalculation(order);
+    order.timeline.push({ event: 'qty_reduced', description: `${item.name}: qty reduced from ${oldQty} to ${newQty} ${item.unit} by Seller Admin`, actor: { role: 'seller_admin', userId: req.user._id }, timestamp: new Date(), meta: { oldQty, newQty, refundAmount, pendingApproval: true } });
+    order.auditLog.push({ action: 'qty_reduced', actorRole: 'seller_admin', actorId: req.user._id, timestamp: new Date(), previousValue: { confirmedQty: oldQty }, newValue: { confirmedQty: newQty }, amount: refundAmount });
+
+    // Notify buyer
+    if (oldQty !== newQty) _notifyBuyerQtyReduced(order, item, oldQty, newQty);
+
+    await order.save();
+
+    res.json({
+      success:        true,
+      message:        `Qty updated: ${item.name} → ${newQty} ${item.unit} confirmed, ${item.declinedQty} ${item.unit} declined`,
+      refundAmount,
+      calculatedPricing: order.calculatedPricing,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * POST /seller-admin/orders/:orderId/submit-review
+ * SA submits all item changes for Super Admin approval.
+ * After this, SA cannot make further changes.
+ */
+const sellerAdminSubmitForApproval = async (req, res) => {
+  try {
+    const sa = req.kbdSellerAdmin;
+    const { notes } = req.body;
+    const sellerIds = (await KoyambeduSeller.find({ createdBySellerAdmin: sa._id }).select('_id').lean()).map(s => s._id);
+
+    const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, 'items.seller': { $in: sellerIds } });
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found or not yours' });
+
+    if (order.saReview?.status === 'submitted') {
+      return res.status(400).json({ success: false, message: 'Review already submitted and awaiting Super Admin approval' });
+    }
+
+    // Finalize: any items still 'pending' are auto-confirmed at full qty
+    for (const item of order.items) {
+      if (item.itemStatus === 'pending') {
+        item.itemStatus   = 'confirmed';
+        item.confirmedQty = item.orderedQty || item.quantity || 0;
+        item.declinedQty  = 0;
+        item.actionedBy   = sa._id;
+        item.actionedAt   = new Date();
+      }
+    }
+
+    applyCalculation(order);
+
+    const pendingRefund = order.calculatedPricing?.declinedRefundAmount || 0;
+    const refundMethod  = pendingRefund > 0
+      ? (order.paymentMethod === 'cod' ? 'cod_deduction' : 'wallet')
+      : 'none';
+
+    order.orderStatus = 'sa_review_submitted';
+    order.saReview = {
+      status:              'submitted',
+      reviewedBy:          sa._id,
+      reviewedAt:          new Date(),
+      submittedAt:         new Date(),
+      notes:               notes || '',
+      pendingRefundAmount: pendingRefund,
+      refundMethod,
+    };
+
+    order.timeline.push({
+      event:       'sa_review_submitted',
+      description: `Seller Admin submitted review. Pending refund: ₹${pendingRefund.toFixed(2)}. Awaiting Super Admin approval.`,
+      actor:       { role: 'seller_admin', userId: req.user._id, name: sa.name || '' },
+      timestamp:   new Date(),
+      meta:        { pendingRefundAmount: pendingRefund, refundMethod },
+    });
+
+    await order.save();
+
+    res.json({
+      success:           true,
+      message:           `Review submitted. Super Admin will approve and process refund of ₹${pendingRefund.toFixed(2)}.`,
+      pendingRefundAmount: pendingRefund,
+      refundMethod,
+      calculatedPricing:   order.calculatedPricing,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
+// SUPER ADMIN — Order approval & refund flow
+// ══════════════════════════════════════════════
+
+/**
+ * GET /admin/orders/pending-approval
+ * List orders in sa_review_submitted status awaiting Super Admin action
+ */
+const adminGetPendingApprovalOrders = async (req, res) => {
+  try {
+    const { page = 1, limit = 30 } = req.query;
+    const skip = (Number(page) - 1) * Number(limit);
+    const [orders, total] = await Promise.all([
+      KoyambeduOrder.find({ orderStatus: 'sa_review_submitted' })
+        .populate('buyer', 'name phone email')
+        .populate('items.seller', 'businessName stallNumber')
+        .sort({ 'saReview.submittedAt': 1 })
+        .skip(skip).limit(Number(limit)).lean(),
+      KoyambeduOrder.countDocuments({ orderStatus: 'sa_review_submitted' }),
+    ]);
+    res.json({ success: true, orders, total });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * PATCH /admin/orders/:orderId/approve-review
+ * Super Admin approves or rejects the SA's review.
+ * On approval: recalculate, generate confirmation document, process refund, set confirmed.
+ * Body: { action: 'approve'|'reject', notes: String }
+ */
+const adminApproveOrderReview = async (req, res) => {
+  try {
+    const { action, notes } = req.body;
+    if (!['approve', 'reject'].includes(action)) {
+      return res.status(400).json({ success: false, message: "action must be 'approve' or 'reject'" });
+    }
+
+    const order = await KoyambeduOrder.findById(req.params.orderId)
+      .populate('buyer', 'name phone email');
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    if (order.orderStatus !== 'sa_review_submitted') {
+      return res.status(400).json({ success: false, message: 'Order is not pending review approval' });
+    }
+
+    if (action === 'reject') {
+      // Send back to SA for revision
+      order.orderStatus = 'pending_confirmation';
+      order.saReview.status = 'rejected';
+      order.adminApproval = { status: 'rejected', approvedBy: req.user._id, approvedAt: new Date(), notes };
+      order.timeline.push({ event: 'review_rejected', description: `Super Admin rejected SA review — sent back for revision. Notes: ${notes || 'none'}`, actor: { role: 'super_admin', userId: req.user._id }, timestamp: new Date() });
+      await order.save();
+      return res.json({ success: true, message: 'Review rejected and sent back to Seller Admin for revision' });
+    }
+
+    // ── APPROVE ──────────────────────────────────
+    applyCalculation(order);
+    const calc            = order.calculatedPricing;
+    const refundAmount    = calc.declinedRefundAmount || 0;
+    const refundMethod    = order.saReview?.refundMethod || (refundAmount > 0 ? (order.paymentMethod === 'cod' ? 'cod_deduction' : 'wallet') : 'none');
+
+    // Update order status
+    order.orderStatus = 'confirmed';
+    order.confirmedAt = new Date();
+    order.adminApproval = { status: 'approved', approvedBy: req.user._id, approvedAt: new Date(), notes };
+    order.saReview.status = 'approved';
+
+    // Generate confirmation document metadata
+    order.invoices.confirmation = {
+      number:      `CONF-${order.orderId}`,
+      generatedAt: new Date(),
+      isAvailable: true,
+    };
+
+    order.timeline.push({
+      event:       'admin_approved',
+      description: `Super Admin approved order review. Confirmed items total: ₹${calc.confirmedItemsTotal.toFixed(2)}. Declined refund: ₹${refundAmount.toFixed(2)} via ${refundMethod}.`,
+      actor:       { role: 'super_admin', userId: req.user._id },
+      timestamp:   new Date(),
+      meta:        { refundAmount, refundMethod, confirmedItemsTotal: calc.confirmedItemsTotal },
+    });
+    order.auditLog.push({
+      action:       'order_approved',
+      actorRole:    'super_admin',
+      actorId:      req.user._id,
+      timestamp:    new Date(),
+      amount:       refundAmount,
+      refundMethod,
+    });
+
+    await order.save();
+
+    // ── Process refund ────────────────────────────
+    if (refundAmount > 0) {
+      if (refundMethod === 'wallet' || refundMethod === 'cod_deduction') {
+        setImmediate(async () => {
+          try {
+            let wallet = await KoyambeduWallet.findOne({ user: order.buyer?._id || order.buyer });
+            if (!wallet) wallet = await KoyambeduWallet.create({ user: order.buyer?._id || order.buyer });
+            await wallet.credit(refundAmount, 'item_declined_refund', order.orderId, order._id,
+              `Refund for declined items on order ${order.orderId}`);
+            // Update audit log
+            order.auditLog.push({ action: 'refund_credited_wallet', actorRole: 'system', timestamp: new Date(), amount: refundAmount });
+            await order.save();
+          } catch(e) { console.error('Wallet refund failed', e); }
+        });
+        _notifyBuyerRefundProcessed(order, refundAmount, 'wallet');
+      }
+    }
+
+    _notifyBuyerOrderApproved(order);
+
+    res.json({
+      success: true,
+      message: `Order confirmed. ${refundAmount > 0 ? `₹${refundAmount.toFixed(2)} refund initiated via ${refundMethod}.` : ''}`,
+      calculatedPricing: calc,
+      order: { _id: order._id, orderId: order.orderId, orderStatus: order.orderStatus },
+    });
+  } catch (err) {
+    console.error('adminApproveOrderReview:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * PATCH /admin/orders/:orderId/cancel
+ * ONLY Super Admin can cancel. Processes full or partial refund.
+ * Body: { reason: String, refundMethod: 'wallet'|'razorpay' }
+ */
+const adminCancelOrder = async (req, res) => {
+  try {
+    const { reason, refundMethod = 'wallet' } = req.body;
+    if (!reason?.trim()) {
+      return res.status(400).json({ success: false, message: 'Cancellation reason is required' });
+    }
+
+    const order = await KoyambeduOrder.findById(req.params.orderId)
+      .populate('buyer', 'name phone email');
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    if (['delivered', 'cancelled'].includes(order.orderStatus)) {
+      return res.status(400).json({ success: false, message: 'Order cannot be cancelled at this stage' });
+    }
+
+    const refundAmt = order.pricing?.total || 0;
+
+    order.orderStatus  = 'cancelled';
+    order.cancelReason = reason;
+    order.timeline.push({
+      event:       'order_cancelled',
+      description: `Order cancelled by Super Admin. Reason: ${reason}`,
+      actor:       { role: 'super_admin', userId: req.user._id },
+      timestamp:   new Date(),
+      meta:        { refundAmount: refundAmt, refundMethod },
+    });
+    order.auditLog.push({ action: 'order_cancelled', actorRole: 'super_admin', actorId: req.user._id, timestamp: new Date(), amount: refundAmt, refundMethod, notes: reason });
+
+    await order.save();
+
+    // Process refund
+    if (order.paymentStatus === 'paid' && refundAmt > 0) {
+      if (refundMethod === 'razorpay' && order.paymentMethod === 'razorpay') {
+        setImmediate(() => _refundOrder(order).catch(() => {}));
+      } else {
+        setImmediate(async () => {
+          try {
+            let wallet = await KoyambeduWallet.findOne({ user: order.buyer?._id || order.buyer });
+            if (!wallet) wallet = await KoyambeduWallet.create({ user: order.buyer?._id || order.buyer });
+            await wallet.credit(refundAmt, 'order_cancelled', order.orderId, order._id, `Order ${order.orderId} cancelled — refund`);
+          } catch(e) { console.error('Cancel wallet refund failed', e); }
+        });
+      }
+    }
+
+    _kbdNotify(_getBuyerPhone(order), 'order_cancelled', [order.orderId, reason]);
+
+    res.json({ success: true, message: `Order ${order.orderId} cancelled. Refund of ₹${refundAmt.toFixed(2)} initiated.` });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * GET /orders/:orderId/timeline — buyer can see their own order timeline
+ */
+const getOrderTimeline = async (req, res) => {
+  try {
+    const query = req.user.role === 'user'
+      ? { _id: req.params.orderId, buyer: req.user._id }
+      : { _id: req.params.orderId };
+    const order = await KoyambeduOrder.findOne(query).select('orderId timeline calculatedPricing orderStatus').lean();
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    res.json({ success: true, timeline: order.timeline || [], orderStatus: order.orderStatus, calculatedPricing: order.calculatedPricing });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * GET /orders/:orderId/calculation — unified pricing for all roles
+ */
+const getOrderCalculation = async (req, res) => {
+  try {
+    const query = req.user.role === 'user'
+      ? { _id: req.params.orderId, buyer: req.user._id }
+      : { _id: req.params.orderId };
+    const order = await KoyambeduOrder.findOne(query)
+      .populate('buyer', 'name')
+      .lean();
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    // Always recompute live (don't rely on stale cached value)
+    const calc = calculateOrderTotals(order);
+
+    // Mask admin costs from customer
+    const isSuperAdmin = ['admin', 'superAdmin'].includes(req.user.role);
+    const adminCosts   = isSuperAdmin ? order.adminCosts : undefined;
+
+    res.json({ success: true, calculatedPricing: calc, adminCosts });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * PATCH /admin/orders/:orderId/delivered — mark delivered + generate tax invoice
+ */
+const adminMarkDelivered = async (req, res) => {
+  try {
+    const { deliveryPartner, adminNotes } = req.body;
+    const order = await KoyambeduOrder.findById(req.params.orderId)
+      .populate('buyer', 'name phone email');
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    if (!['confirmed', 'packing', 'dispatched'].includes(order.orderStatus)) {
+      return res.status(400).json({ success: false, message: 'Order must be confirmed/packing/dispatched to mark delivered' });
+    }
+
+    order.orderStatus = 'delivered';
+    order.deliveredAt = new Date();
+    if (deliveryPartner) order.deliveryPartner = deliveryPartner;
+    if (adminNotes)      order.adminNotes = adminNotes;
+
+    applyCalculation(order);
+
+    // Generate tax invoice
+    order.invoices.tax = {
+      number:      `TAX-${order.orderId}`,
+      generatedAt: new Date(),
+      isAvailable: true,
+    };
+
+    order.timeline.push({
+      event:       'delivered',
+      description: 'Order delivered successfully. Final Tax Invoice generated.',
+      actor:       { role: 'super_admin', userId: req.user._id },
+      timestamp:   new Date(),
+    });
+
+    await order.save();
+
+    _kbdNotify(_getBuyerPhone(order), 'order_delivered', [order.orderId]);
+
+    res.json({ success: true, message: 'Order marked delivered. Tax invoice generated.', order: { _id: order._id, orderId: order.orderId, orderStatus: order.orderStatus } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // expose helpers for routes
 exports._calcFinalPrice       = calcFinalPrice;
 exports._getProcurementCycle  = getProcurementCycle;
@@ -3052,6 +3644,12 @@ module.exports = {
   sellerAdminGetProducts, sellerAdminUpdateProduct, sellerAdminCreateProduct, sellerAdminToggleProduct,
   sellerAdminCreateCategory, sellerAdminGetCategories,
   sellerAdminRequestEdit,
+  // SA item review
+  sellerAdminConfirmItem, sellerAdminDeclineItem, sellerAdminReduceItemQty, sellerAdminSubmitForApproval,
+  // Super Admin order lifecycle
+  adminGetPendingApprovalOrders, adminApproveOrderReview, adminCancelOrder, adminMarkDelivered,
+  // Shared order data
+  getOrderTimeline, getOrderCalculation,
   // Admin product management
   adminGetAllProducts, adminUpdateProduct, adminToggleProduct, adminCreateProduct, adminDeleteProduct,
   // Admin seller-edit review (SuperAdmin only)

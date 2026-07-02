@@ -62,8 +62,8 @@ const VERTICALS = {
 
   eptofresh: {
     key:        'eptofresh',
-    name:       'Protiends',
-    shortName:  'Protiends',
+    name:       'EptoFresh Proteins',
+    shortName:  'EptoFresh',
     emoji:      '🥩',
     color:      '#ea580c',
     logo:       '/categories/proteins.jpg',

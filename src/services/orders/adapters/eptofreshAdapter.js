@@ -1,5 +1,5 @@
 // ============================================
-// PROTIENDS (EptoFresh) ORDER ADAPTER
+// EPTOFRESH PROTEINS ORDER ADAPTER
 // EptoFreshOrder model → canonical OrderDTO
 // Privacy: seller phone / driver phone never exposed.
 // ============================================
@@ -62,7 +62,7 @@ function toDetail(doc, { walletHistory = [] } = {}) {
 
   const itemsOrdered = (doc.items || []).map(mapItem);
 
-  // Protiends is accept/reject only — a rejection declines the whole order
+  // EptoFresh Proteins is accept/reject only — a rejection declines the whole order
   const itemsDeclined = rejected
     ? (doc.items || []).map(it => ({
         ...mapItem(it),

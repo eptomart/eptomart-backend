@@ -151,8 +151,8 @@ test('COD invoice gated until delivery', () => {
   assert.equal(d.documents[0].available, false);
 });
 
-// ── Protiends adapter ────────────────────────
-console.log('eptofresh (Protiends) adapter');
+// ── EptoFresh Proteins adapter ────────────────────────
+console.log('eptofresh (EptoFresh Proteins) adapter');
 const epfOrder = {
   _id: '64b000000000000000000003',
   orderId: 'EPFTEST1',

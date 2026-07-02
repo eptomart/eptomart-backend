@@ -1,9 +1,15 @@
 // ============================================
-// ORDER CALCULATION SERVICE — Koyambedu Daily
+// ORDER CALCULATION SERVICE — Eptomart (all verticals)
 // Single source of truth for all order totals.
 // All frontend and backend screens MUST use
-// the result of this function — never compute
+// the result of this service — never compute
 // totals independently.
+//
+// calculateOrderTotals / applyCalculation:
+//   original Koyambedu decline/refund engine (unchanged).
+// buildPaymentSummary:
+//   canonical customer-facing payment summary
+//   for ANY vertical (used by the unified v2 Orders API).
 // ============================================
 'use strict';
 
@@ -116,4 +122,99 @@ function applyCalculation(order, opts = {}) {
   return result;
 }
 
-module.exports = { calculateOrderTotals, applyCalculation };
+// ══════════════════════════════════════════════════════════════════
+// CANONICAL PAYMENT SUMMARY — per vertical
+// Shape (always identical for every vertical):
+// { originalOrderValue, refundAmount, platformFee, packingFee,
+//   logisticsFee, deliveryCharge, gst, couponDiscount,
+//   walletAdjustment, finalPaidAmount, currency, notes[] }
+// ══════════════════════════════════════════════════════════════════
+
+const EMPTY_SUMMARY = () => ({
+  originalOrderValue: 0,
+  refundAmount:       0,
+  platformFee:        0,
+  packingFee:         0,
+  logisticsFee:       0,
+  deliveryCharge:     0,
+  gst:                0,
+  couponDiscount:     0,
+  walletAdjustment:   0,
+  finalPaidAmount:    0,
+  currency:           'INR',
+  notes:              [],
+});
+
+/**
+ * Build the canonical customer-facing payment summary for any vertical.
+ * @param {String} verticalKey - eptomart | koyambedu | eptofresh | uzhavar
+ * @param {Object} order       - native order document (lean or hydrated)
+ */
+function buildPaymentSummary(verticalKey, order) {
+  const s = EMPTY_SUMMARY();
+  if (!order) return s;
+
+  switch (verticalKey) {
+    case 'koyambedu': {
+      // Recompute via the decline/refund engine (single source of truth)
+      const calc = calculateOrderTotals(order);
+      s.originalOrderValue = calc.originalOrderValue;
+      s.refundAmount       = calc.declinedRefundAmount;
+      s.platformFee        = calc.platformFee;
+      s.packingFee         = calc.packingLogisticsFee;
+      s.deliveryCharge     = calc.deliveryCharge;
+      s.gst                = calc.gst;
+      s.couponDiscount     = calc.couponDiscount;
+      s.walletAdjustment   = calc.walletAdjustment;
+      s.finalPaidAmount    = calc.finalPayableAmount;
+      if (s.refundAmount > 0) {
+        s.notes.push(order.paymentMethod === 'cod'
+          ? 'Declined amount deducted from payable (Cash on Delivery).'
+          : 'Declined amount refunded to wallet / payment method.');
+      }
+      break;
+    }
+
+    case 'eptomart': {
+      const p = order.pricing || {};
+      s.originalOrderValue = round(p.subtotal);
+      s.refundAmount       = round(order.refund?.amount || 0);
+      s.deliveryCharge     = round(p.shipping);
+      s.gst                = round(order.gstBreakdown?.gstTotal ?? p.tax);
+      s.couponDiscount     = round(p.discount);
+      s.finalPaidAmount    = round(p.total);
+      break;
+    }
+
+    case 'eptofresh': {
+      const p = order.pricing || {};
+      s.originalOrderValue = round(p.subtotal);
+      s.refundAmount       = round(order.refund?.amount || 0);
+      s.deliveryCharge     = round(Math.max(0, (p.deliveryCharge || 0) - (p.deliveryDiscount || 0)));
+      s.couponDiscount     = round(p.couponDiscount);
+      s.walletAdjustment   = round(p.walletApplied);
+      s.finalPaidAmount    = round(p.total);
+      if ((p.deliveryDiscount || 0) > 0) s.notes.push(`Delivery discount applied: ₹${round(p.deliveryDiscount)}`);
+      break;
+    }
+
+    case 'uzhavar': {
+      const bf = order.bookingFee || {};
+      s.originalOrderValue = round(order.subtotal);
+      s.platformFee        = round(bf.base);
+      s.gst                = round(bf.gst);
+      // Customer pays only the booking fee online; produce is paid to the farmer at delivery.
+      s.finalPaidAmount    = round(bf.total);
+      s.notes.push(`Pay farmer on delivery: ₹${round(order.balancePayableToFarmer ?? order.subtotal)}`);
+      if (order.paymentStatus === 'refunded') s.refundAmount = round(bf.total);
+      break;
+    }
+
+    default:
+      break;
+  }
+
+  return s;
+}
+
+module.exports = { calculateOrderTotals, applyCalculation, buildPaymentSummary };

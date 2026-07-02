@@ -489,8 +489,12 @@ exports.confirmDelivery = async (req, res) => {
 /**
  * POST /eptofresh/orders/:orderId/cancel
  */
+// Cancellation is Super Admin only (route enforces via permission matrix).
 exports.cancelOrder = async (req, res) => {
-  const order = await EptoFreshOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
+  const isSuperAdmin = req.user.role === 'superAdmin';
+  const order = isSuperAdmin
+    ? await EptoFreshOrder.findById(req.params.orderId)
+    : await EptoFreshOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
   const cancellable = ['payment_pending', 'placed', 'accepted'];
@@ -498,11 +502,19 @@ exports.cancelOrder = async (req, res) => {
     return res.status(400).json({ success: false, message: 'Order cannot be cancelled at this stage' });
   }
 
+  const prevStatus = order.orderStatus;
   order.orderStatus = 'cancelled';
-  order.cancelReason = req.body.reason || 'Cancelled by customer';
-  order.cancelledBy  = 'customer';
+  order.cancelReason = req.body.reason || 'Cancelled by Super Admin';
+  order.cancelledBy  = 'admin';
   order.cancelledAt  = new Date();
-  order.statusHistory.push({ status: 'cancelled', updatedBy: 'customer', note: order.cancelReason });
+  order.statusHistory.push({ status: 'cancelled', updatedBy: 'admin', note: order.cancelReason });
+
+  // Append-only audit trail (Stage B)
+  const { addAudit } = require('../utils/orderAudit');
+  addAudit(order, {
+    action: 'order_cancelled', actorRole: 'super_admin', actorId: req.user._id,
+    previousValue: prevStatus, newValue: 'cancelled', notes: order.cancelReason,
+  });
   await order.save();
 
   // Refund if paid

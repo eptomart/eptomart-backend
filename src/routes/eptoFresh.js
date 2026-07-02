@@ -9,6 +9,7 @@ const sellerCtrl = require('../controllers/eptoFreshSellerController');
 const adminCtrl  = require('../controllers/eptoFreshAdminController');
 const { protect, optionalAuth } = require('../middleware/auth');
 const { protectAdmin, protectSuperAdmin } = require('../middleware/adminAuth');
+const { requireOrderPermission } = require('../middleware/orderPermissions');
 const { uploadDocument, uploadPackaging } = require('../config/cloudinary');
 const multer   = require('multer');
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
@@ -72,7 +73,9 @@ router.post  ('/orders/verify-payment',        protect, ctrl.verifyPayment);
 router.get   ('/orders',                       protect, ctrl.getMyOrders);
 router.get   ('/orders/:orderId',              protect, ctrl.getOrderDetail);
 router.post  ('/orders/:orderId/confirm-delivery', protect, ctrl.confirmDelivery);
-router.post  ('/orders/:orderId/cancel',       protect, ctrl.cancelOrder);
+// Cancellation is Super Admin only (unified permission matrix) —
+// customers receive a friendly "contact support" message instead.
+router.post  ('/orders/:orderId/cancel',       protect, requireOrderPermission('cancel_order'), ctrl.cancelOrder);
 router.post  ('/orders/:orderId/review',       protect, ctrl.submitReview);
 router.get   ('/orders/:orderId/tracking',     protect, ctrl.getTracking);
 

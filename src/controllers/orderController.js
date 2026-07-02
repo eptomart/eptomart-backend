@@ -641,16 +641,31 @@ const getOrder = async (req, res) => {
 };
 
 // ── PUT /api/orders/:id/cancel ────────────────────────────
+// Cancellation is Super Admin only (route enforces via permission
+// matrix). Super Admin can cancel any order on a customer's behalf.
 const cancelOrder = async (req, res) => {
-  const order = await Order.findOne({ _id: req.params.id, user: req.user._id });
+  const isSuperAdmin = req.user.role === 'superAdmin';
+  const order = isSuperAdmin
+    ? await Order.findById(req.params.id)
+    : await Order.findOne({ _id: req.params.id, user: req.user._id });
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
   if (!['placed', 'confirmed'].includes(order.orderStatus)) {
     return res.status(400).json({ success: false, message: 'Order cannot be cancelled at this stage' });
   }
 
-  const reason = req.body.reason || 'Cancelled by user';
+  const prevStatus = order.orderStatus;
+  const reason = req.body.reason || 'Cancelled by Super Admin';
   order.orderStatus = 'cancelled';
-  order.statusHistory.push({ status: 'cancelled', note: reason, updatedBy: 'user' });
+  order.statusHistory.push({ status: 'cancelled', note: reason, updatedBy: 'superAdmin' });
+
+  // Append-only audit trail (Stage B)
+  const { addTimeline, addAudit } = require('../utils/orderAudit');
+  addTimeline(order, 'order_cancelled', `Order cancelled. Reason: ${reason}`,
+    { role: 'super_admin', userId: req.user._id, name: req.user.name });
+  addAudit(order, {
+    action: 'order_cancelled', actorRole: 'super_admin', actorId: req.user._id,
+    previousValue: prevStatus, newValue: 'cancelled', notes: reason,
+  });
 
   // Restore stock
   for (const item of order.items) {

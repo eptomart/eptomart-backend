@@ -52,6 +52,29 @@ const eptoFreshOrderSchema = new Schema({
     sellerPayout: { type: Number, default: 0 },
   }],
 
+  // ── ORIGINAL ORDER SNAPSHOT — immutable after placement (Stage B) ──
+  itemsOrdered: [{
+    product:    { type: Schema.Types.ObjectId, ref: 'EptoFreshProduct' },
+    name:       String,
+    unit:       String,
+    orderedQty: Number,
+    unitPrice:  Number,
+    lineTotal:  Number,
+  }],
+
+  // ── Internal audit log (Stage B — append-only) ──
+  auditLog: [{
+    action:        String,
+    actorRole:     String,
+    actorId:       { type: Schema.Types.ObjectId, ref: 'User' },
+    timestamp:     { type: Date, default: Date.now },
+    previousValue: Schema.Types.Mixed,
+    newValue:      Schema.Types.Mixed,
+    amount:        Number,
+    refundMethod:  String,
+    notes:         String,
+  }],
+
   // Seller — single seller per order (hyperlocal)
   seller: { type: Schema.Types.ObjectId, ref: 'EptoFreshSeller', required: true },
 
@@ -205,6 +228,16 @@ eptoFreshOrderSchema.pre('save', function (next) {
   }
   if (!this.placedAt && this.orderStatus !== 'payment_pending') {
     this.placedAt = new Date();
+  }
+  // Snapshot original order once (Stage B — immutable itemsOrdered)
+  if ((!this.itemsOrdered || this.itemsOrdered.length === 0) && this.items?.length) {
+    this.itemsOrdered = this.items.map(it => ({
+      product:    it.product,
+      name:       it.productName,
+      orderedQty: it.quantity,
+      unitPrice:  it.unitPrice ?? it.variant?.price ?? 0,
+      lineTotal:  it.totalPrice ?? (it.unitPrice || 0) * (it.quantity || 0),
+    }));
   }
   next();
 });

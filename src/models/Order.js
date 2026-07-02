@@ -16,7 +16,48 @@ const orderItemSchema = new mongoose.Schema({
     enum:    ['pending', 'packed', 'shipped', 'delivered', 'cancelled'],
     default: 'pending',
   },
+  // ── Partial decline support (Stage B — unified orders) ──
+  orderedQty:     Number,                                // original qty (never changes)
+  confirmedQty:   Number,                                // qty confirmed by seller
+  declinedQty:    { type: Number, default: 0 },          // orderedQty - confirmedQty
+  declinedReason: String,
 }, { _id: true });
+
+// ── Immutable original-order snapshot (Stage B) ──
+const itemsOrderedSchema = new mongoose.Schema({
+  product:    { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+  name:       String,
+  unit:       String,
+  orderedQty: Number,
+  unitPrice:  Number,
+  lineTotal:  Number,
+}, { _id: true });
+
+// ── Customer-visible timeline event (Stage B) ──
+const timelineSchema = new mongoose.Schema({
+  event:       { type: String, required: true },
+  description: String,
+  actor: {
+    role:   String,   // 'customer' | 'seller' | 'admin' | 'super_admin' | 'system'
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    name:   String,
+  },
+  meta:      { type: mongoose.Schema.Types.Mixed },
+  timestamp: { type: Date, default: Date.now },
+}, { _id: false });
+
+// ── Internal audit-log entry (Stage B) ──
+const auditLogSchema = new mongoose.Schema({
+  action:        String,
+  actorRole:     String,
+  actorId:       { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  timestamp:     { type: Date, default: Date.now },
+  previousValue: mongoose.Schema.Types.Mixed,
+  newValue:      mongoose.Schema.Types.Mixed,
+  amount:        Number,
+  refundMethod:  String,
+  notes:         String,
+}, { _id: false });
 
 const orderSchema = new mongoose.Schema({
   orderId: {
@@ -29,6 +70,10 @@ const orderSchema = new mongoose.Schema({
     required: true,
   },
   items: [orderItemSchema],
+
+  // ── ORIGINAL ORDER SNAPSHOT — immutable after placement (Stage B) ──
+  itemsOrdered: [itemsOrderedSchema],
+
   shippingAddress: {
     fullName: { type: String, required: true },
     phone: { type: String, required: true },
@@ -72,6 +117,10 @@ const orderSchema = new mongoose.Schema({
     note: String,
     updatedBy: String,
   }],
+
+  // ── TIMELINE & AUDIT (Stage B — append-only, never overwritten) ──
+  timeline: [timelineSchema],
+  auditLog: [auditLogSchema],
   trackingNumber: String,
   deliveryPartner: String,
   estimatedDelivery: Date,
@@ -231,6 +280,17 @@ orderSchema.pre('save', async function (next) {
   // Add status to history when it changes
   if (this.isModified('orderStatus')) {
     this.statusHistory.push({ status: this.orderStatus });
+  }
+
+  // Snapshot original order once (Stage B — immutable itemsOrdered)
+  if ((!this.itemsOrdered || this.itemsOrdered.length === 0) && this.items?.length) {
+    this.itemsOrdered = this.items.map(it => ({
+      product:    it.product,
+      name:       it.name,
+      orderedQty: it.quantity,
+      unitPrice:  it.price,
+      lineTotal:  (it.price || 0) * (it.quantity || 0),
+    }));
   }
 
   next();

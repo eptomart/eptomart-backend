@@ -21,6 +21,29 @@ const uzhavarOrderSchema = new mongoose.Schema({
 
   items: [orderItemSchema],
 
+  // ── ORIGINAL ORDER SNAPSHOT — immutable after placement (Stage B) ──
+  itemsOrdered: [{
+    product:    { type: mongoose.Schema.Types.ObjectId, ref: 'FarmerProduct' },
+    name:       String,
+    unit:       String,
+    orderedQty: Number,
+    unitPrice:  Number,
+    lineTotal:  Number,
+  }],
+
+  // ── Internal audit log (Stage B — append-only) ──
+  auditLog: [{
+    action:        String,
+    actorRole:     String,
+    actorId:       { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    timestamp:     { type: Date, default: Date.now },
+    previousValue: mongoose.Schema.Types.Mixed,
+    newValue:      mongoose.Schema.Types.Mixed,
+    amount:        Number,
+    refundMethod:  String,
+    notes:         String,
+  }],
+
   // Booking type
   bookingType:   { type: String, enum: ['instant', 'scheduled'], default: 'instant' },
   scheduledDate: Date,
@@ -106,6 +129,17 @@ uzhavarOrderSchema.pre('save', async function(next) {
   if (!this.orderNumber) {
     const count = await mongoose.model('UzhavarOrder').countDocuments();
     this.orderNumber = `UF${Date.now().toString().slice(-6)}${(count + 1).toString().padStart(3, '0')}`;
+  }
+  // Snapshot original order once (Stage B — immutable itemsOrdered)
+  if ((!this.itemsOrdered || this.itemsOrdered.length === 0) && this.items?.length) {
+    this.itemsOrdered = this.items.map(it => ({
+      product:    it.product,
+      name:       it.name,
+      unit:       it.unit,
+      orderedQty: it.quantity,
+      unitPrice:  it.pricePerUnit,
+      lineTotal:  it.lineTotal ?? (it.pricePerUnit || 0) * (it.quantity || 0),
+    }));
   }
   next();
 });

@@ -25,7 +25,7 @@ const VERTICALS = {
       supportsSlots:          false,
       supportsWallet:         false,
       deliveryProvider:       'shiprocket',
-      invoiceStages:          ['tax'],           // proforma+confirmation added in Stage C
+      invoiceStages:          ['proforma', 'confirmation', 'tax'],
       trackingUrlField:       'shiprocket.trackingUrl',
     },
     fees: {
@@ -74,7 +74,7 @@ const VERTICALS = {
       supportsSlots:          false,
       supportsWallet:         true,
       deliveryProvider:       'porter',
-      invoiceStages:          [],                // added in Stage C
+      invoiceStages:          ['proforma', 'tax'],
       trackingUrlField:       'porter.trackingUrl',
     },
     fees: {
@@ -99,7 +99,7 @@ const VERTICALS = {
       supportsSlots:          true,
       supportsWallet:         false,
       deliveryProvider:       'farmer_direct',
-      invoiceStages:          [],                // added in Stage C
+      invoiceStages:          ['tax'],           // booking-fee receipt after delivery
       trackingUrlField:       null,
       // Customer pays booking fee online; produce paid to farmer on delivery
       bookingFeeModel:        true,

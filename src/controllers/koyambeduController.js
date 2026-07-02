@@ -3027,17 +3027,24 @@ const getOrderInvoice = async (req, res) => {
   let rowY = tableTop + 20;
   let subtotal = 0;
   (order.items || []).forEach((item, idx) => {
-    const price  = item.finalPrice || item.orderedPrice || 0;
-    const line   = price * item.quantity;
+    // FIX (Stage C): schema field is itemStatus (not item.status), and
+    // declined items/quantities must never be counted in the subtotal.
+    const declined  = item.itemStatus === 'declined';
+    const price     = item.finalPrice || item.orderedPrice || 0;
+    // For partial declines, bill only the confirmed quantity
+    const billQty   = declined ? 0
+      : (item.confirmedQty != null && item.itemStatus !== 'pending'
+          ? item.confirmedQty : item.quantity);
+    const line      = price * billQty;
     subtotal += line;
     const fill   = idx % 2 === 0 ? '#f9fafb' : '#ffffff';
     doc.rect(50, rowY, 495, 18).fill(fill);
-    doc.fontSize(9).font('Helvetica').fillColor(item.status === 'declined' ? '#9ca3af' : '#111827');
-    const name = item.status === 'declined' ? `${item.name} (Declined)` : item.name;
+    doc.fontSize(9).font('Helvetica').fillColor(declined ? '#9ca3af' : '#111827');
+    const name = declined ? `${item.name} (Declined)` : item.name;
     doc.text(name, 55, rowY + 5, { width: 240, ellipsis: true });
-    doc.text(`${item.quantity} ${item.unit}`, 300, rowY + 5);
+    doc.text(`${declined ? item.quantity : billQty} ${item.unit}`, 300, rowY + 5);
     doc.text(`₹${price.toFixed(2)}`, 360, rowY + 5);
-    doc.text(item.status === 'declined' ? '—' : `₹${line.toFixed(2)}`, 460, rowY + 5);
+    doc.text(declined ? '—' : `₹${line.toFixed(2)}`, 460, rowY + 5);
     rowY += 18;
   });
 
@@ -3046,21 +3053,33 @@ const getOrderInvoice = async (req, res) => {
   doc.moveTo(50, rowY).lineTo(545, rowY).strokeColor('#e5e7eb').lineWidth(0.5).stroke();
   rowY += 8;
 
+  // FIX (Stage C): after declines, calculatedPricing (central calc
+  // service) is authoritative — never the original pricing.total.
   const pricing = order.pricing || {};
+  const calc    = order.calculatedPricing || {};
+  const hasCalc = calc.lastCalculatedAt && calc.finalPayableAmount > 0;
+  const declinedRefund = calc.declinedRefundAmount || 0;
   const rows = [
-    ['Subtotal', `₹${(pricing.subtotal || subtotal).toFixed(2)}`],
-    pricing.deliveryFee > 0 ? ['Delivery Fee', `₹${pricing.deliveryFee.toFixed(2)}`] : null,
+    ['Subtotal', `₹${subtotal.toFixed(2)}`],
+    (pricing.deliveryCharge || pricing.deliveryFee) > 0 ? ['Delivery Fee', `₹${(pricing.deliveryCharge || pricing.deliveryFee).toFixed(2)}`] : null,
     pricing.platformFee > 0 ? ['Platform Fee', `₹${pricing.platformFee.toFixed(2)}`] : null,
-    pricing.walletCredit > 0 ? ['Wallet Credit', `-₹${pricing.walletCredit.toFixed(2)}`] : null,
+    pricing.packingLogisticsFee > 0 ? ['Packing & Logistics', `₹${pricing.packingLogisticsFee.toFixed(2)}`] : null,
+    calc.walletAdjustment > 0 ? ['Wallet Adjustment', `-₹${calc.walletAdjustment.toFixed(2)}`] : null,
   ].filter(Boolean);
   rows.forEach(([label, val]) => {
-    doc.fontSize(9).font('Helvetica').fillColor('#374151').text(label, 380, rowY).text(val, 460, rowY);
+    doc.fontSize(9).font('Helvetica').fillColor('#374151').text(label, 340, rowY, { width: 115 }).text(val, 460, rowY);
     rowY += 14;
   });
   rowY += 4;
+  const grandTotal = hasCalc ? calc.finalPayableAmount : (pricing.total || subtotal);
   doc.fontSize(11).font('Helvetica-Bold').fillColor('#065f46')
-    .text('TOTAL', 380, rowY)
-    .text(`₹${(pricing.total || subtotal).toFixed(2)}`, 460, rowY);
+    .text('TOTAL', 340, rowY)
+    .text(`₹${grandTotal.toFixed(2)}`, 460, rowY);
+  if (declinedRefund > 0) {
+    rowY += 18;
+    doc.fontSize(8).font('Helvetica-Oblique').fillColor('#92400e')
+      .text(`Note: ₹${declinedRefund.toFixed(2)} for declined/reduced items has been refunded and is not billed above.`, 50, rowY, { width: 495 });
+  }
 
   // ── Footer ────────────────────────────────────────────────
   doc.fontSize(8).font('Helvetica').fillColor('#9ca3af')

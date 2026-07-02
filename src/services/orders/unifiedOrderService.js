@@ -8,6 +8,7 @@
 'use strict';
 
 const { VERTICALS, listVerticals } = require('../../config/verticals');
+const { computeDocuments } = require('./documentService');
 
 const ADAPTERS = {
   eptomart:  require('./adapters/eptomartAdapter'),
@@ -93,7 +94,12 @@ async function getOrderDetail(userId, verticalKey, id) {
     }
   }
 
-  return adapter.toDetail(doc, { walletHistory });
+  const dto = adapter.toDetail(doc, { walletHistory });
+
+  // Stage C: unified 3-stage document list (availability rules + render URLs)
+  dto.documents = computeDocuments(verticalKey, dto);
+
+  return dto;
 }
 
 /** Tab configuration for the unified My Orders page. */

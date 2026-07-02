@@ -112,7 +112,7 @@ const koyambeduOrderSchema = new Schema({
   // Delivery
   deliveryType:        { type: String, enum: ['today','tomorrow','mixed'], default: 'tomorrow' },
   deliveryDate:        Date,
-  deliverySlot:        { type: String, default: '09:00 AM – 11:59 AM' },
+  deliverySlot:        { type: String, default: '9 AM – 12 PM' },
   deliverySlotKey:     { type: String, enum: ['slot1','slot2','slot3','slot4'], default: 'slot2' },
   deliveryPartner:     String,
   deliveryPersonPhone: String,  // PRIVATE — admin only

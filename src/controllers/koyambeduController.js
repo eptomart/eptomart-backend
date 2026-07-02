@@ -566,7 +566,7 @@ const placeOrder = async (req, res) => {
     items:        enrichedItems,
     deliveryType,
     deliveryDate:    parsedDeliveryDate,
-    deliverySlot:    deliverySlot    || '09:00 AM – 11:59 AM',
+    deliverySlot:    deliverySlot    || '9 AM – 12 PM',
     deliverySlotKey: deliverySlotKey || 'slot2',
     orderTimestamp:  new Date(),
     cutoffCycle:     getProcurementCycle(new Date()),

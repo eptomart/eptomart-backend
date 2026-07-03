@@ -131,25 +131,38 @@ function renderOrderDocument(type, dto, stream) {
   doc.moveTo(50, 118).lineTo(545, 118).strokeColor('#e5e7eb').lineWidth(1).stroke();
 
   // ── Parties ─────────────────────────────────
+  // Lines can wrap (long addresses) — advance by the REAL rendered
+  // height of each line, never a fixed step, so nothing overlaps.
+  const writeLines = (lines, x, startY, width, align) => {
+    let yy = startY;
+    doc.fontSize(9).font('Helvetica').fillColor('#374151');
+    for (const l of lines.filter(Boolean)) {
+      const h = doc.heightOfString(String(l), { width });
+      doc.text(String(l), x, yy, { width, align });
+      yy += h + 3;
+    }
+    return yy;
+  };
+
   let y = 130;
   doc.fontSize(9).font('Helvetica-Bold').fillColor('#374151').text('BILL TO', 50, y);
-  doc.font('Helvetica').fillColor('#374151');
   const addr = dto.address || {};
-  const addrLines = [
+  const yLeft = writeLines([
     dto.customer?.name || addr.fullName || addr.name || '-',
     [addr.addressLine1 || addr.addressLine, addr.addressLine2].filter(Boolean).join(', '),
     [addr.city, addr.state, addr.pincode].filter(Boolean).join(', '),
     addr.phone ? `Phone: ${addr.phone}` : null,
-  ].filter(Boolean);
-  addrLines.forEach(l => { y += 12; doc.text(String(l), 50, y, { width: 240 }); });
+  ], 50, y + 14, 235);
 
-  let ys = 130;
-  doc.font('Helvetica-Bold').text('SELLER', 300, ys, { width: 245, align: 'right' });
-  doc.font('Helvetica');
-  [dto.seller?.name || BUSINESS.name, BUSINESS.address, `${BUSINESS.phone} · ${BUSINESS.email}`]
-    .forEach(l => { ys += 12; doc.text(String(l), 300, ys, { width: 245, align: 'right' }); });
+  doc.fontSize(9).font('Helvetica-Bold').fillColor('#374151').text('SELLER', 305, y, { width: 240, align: 'right' });
+  const yRight = writeLines([
+    dto.seller?.name || BUSINESS.name,
+    BUSINESS.address,
+    BUSINESS.phone,
+    BUSINESS.email,
+  ], 305, y + 14, 240, 'right');
 
-  y = Math.max(y, ys) + 22;
+  y = Math.max(yLeft, yRight) + 14;
 
   // ── Body per document type ──────────────────
   if (type === 'proforma') {
@@ -223,8 +236,10 @@ function itemsTable(doc, y, title, items = [], color) {
   y = ensureSpace(doc, y, 80);
   doc.fontSize(10).font('Helvetica-Bold').fillColor('#111827').text(title, 50, y);
   y += 16;
-  doc.fontSize(8).font('Helvetica-Bold').fillColor('#ffffff');
+  // NOTE: rect().fill(color) changes the current fill color — the white
+  // header text color must be set AFTER filling the bar, not before.
   doc.rect(50, y, 495, 18).fill(color);
+  doc.fontSize(8).font('Helvetica-Bold').fillColor('#ffffff');
   doc.text('Item', 55, y + 5, { width: 235 });
   doc.text('Qty', 300, y + 5);
   doc.text('Unit Price', 370, y + 5);
@@ -252,8 +267,8 @@ function declinedTable(doc, y, items = []) {
   y = ensureSpace(doc, y, 80);
   doc.fontSize(10).font('Helvetica-Bold').fillColor('#b45309').text('Items Declined / Quantity Reduced', 50, y);
   y += 16;
-  doc.fontSize(8).font('Helvetica-Bold').fillColor('#ffffff');
   doc.rect(50, y, 495, 18).fill('#b45309');
+  doc.fontSize(8).font('Helvetica-Bold').fillColor('#ffffff');
   doc.text('Item', 55, y + 5, { width: 175 });
   doc.text('Declined Qty', 240, y + 5);
   doc.text('Unit Price', 320, y + 5);

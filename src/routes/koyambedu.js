@@ -66,6 +66,9 @@ router.get   ('/orders/:orderId/calculation', protect, ctrl.getOrderCalculation)
 // ══════════════════════════════════════════════
 // WALLET — customer
 // ══════════════════════════════════════════════
+// Settings — public
+router.get('/settings/last-update', ctrl.getLastProductUpdateTime);
+
 router.get ('/wallet',                 protect, ctrl.getWallet);
 router.post('/wallet/refund-request',  protect, ctrl.requestWalletRefund);
 
@@ -168,6 +171,8 @@ router.patch('/admin/seller-admins/:saId/approve',protectSuperAdmin, ctrl.adminA
 router.patch('/admin/orders/:orderId/costs',             protectAdmin, ctrl.adminUpdateOrderCosts);
 // ── Partial Razorpay refund ────────────────────────────────────
 router.patch('/admin/orders/:orderId/partial-refund',    protectSuperAdmin, ctrl.adminPartialRefund);
+// Procurement invoice — generate final invoice with actual prices + wallet adjustment
+router.post ('/admin/orders/:id/procurement-invoice',   protectSuperAdmin, ctrl.generateProcurementInvoice);
 // ── Reports ───────────────────────────────────────────────────────
 router.get('/admin/reports/order-report',            protectAdmin, ctrl.adminOrderReport);
 router.get('/admin/reports/product-consolidation',   protectAdmin, ctrl.adminProductConsolidationReport);

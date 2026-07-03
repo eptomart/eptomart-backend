@@ -16,6 +16,7 @@ const KoyambeduProduct      = require('../models/KoyambeduProduct');
 const KoyambeduCart         = require('../models/KoyambeduCart');
 const KoyambeduOrder        = require('../models/KoyambeduOrder');
 const KoyambeduWallet       = require('../models/KoyambeduWallet');
+const KoyambeduSettings     = require('../models/KoyambeduSettings');
 const KoyambeduDeliverySlot = require('../models/KoyambeduDeliverySlot');
 const User                  = require('../models/User');
 const EptoFreshCoupon       = require('../models/EptoFreshCoupon');
@@ -513,7 +514,19 @@ const placeOrder = async (req, res) => {
     }
   }
 
-  const total = parseFloat((subtotal + deliveryCharge + platformFee - couponDiscount).toFixed(2));
+  // ── 7c. Wallet balance adjustment (Feature 5 — Next Order Recovery) ───────
+  // Positive wallet → apply as discount. Negative wallet → recover debt (add to total).
+  let walletAdjustment = 0;
+  let walletDoc = null;
+  try {
+    walletDoc = await KoyambeduWallet.findOne({ user: req.user._id });
+    if (walletDoc && walletDoc.balance !== 0) {
+      walletAdjustment = parseFloat((walletDoc.balance).toFixed(2));
+    }
+  } catch (_) { /* non-blocking */ }
+
+  // walletAdjustment: positive = reduces total, negative = increases total
+  const total = parseFloat((subtotal + deliveryCharge + platformFee - couponDiscount - walletAdjustment).toFixed(2));
 
   // ── 8. Save order ─────────────────────────────────────────
   // Validate deliveryDate: must be today or future, not more than 2 days ahead
@@ -549,7 +562,16 @@ const placeOrder = async (req, res) => {
     itemStatus:   'pending',
   }));
 
-  const pricingObj = { subtotal, deliveryCharge, deliveryDistance: Math.round(distanceKm * 10) / 10, platformFee, discount: couponDiscount, couponCode: appliedCoupon?.code || undefined, total };
+  const pricingObj = {
+    subtotal,
+    deliveryCharge,
+    deliveryDistance: Math.round(distanceKm * 10) / 10,
+    platformFee,
+    discount:       couponDiscount,
+    couponCode:     appliedCoupon?.code || undefined,
+    walletAdjustment, // positive = customer saved, negative = debt recovered
+    total,
+  };
 
   const order = new KoyambeduOrder({
     buyer:        req.user._id,
@@ -651,6 +673,33 @@ const verifyPayment = async (req, res) => {
   order.paymentDetails.razorpaySignature = razorpaySignature;
   order.paymentDetails.paidAt = new Date();
   await order.save();
+
+  // ── Apply wallet adjustment after successful payment ──────────────────────
+  // walletAdjustment stored in pricing: positive = credit applied, negative = debt recovered
+  const walletAdj = order.pricing?.walletAdjustment || 0;
+  if (walletAdj !== 0) {
+    setImmediate(async () => {
+      try {
+        let w = await KoyambeduWallet.findOne({ user: order.buyer });
+        if (!w) w = new KoyambeduWallet({ user: order.buyer, balance: 0 });
+        if (walletAdj > 0) {
+          // Positive wallet was applied as discount — debit the wallet
+          await w.debit(walletAdj, 'wallet_applied', {
+            orderId:  order.orderId,
+            orderRef: order._id,
+            reason:   'Wallet credit applied to reduce order total',
+          });
+        } else {
+          // Negative balance (debt) was added to order total — credit wallet back to zero
+          await w.credit(Math.abs(walletAdj), 'debt_recovery', {
+            orderId:  order.orderId,
+            orderRef: order._id,
+            reason:   'Pending wallet adjustment recovered in this order',
+          });
+        }
+      } catch (e) { console.error('[KBD] Wallet apply error:', e.message); }
+    });
+  }
 
   setImmediate(() => _notifySellerNewOrder(order).catch(() => {}));
 
@@ -2429,22 +2478,27 @@ const updateDailyPrice = async (req, res) => {
 
     await product.save();
 
-    // Record history for the highest-variant update
-    setImmediate(() => KoyambeduPriceHistory.create({
-      product:         product._id,
-      seller:          product.seller,
-      productName:     product.name,
-      productCode:     product.productCode,
-      previousPrice:   prevPrice,
-      updatedPrice:    highestUpdated?.finalPrice || 0,
-      basePrice:       Number(highestBasePrice),
-      variantDiffPct:  product.variantDiffPercent,
-      updatedBy:       req.user._id,
-      updatedByName:   req.user.name || req.user.email,
-      updatedByRole:   isAdmin ? 'superAdmin' : 'sellerAdmin',
-      source:          'manual',
-      note,
-    }).catch(() => {}));
+    // Record history + touch global lastProductUpdateTime
+    setImmediate(async () => {
+      try {
+        await KoyambeduPriceHistory.create({
+          product:         product._id,
+          seller:          product.seller,
+          productName:     product.name,
+          productCode:     product.productCode,
+          previousPrice:   prevPrice,
+          updatedPrice:    highestUpdated?.finalPrice || 0,
+          basePrice:       Number(highestBasePrice),
+          variantDiffPct:  product.variantDiffPercent,
+          updatedBy:       req.user._id,
+          updatedByName:   req.user.name || req.user.email,
+          updatedByRole:   isAdmin ? 'superAdmin' : 'sellerAdmin',
+          source:          'manual',
+          note,
+        });
+        await KoyambeduSettings.touchPriceUpdate(req.user._id, req.user.name || req.user.email);
+      } catch (_) {}
+    });
 
     res.json({
       success: true,
@@ -2514,15 +2568,20 @@ const bulkUpdateDailyPrice = async (req, res) => {
 
         await product.save();
 
-        setImmediate(() => KoyambeduPriceHistory.create({
-          product: product._id, seller: product.seller,
-          productName: product.name, productCode: product.productCode,
-          previousPrice: prevPrice, updatedPrice: highestUpdated?.finalPrice || 0,
-          basePrice: Number(u.highestBasePrice), variantDiffPct: product.variantDiffPercent,
-          updatedBy: req.user._id, updatedByName: req.user.name || req.user.email,
-          updatedByRole: isAdmin ? 'superAdmin' : 'sellerAdmin',
-          source: 'bulk_update',
-        }).catch(() => {}));
+        setImmediate(async () => {
+          try {
+            await KoyambeduPriceHistory.create({
+              product: product._id, seller: product.seller,
+              productName: product.name, productCode: product.productCode,
+              previousPrice: prevPrice, updatedPrice: highestUpdated?.finalPrice || 0,
+              basePrice: Number(u.highestBasePrice), variantDiffPct: product.variantDiffPercent,
+              updatedBy: req.user._id, updatedByName: req.user.name || req.user.email,
+              updatedByRole: isAdmin ? 'superAdmin' : 'sellerAdmin',
+              source: 'bulk_update',
+            });
+            await KoyambeduSettings.touchPriceUpdate(req.user._id, req.user.name || req.user.email);
+          } catch (_) {}
+        });
 
         results.push({
           productId:       u.productId,
@@ -2893,6 +2952,222 @@ const updateSpecialRequest = async (req, res) => {
     if (!sr) return res.status(404).json({ success: false, message: 'Request not found' });
     res.json({ success: true, request: sr });
   } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
+// FEATURE — LAST PRODUCT UPDATE TIME
+// ══════════════════════════════════════════════
+
+/** GET /api/koyambedu/settings/last-update — public, returns last price update time */
+const getLastProductUpdateTime = async (req, res) => {
+  try {
+    // Use the max priceUpdatedAt across all active products as ground truth
+    const latest = await KoyambeduProduct.findOne({ isActive: true })
+      .sort({ priceUpdatedAt: -1 })
+      .select('priceUpdatedAt')
+      .lean();
+    // Also check the settings doc
+    const settings = await KoyambeduSettings.findOne({ key: 'global' }).lean();
+    const fromProducts = latest?.priceUpdatedAt;
+    const fromSettings = settings?.lastProductUpdateTime;
+    let lastUpdate = null;
+    if (fromProducts && fromSettings) lastUpdate = fromProducts > fromSettings ? fromProducts : fromSettings;
+    else lastUpdate = fromProducts || fromSettings || null;
+    res.json({ success: true, lastUpdate });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ══════════════════════════════════════════════
+// FEATURE — PROCUREMENT INVOICE GENERATION
+// POST /api/koyambedu/admin/orders/:id/procurement-invoice
+// ══════════════════════════════════════════════
+
+/**
+ * Admin enters actual procurement prices per item.
+ * System computes diff vs estimated price:
+ *   diff > 0  → price decreased → credit wallet
+ *   diff < 0  → price increased → debit wallet (may go negative)
+ * Idempotent: if walletAdjustmentApplied === true, returns 409.
+ */
+const generateProcurementInvoice = async (req, res) => {
+  try {
+    const { id } = req.params;
+    // actualItems: [{ productId, actualUnitPrice }]
+    const { actualItems } = req.body;
+
+    if (!actualItems?.length) {
+      return res.status(400).json({ success: false, message: 'actualItems array is required' });
+    }
+
+    const order = await KoyambeduOrder.findById(id)
+      .populate('buyer', 'name email phone');
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    // Idempotency guard
+    if (order.procurementPricing?.walletAdjustmentApplied) {
+      return res.status(409).json({
+        success: false,
+        message: 'Procurement invoice already generated for this order',
+        procurementPricing: order.procurementPricing,
+      });
+    }
+
+    // Only work on confirmed items
+    const confirmedItems = order.items.filter(
+      it => it.itemStatus !== 'declined' && it.confirmedQty > 0
+    );
+
+    if (!confirmedItems.length) {
+      return res.status(400).json({ success: false, message: 'No confirmed items in this order' });
+    }
+
+    // Build per-item procurement pricing
+    const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+    let totalEstimated   = 0;
+    let totalActual      = 0;
+    let totalWalletCredit = 0;
+    let totalWalletDue   = 0;
+
+    const procItems = confirmedItems.map(item => {
+      const actualEntry = actualItems.find(a => String(a.productId) === String(item.product));
+      const actualUnitPrice = actualEntry ? r2(Number(actualEntry.actualUnitPrice)) : r2(item.orderedPrice);
+      const estimatedUnitPrice = r2(item.orderedPrice || item.finalPrice || 0);
+      const qty = r2(item.confirmedQty);
+
+      const lineEstimated = r2(estimatedUnitPrice * qty);
+      const lineActual    = r2(actualUnitPrice * qty);
+      const lineDiff      = r2(lineEstimated - lineActual); // +ve = cheaper, -ve = costlier
+
+      let walletAction = 'none';
+      let walletAmount = 0;
+      if (lineDiff > 0) {
+        walletAction = 'credit';
+        walletAmount = lineDiff;
+        totalWalletCredit += lineDiff;
+      } else if (lineDiff < 0) {
+        walletAction = 'due';
+        walletAmount = Math.abs(lineDiff);
+        totalWalletDue += Math.abs(lineDiff);
+      }
+
+      totalEstimated += lineEstimated;
+      totalActual    += lineActual;
+
+      return {
+        productId:          item.product,
+        name:               item.name,
+        unit:               item.unit,
+        confirmedQty:       qty,
+        estimatedUnitPrice,
+        actualUnitPrice,
+        lineEstimated,
+        lineActual,
+        lineDiff,
+        walletAction,
+        walletAmount: r2(walletAmount),
+      };
+    });
+
+    totalEstimated    = r2(totalEstimated);
+    totalActual       = r2(totalActual);
+    totalWalletCredit = r2(totalWalletCredit);
+    totalWalletDue    = r2(totalWalletDue);
+    const netWalletAdjustment = r2(totalWalletCredit - totalWalletDue);
+
+    // ── Apply wallet adjustments atomically ───────────────────────────────
+    const buyerId = order.buyer?._id || order.buyer;
+    let wallet = await KoyambeduWallet.findOne({ user: buyerId });
+    if (!wallet) wallet = new KoyambeduWallet({ user: buyerId, balance: 0 });
+
+    for (const pi of procItems) {
+      if (pi.walletAction === 'credit') {
+        await wallet.credit(pi.walletAmount, 'price_adjustment_credit', {
+          orderId:      order.orderId,
+          orderRef:     order._id,
+          productId:    pi.productId,
+          productName:  pi.name,
+          adminBy:      req.user._id,
+          adminName:    req.user.name || req.user.email,
+          reason:       `Market price decreased for ${pi.name} (Est ₹${pi.estimatedUnitPrice} → Actual ₹${pi.actualUnitPrice})`,
+        });
+      } else if (pi.walletAction === 'due') {
+        await wallet.debit(pi.walletAmount, 'price_adjustment_due', {
+          orderId:      order.orderId,
+          orderRef:     order._id,
+          productId:    pi.productId,
+          productName:  pi.name,
+          adminBy:      req.user._id,
+          adminName:    req.user.name || req.user.email,
+          reason:       `Market price increased for ${pi.name} (Est ₹${pi.estimatedUnitPrice} → Actual ₹${pi.actualUnitPrice})`,
+        });
+      }
+    }
+
+    // ── Save procurement pricing to order ─────────────────────────────────
+    order.procurementPricing = {
+      status:              'confirmed',
+      generatedAt:         new Date(),
+      generatedBy:         req.user._id,
+      confirmedAt:         new Date(),
+      confirmedBy:         req.user._id,
+      items:               procItems,
+      totalEstimated,
+      totalActual,
+      totalWalletCredit,
+      totalWalletDue,
+      netWalletAdjustment,
+      walletAdjustmentApplied:   true,
+      walletAdjustmentAppliedAt: new Date(),
+    };
+
+    // Add timeline event
+    order.timeline.push({
+      event:       'procurement_invoice_generated',
+      description: `Procurement invoice generated. Net wallet adjustment: ₹${netWalletAdjustment >= 0 ? '+' : ''}${netWalletAdjustment}`,
+      actor:       { role: 'super_admin', userId: req.user._id, name: req.user.name || req.user.email },
+      meta:        { totalWalletCredit, totalWalletDue, netWalletAdjustment },
+    });
+
+    // Mark tax invoice available
+    if (!order.invoices) order.invoices = {};
+    order.invoices.tax = {
+      number:      `TAX-${order.orderId}`,
+      generatedAt: new Date(),
+      isAvailable: true,
+    };
+
+    await order.save();
+
+    // ── Fire-and-forget: WhatsApp notification ────────────────────────────
+    setImmediate(async () => {
+      try {
+        const buyer = order.buyer;
+        const phone = buyer?.phone || '';
+        if (!phone) return;
+        let msg = `Hi ${buyer.name || 'Customer'}, your Koyambedu Daily order #${order.orderId} invoice is ready.\n`;
+        if (netWalletAdjustment > 0) {
+          msg += `✅ ₹${totalWalletCredit.toFixed(2)} has been credited to your Eptomart Wallet because today's procurement price was lower than estimated.`;
+        } else if (netWalletAdjustment < 0) {
+          msg += `ℹ️ ₹${totalWalletDue.toFixed(2)} has been added as a pending wallet adjustment because today's procurement price increased. It will automatically be recovered in your next order.`;
+        } else {
+          msg += `Prices matched estimated rates — no wallet adjustment needed.`;
+        }
+        await sendTemplateWhatsApp(phone, msg);
+      } catch (_) {}
+    });
+
+    res.json({
+      success: true,
+      message: 'Procurement invoice generated and wallet adjusted.',
+      procurementPricing: order.procurementPricing,
+      walletBalance: wallet.balance,
+    });
+  } catch (err) {
+    console.error('[KBD] generateProcurementInvoice error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
@@ -4303,6 +4578,10 @@ module.exports = {
   getSellerOrders, confirmStock, requestPriceRevision, createSellerCategory,
   // Admin — sellers
   adminDashboard, adminGetOrders, adminUpdateOrderStatus, adminEditOrderItemQty, adminDeclineOrderItem,
+  // Settings / last update time
+  getLastProductUpdateTime,
+  // Procurement invoice
+  generateProcurementInvoice,
   // Wallet
   getWallet, requestWalletRefund, adminGetRefundRequests, adminUpdateRefundRequest,
   adminGetSellers, adminCreateSeller, adminApproveSeller, adminToggleSeller, adminEditSellerContact,

@@ -300,6 +300,42 @@ const koyambeduOrderSchema = new Schema({
     },
   },
 
+  // ── PROCUREMENT PRICING (generated after actual procurement) ──────────────
+  // Immutable once procurementPricing.status === 'confirmed'.
+  procurementPricing: {
+    status: {
+      type: String,
+      enum: ['not_generated', 'generated', 'confirmed'],
+      default: 'not_generated',
+    },
+    generatedAt:  Date,
+    generatedBy:  { type: Schema.Types.ObjectId, ref: 'User' },
+    confirmedAt:  Date,
+    confirmedBy:  { type: Schema.Types.ObjectId, ref: 'User' },
+    // Per-item breakdown (generated from confirmed items)
+    items: [{
+      productId:         { type: Schema.Types.ObjectId, ref: 'KoyambeduProduct' },
+      name:              String,
+      unit:              String,
+      confirmedQty:      Number,
+      estimatedUnitPrice:Number,  // orderedPrice at order time
+      actualUnitPrice:   Number,  // entered by admin after procurement
+      lineEstimated:     Number,  // estimatedUnitPrice × confirmedQty
+      lineActual:        Number,  // actualUnitPrice × confirmedQty
+      lineDiff:          Number,  // lineEstimated - lineActual (+ve = credit, -ve = due)
+      walletAction:      { type: String, enum: ['credit', 'due', 'none'], default: 'none' },
+      walletAmount:      { type: Number, default: 0 },
+    }],
+    totalEstimated:    { type: Number, default: 0 },
+    totalActual:       { type: Number, default: 0 },
+    totalWalletCredit: { type: Number, default: 0 }, // sum of credits
+    totalWalletDue:    { type: Number, default: 0 }, // sum of dues (always positive)
+    netWalletAdjustment: { type: Number, default: 0 }, // totalWalletCredit - totalWalletDue (+ve = net credit)
+    // Set to true once wallet transactions are created — prevents double-processing
+    walletAdjustmentApplied:   { type: Boolean, default: false },
+    walletAdjustmentAppliedAt: Date,
+  },
+
   // Internal cost tracking (admin only — never shown to customer)
   adminCosts: {
     actualDeliveryCost: { type: Number, default: 0 },

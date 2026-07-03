@@ -18,6 +18,7 @@ const koyambeduPriceHistorySchema = new Schema({
   platformFeePercent:  Number,
   logisticsPercent:    Number,
   sellerMarginPercent: Number,
+  variantDiffPct:      Number, // % step reduction per variant (variant pricing feature)
 
   updatedBy:     { type: Schema.Types.ObjectId, ref: 'User' },
   updatedByName: String,

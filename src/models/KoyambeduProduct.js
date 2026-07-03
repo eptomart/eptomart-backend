@@ -31,12 +31,19 @@ const koyambeduProductSchema = new Schema({
 
   // ── Variant Pricing (up to 4 tiers) ────────────────────────────────────────
   // finalPrice = basePrice × (1 + (procurement + platform + logistics) / 100)
+  // Daily Price Update: user enters base price for HIGHEST qty variant only.
+  // System auto-calculates all smaller variants using variantDiffPercent.
   variants: [{
     basePrice:  { type: Number, required: true },
     fromQty:    { type: Number, required: true },
     toQty:      { type: Number, default: null }, // null = open-ended last tier
     finalPrice: { type: Number, default: 0 },   // auto-computed
   }],
+
+  // Variant difference %: % by which each smaller variant's base price is reduced
+  // relative to the next larger variant. Used by variantPricingService.
+  // e.g. 2.5 means: 10kg base = 30kg base × (1 - 2.5/100)
+  variantDiffPercent: { type: Number, default: 2 },
 
   // Legacy single-price fields (kept for backward compat + derived from variants)
   basePrice:            { type: Number, default: 0 },

@@ -2290,31 +2290,82 @@ const generateProductCode = (name) => {
 };
 
 // ══════════════════════════════════════════════
-// FEATURE 4 — Daily Price Update Panel
-// GET /seller-admin/daily-price  — list all products with today's price
-// PATCH /seller-admin/daily-price/:productId — update price
-// PATCH /seller-admin/daily-price/bulk — bulk update
+// FEATURE 4 — Daily Price Update Panel (v2 — variant-aware)
+//
+// Business rule: user enters ONE base price (for the HIGHEST qty variant).
+// System auto-calculates all smaller variant prices via variantPricingService.
+//
+// Routes (shared handler, role detected from req.user.role):
+//   GET  /seller-admin/daily-price          — SA: own sellers only
+//   GET  /admin/daily-price                 — Admin: by sellerAdmin + category params
+//   PATCH /seller-admin/daily-price/:id     — update one product
+//   PATCH /admin/daily-price/:id            — admin update one product
+//   POST  /seller-admin/daily-price/bulk    — bulk update
+//   POST  /admin/daily-price/bulk           — admin bulk update
 // ══════════════════════════════════════════════
 const KoyambeduPriceHistory = require('../models/KoyambeduPriceHistory');
+const { calculateVariantPricing, getHighestVariant, getLowestUnitPrice } = require('../utils/variantPricingService');
+
+// ── Helper: resolve seller IDs for a price panel request ──────────────
+// • SA role  → only their own sellers (req.user links to a SellerAdmin doc)
+// • Admin role → filtered by optional sellerAdmin query param
+const _resolveSellerIds = async (req) => {
+  const isAdmin = req.user.role === 'superAdmin' || req.user.role === 'admin';
+  if (isAdmin) {
+    const { sellerAdmin } = req.query;
+    if (sellerAdmin) {
+      const sellers = await KoyambeduSeller
+        .find({ createdBySellerAdmin: sellerAdmin, status: 'approved' })
+        .select('_id').lean();
+      return sellers.map(s => s._id);
+    }
+    // Admin with no SA filter → all sellers
+    const sellers = await KoyambeduSeller.find({}).select('_id').lean();
+    return sellers.map(s => s._id);
+  }
+  // Seller Admin — scope to their own sellers
+  const saDoc = await KoyambeduSellerAdmin.findOne({ user: req.user._id }).select('_id').lean();
+  if (!saDoc) return [];
+  const sellers = await KoyambeduSeller
+    .find({ createdBySellerAdmin: saDoc._id, status: 'approved' })
+    .select('_id').lean();
+  return sellers.map(s => s._id);
+};
 
 const getDailyPricePanel = async (req, res) => {
   try {
-    // sellerAdmin query param: if admin-level call, can filter by SA id
-    const { sellerAdmin } = req.query;
-    let sellerIds;
-    if (sellerAdmin) {
-      const sellers = await KoyambeduSeller.find({ createdBySellerAdmin: sellerAdmin, status: 'approved' }).select('_id').lean();
-      sellerIds = sellers.map(s => s._id);
-    } else {
-      const sellers = await KoyambeduSeller.find({}).select('_id').lean();
-      sellerIds = sellers.map(s => s._id);
-    }
-    const products = await KoyambeduProduct.find({ seller: { $in: sellerIds }, isActive: true })
+    const { category } = req.query;
+    const sellerIds = await _resolveSellerIds(req);
+    if (!sellerIds.length) return res.json({ success: true, products: [] });
+
+    const filter = { seller: { $in: sellerIds }, isActive: true };
+    if (category) filter.category = category;
+
+    const products = await KoyambeduProduct.find(filter)
       .populate('seller', 'name businessName')
       .populate('category', 'name')
-      .select('name productCode currentPrice finalPrice basePrice sellerMarginPercent platformFeePercent logisticsPercent stockQty priceUpdatedAt')
+      .select([
+        'name', 'nameTamil', 'productCode', 'unit',
+        'variants', 'variantDiffPercent',
+        'procurementChargePercent', 'platformChargePercent', 'logisticsChargePercent',
+        'currentPrice', 'finalPrice', 'basePrice',
+        'priceUpdatedAt', 'seller', 'category',
+      ].join(' '))
       .lean();
-    res.json({ success: true, products });
+
+    // Annotate each product with derived display fields
+    const annotated = products.map(p => {
+      const highestVariant = getHighestVariant(p.variants || []);
+      const lowestUnitPrice = getLowestUnitPrice(p.variants || []);
+      return {
+        ...p,
+        highestVariant,          // { fromQty, basePrice, finalPrice, ... }
+        lowestUnitPrice,         // for "From ₹X/unit" display
+        variantDiffPercent: p.variantDiffPercent || 2,
+      };
+    });
+
+    res.json({ success: true, products: annotated });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -2323,56 +2374,84 @@ const getDailyPricePanel = async (req, res) => {
 const updateDailyPrice = async (req, res) => {
   try {
     const { productId } = req.params;
-    const { basePrice, sellerMarginPercent, platformFeePercent, logisticsPercent, stockQty, note } = req.body;
+    const { highestBasePrice, variantDiffPercent, note } = req.body;
+
+    // Validation
+    if (highestBasePrice === undefined || Number(highestBasePrice) <= 0) {
+      return res.status(400).json({ success: false, message: 'highestBasePrice must be a positive number' });
+    }
+    if (variantDiffPercent !== undefined && (Number(variantDiffPercent) < 0 || Number(variantDiffPercent) > 50)) {
+      return res.status(400).json({ success: false, message: 'variantDiffPercent must be between 0 and 50' });
+    }
 
     const product = await KoyambeduProduct.findById(productId);
     if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
-    const prevPrice = product.currentPrice;
+    // SA ownership check
+    const isAdmin = req.user.role === 'superAdmin' || req.user.role === 'admin';
+    if (!isAdmin) {
+      const saDoc = await KoyambeduSellerAdmin.findOne({ user: req.user._id }).select('_id').lean();
+      const seller = await KoyambeduSeller.findById(product.seller).select('createdBySellerAdmin').lean();
+      if (!saDoc || !seller || String(seller.createdBySellerAdmin) !== String(saDoc._id)) {
+        return res.status(403).json({ success: false, message: 'You can only update your own products' });
+      }
+    }
 
-    if (basePrice !== undefined)           product.basePrice           = basePrice;
-    if (sellerMarginPercent !== undefined) product.sellerMarginPercent = sellerMarginPercent;
-    if (platformFeePercent !== undefined)  product.platformFeePercent  = platformFeePercent;
-    if (logisticsPercent !== undefined)    product.logisticsPercent    = logisticsPercent;
-    if (stockQty !== undefined)            product.stockQty            = stockQty;
+    const prevHighestVariant = getHighestVariant(product.variants || []);
+    const prevPrice = prevHighestVariant?.finalPrice || product.currentPrice;
 
-    const newFinal = calcFinalPrice({
-      basePrice:           product.basePrice,
-      platformFeePercent:  product.platformFeePercent,
-      logisticsPercent:    product.logisticsPercent,
-      sellerMarginPercent: product.sellerMarginPercent,
+    // Save variant diff % if provided
+    if (variantDiffPercent !== undefined) product.variantDiffPercent = Number(variantDiffPercent);
+
+    // Calculate and apply new variant pricing
+    const updatedVariants = calculateVariantPricing(product, {
+      highestBasePrice:   Number(highestBasePrice),
+      variantDiffPercent: product.variantDiffPercent,
     });
-    product.finalPrice    = newFinal;
-    product.currentPrice  = newFinal;
+
+    // Apply updated basePrice + finalPrice back to embedded subdocs
+    for (const upd of updatedVariants) {
+      const v = product.variants.id ? product.variants.id(upd._id) : null;
+      const vByIdx = product.variants.find(x => String(x.fromQty) === String(upd.fromQty));
+      const target = v || vByIdx;
+      if (target) {
+        target.basePrice  = upd.basePrice;
+        target.finalPrice = upd.finalPrice;
+      }
+    }
+
+    // Also update legacy top-level fields for backward compat
+    const highestUpdated = getHighestVariant(updatedVariants);
+    product.basePrice      = Number(highestBasePrice);
+    product.finalPrice     = highestUpdated?.finalPrice || 0;
+    product.currentPrice   = getLowestUnitPrice(updatedVariants) || highestUpdated?.finalPrice || 0;
     product.priceUpdatedAt = new Date();
+
     await product.save();
 
-    // Record history
-    await KoyambeduPriceHistory.create({
-      product:             product._id,
-      seller:              product.seller,
-      productName:         product.name,
-      productCode:         product.productCode,
-      previousPrice:       prevPrice,
-      updatedPrice:        newFinal,
-      basePrice:           product.basePrice,
-      platformFeePercent:  product.platformFeePercent,
-      logisticsPercent:    product.logisticsPercent,
-      sellerMarginPercent: product.sellerMarginPercent,
-      updatedBy:           req.user._id,
-      updatedByName:       req.user.name || req.user.email,
-      updatedByRole:       req.user.role === 'superAdmin' ? 'superAdmin' : 'sellerAdmin',
-      source:              'manual',
+    // Record history for the highest-variant update
+    setImmediate(() => KoyambeduPriceHistory.create({
+      product:         product._id,
+      seller:          product.seller,
+      productName:     product.name,
+      productCode:     product.productCode,
+      previousPrice:   prevPrice,
+      updatedPrice:    highestUpdated?.finalPrice || 0,
+      basePrice:       Number(highestBasePrice),
+      variantDiffPct:  product.variantDiffPercent,
+      updatedBy:       req.user._id,
+      updatedByName:   req.user.name || req.user.email,
+      updatedByRole:   isAdmin ? 'superAdmin' : 'sellerAdmin',
+      source:          'manual',
       note,
-    });
+    }).catch(() => {}));
 
-    res.json({ success: true, product, breakdown: {
-      basePrice: product.basePrice,
-      platformFee: Math.round((product.basePrice * product.platformFeePercent) / 100 * 100) / 100,
-      logisticsFee: Math.round((product.basePrice * product.logisticsPercent) / 100 * 100) / 100,
-      sellerMargin: Math.round((product.basePrice * product.sellerMarginPercent) / 100 * 100) / 100,
-      finalPrice: newFinal,
-    }});
+    res.json({
+      success: true,
+      updatedVariants,
+      highestVariant:  highestUpdated,
+      lowestUnitPrice: getLowestUnitPrice(updatedVariants),
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -2380,44 +2459,82 @@ const updateDailyPrice = async (req, res) => {
 
 const bulkUpdateDailyPrice = async (req, res) => {
   try {
-    // updates: [{ productId, basePrice, sellerMarginPercent, stockQty }]
+    // updates: [{ productId, highestBasePrice, variantDiffPercent }]
     const { updates } = req.body;
     if (!Array.isArray(updates) || !updates.length) {
-      return res.status(400).json({ success: false, message: 'updates array required' });
+      return res.status(400).json({ success: false, message: 'updates array is required' });
+    }
+
+    const isAdmin = req.user.role === 'superAdmin' || req.user.role === 'admin';
+    let saDoc = null;
+    if (!isAdmin) {
+      saDoc = await KoyambeduSellerAdmin.findOne({ user: req.user._id }).select('_id').lean();
     }
 
     const results = [];
     for (const u of updates) {
       try {
+        if (!u.productId || !u.highestBasePrice || Number(u.highestBasePrice) <= 0) {
+          results.push({ productId: u.productId, error: 'highestBasePrice is required and must be positive' });
+          continue;
+        }
+
         const product = await KoyambeduProduct.findById(u.productId);
         if (!product) { results.push({ productId: u.productId, error: 'not found' }); continue; }
 
-        const prevPrice = product.currentPrice;
-        if (u.basePrice !== undefined)           product.basePrice           = u.basePrice;
-        if (u.sellerMarginPercent !== undefined) product.sellerMarginPercent = u.sellerMarginPercent;
-        if (u.stockQty !== undefined)            product.stockQty            = u.stockQty;
+        // SA ownership check
+        if (!isAdmin && saDoc) {
+          const seller = await KoyambeduSeller.findById(product.seller).select('createdBySellerAdmin').lean();
+          if (!seller || String(seller.createdBySellerAdmin) !== String(saDoc._id)) {
+            results.push({ productId: u.productId, error: 'access denied' });
+            continue;
+          }
+        }
 
-        const newFinal = calcFinalPrice(product);
-        product.finalPrice    = newFinal;
-        product.currentPrice  = newFinal;
+        const prevHighestVariant = getHighestVariant(product.variants || []);
+        const prevPrice = prevHighestVariant?.finalPrice || product.currentPrice;
+
+        if (u.variantDiffPercent !== undefined) product.variantDiffPercent = Number(u.variantDiffPercent);
+
+        const updatedVariants = calculateVariantPricing(product, {
+          highestBasePrice:   Number(u.highestBasePrice),
+          variantDiffPercent: product.variantDiffPercent,
+        });
+
+        for (const upd of updatedVariants) {
+          const vByIdx = product.variants.find(x => String(x.fromQty) === String(upd.fromQty));
+          if (vByIdx) { vByIdx.basePrice = upd.basePrice; vByIdx.finalPrice = upd.finalPrice; }
+        }
+
+        const highestUpdated = getHighestVariant(updatedVariants);
+        product.basePrice      = Number(u.highestBasePrice);
+        product.finalPrice     = highestUpdated?.finalPrice || 0;
+        product.currentPrice   = getLowestUnitPrice(updatedVariants) || highestUpdated?.finalPrice || 0;
         product.priceUpdatedAt = new Date();
+
         await product.save();
 
-        await KoyambeduPriceHistory.create({
+        setImmediate(() => KoyambeduPriceHistory.create({
           product: product._id, seller: product.seller,
           productName: product.name, productCode: product.productCode,
-          previousPrice: prevPrice, updatedPrice: newFinal,
-          basePrice: product.basePrice, platformFeePercent: product.platformFeePercent,
-          logisticsPercent: product.logisticsPercent, sellerMarginPercent: product.sellerMarginPercent,
+          previousPrice: prevPrice, updatedPrice: highestUpdated?.finalPrice || 0,
+          basePrice: Number(u.highestBasePrice), variantDiffPct: product.variantDiffPercent,
           updatedBy: req.user._id, updatedByName: req.user.name || req.user.email,
-          updatedByRole: req.user.role === 'superAdmin' ? 'superAdmin' : 'sellerAdmin',
+          updatedByRole: isAdmin ? 'superAdmin' : 'sellerAdmin',
           source: 'bulk_update',
+        }).catch(() => {}));
+
+        results.push({
+          productId:       u.productId,
+          updatedVariants,
+          highestVariant:  highestUpdated,
+          lowestUnitPrice: getLowestUnitPrice(updatedVariants),
         });
-        results.push({ productId: u.productId, finalPrice: newFinal });
       } catch (e) {
         results.push({ productId: u.productId, error: e.message });
       }
     }
+
     res.json({ success: true, results });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

@@ -57,9 +57,9 @@ function calculateVariantPricing(product, { highestBasePrice, variantDiffPercent
   if (!variants.length) return [];
 
   const totalChargePercent =
-    (Number(product.procurementChargePercent) || 15) +
-    (Number(product.platformChargePercent)    || 10) +
-    (Number(product.logisticsChargePercent)   || 10);
+    (product.procurementChargePercent != null ? Number(product.procurementChargePercent) : 0) +
+    (product.platformChargePercent    != null ? Number(product.platformChargePercent)    : 10) +
+    (product.logisticsChargePercent   != null ? Number(product.logisticsChargePercent)   : 10);
 
   // Each step toward smaller qty multiplies basePrice UP (smaller qty = more expensive per unit)
   const diffMultiplier = 1 + (Number(variantDiffPercent) || 0) / 100;

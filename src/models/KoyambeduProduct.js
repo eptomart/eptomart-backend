@@ -25,7 +25,7 @@ const koyambeduProductSchema = new Schema({
   productCode: { type: String, trim: true, uppercase: true },
 
   // ── Charge percentages (product-level, apply to all variants) ──────────────
-  procurementChargePercent: { type: Number, default: 15 },  // % of basePrice
+  procurementChargePercent: { type: Number, default: 0 },   // % of basePrice (admin/SA set per product)
   platformChargePercent:    { type: Number, default: 10 },  // % of basePrice
   logisticsChargePercent:   { type: Number, default: 10 },  // % of basePrice
 

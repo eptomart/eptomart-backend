@@ -1652,7 +1652,7 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
 
   if (variants && Array.isArray(variants) && variants.length > 0) {
     // Validate + compute finalPrice for each variant
-    const procPct = Number(procurementChargePercent) || 15;
+    const procPct = procurementChargePercent != null ? Number(procurementChargePercent) : 0;
     const platPct = Number(platformChargePercent)    || 10;
     const logPct  = Number(logisticsChargePercent)   || 10;
 
@@ -1705,7 +1705,7 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
     weightKg:  weightKg  != null ? Number(weightKg) : (unit === 'g' ? 0.001 : 1),
     currentPrice: derivedCurrentPrice,
     variants:     processedVariants,
-    procurementChargePercent: Number(procurementChargePercent) || 15,
+    procurementChargePercent: procurementChargePercent != null ? Number(procurementChargePercent) : 0,
     platformChargePercent:    Number(platformChargePercent)    || 10,
     logisticsChargePercent:   Number(logisticsChargePercent)   || 10,
     stockQty:     stockQty || 0,
@@ -1800,7 +1800,8 @@ const adminUpdateProduct = async (req, res) => {
 
   // Variant update
   if (req.body.variants && Array.isArray(req.body.variants) && req.body.variants.length > 0) {
-    const procPct = Number(req.body.procurementChargePercent ?? product.procurementChargePercent) || 15;
+    const _procRaw = req.body.procurementChargePercent ?? product.procurementChargePercent;
+    const procPct = _procRaw != null ? Number(_procRaw) : 0;
     const platPct = Number(req.body.platformChargePercent    ?? product.platformChargePercent)    || 10;
     const logPct  = Number(req.body.logisticsChargePercent   ?? product.logisticsChargePercent)   || 10;
     const allVars = req.body.variants.slice(0, 4);
@@ -1927,7 +1928,8 @@ const adminApproveProductEdit = async (req, res) => {
 
   // Apply variants (with recalculation)
   if (edit.variants && Array.isArray(edit.variants) && edit.variants.length > 0) {
-    const procPct = Number(edit.procurementChargePercent ?? product.procurementChargePercent) || 15;
+    const _procRaw2 = edit.procurementChargePercent ?? product.procurementChargePercent;
+    const procPct = _procRaw2 != null ? Number(_procRaw2) : 0;
     const platPct = Number(edit.platformChargePercent    ?? product.platformChargePercent)    || 10;
     const logPct  = Number(edit.logisticsChargePercent   ?? product.logisticsChargePercent)   || 10;
     const processed = edit.variants.slice(0, 4).map(v => ({

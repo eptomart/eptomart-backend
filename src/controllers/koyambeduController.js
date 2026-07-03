@@ -127,7 +127,11 @@ const getProducts = async (req, res) => {
   try {
     const { category, search, deliveryType, page = 1, limit = 20, sort = 'default' } = req.query;
 
-    const filter = { isActive: true, isAvailable: true };
+    const filter = {
+      isActive: true, isAvailable: true,
+      // Only show approved products; legacy products (no field) are treated as approved
+      $or: [{ approvalStatus: 'approved' }, { approvalStatus: { $exists: false } }],
+    };
     if (category) filter.category = category;
     if (deliveryType === 'today')    filter.isSameDay = true;
     if (deliveryType === 'tomorrow') filter.isNextDay = true;
@@ -164,7 +168,10 @@ const getProducts = async (req, res) => {
 /** GET /api/koyambedu/products/featured — home page sections */
 const getFeaturedProducts = async (req, res) => {
   try {
-    const base = { isActive: true };   // removed isAvailable check so empty DB returns [] not 500
+    const base = {
+      isActive: true,
+      $or: [{ approvalStatus: 'approved' }, { approvalStatus: { $exists: false } }],
+    };
 
     const safeFind = (query) => query.catch(() => []);
 
@@ -1616,7 +1623,7 @@ const calcVariantFinalPrice = (basePrice, procPct, platPct, logPct) => {
 };
 
 // ── Shared product-creation helper ──────────────────────────────────────────
-const _createProductForSeller = async (seller, body) => {
+const _createProductForSeller = async (seller, body, opts = {}) => {
   const {
     categoryId, name, nameTamil, description, unit,
     stockQty, freshArrivalTime, isSameDay, isNextDay, sameDayCutoff,
@@ -1710,6 +1717,7 @@ const _createProductForSeller = async (seller, body) => {
     badges: badges || [],
     tags:   tags   || [],
     images: body.images || [],
+    approvalStatus: opts.approvalStatus || 'approved',
   });
 };
 
@@ -1724,8 +1732,8 @@ const sellerAdminCreateProduct = async (req, res) => {
     return res.status(400).json({ success: false, message: 'Seller must be approved before adding products' });
   }
 
-  const product = await _createProductForSeller(seller, req.body);
-  res.status(201).json({ success: true, product });
+  const product = await _createProductForSeller(seller, req.body, { approvalStatus: 'pending' });
+  res.status(201).json({ success: true, product, pendingApproval: true });
 };
 
 /** POST /api/koyambedu/seller-admin/categories — SA submits a new category for admin approval */
@@ -1857,52 +1865,77 @@ const sellerAdminToggleProduct = async (req, res) => {
   res.json({ success: true, isAvailable: product.isAvailable });
 };
 
-/** DELETE /api/koyambedu/admin/products/:productId — super admin hard-delete */
-const adminDeleteProduct = async (req, res) => {
-  const product = await KoyambeduProduct.findByIdAndDelete(req.params.productId);
-  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
-  res.json({ success: true, message: 'Product deleted' });
+// ══════════════════════════════════════════════════════════════════
+// PRODUCT APPROVAL WORKFLOW — SuperAdmin endpoints
+// SA creates/edits products; SuperAdmin approves before they go live
+// ══════════════════════════════════════════════════════════════════
+
+/** GET /api/koyambedu/admin/products/pending — list new products + pending edits awaiting approval */
+const adminGetPendingProducts = async (req, res) => {
+  const [pendingNew, pendingEdits] = await Promise.all([
+    KoyambeduProduct.find({ approvalStatus: 'pending' })
+      .populate('seller', 'businessName stallNumber')
+      .populate('category', 'name icon')
+      .populate('pendingEditBy', 'name email')
+      .sort({ createdAt: -1 }).lean(),
+    KoyambeduProduct.find({ pendingEdit: { $exists: true, $ne: null } })
+      .populate('seller', 'businessName stallNumber')
+      .populate('category', 'name icon')
+      .populate('pendingEditBy', 'name email')
+      .sort({ pendingEditAt: -1 }).lean(),
+  ]);
+  res.json({ success: true, pendingNew, pendingEdits });
 };
 
-/** PUT /api/koyambedu/seller-admin/sellers/:sellerId/products/:productId — update product (no buyer info) */
-const sellerAdminUpdateProduct = async (req, res) => {
-  const sa = await KoyambeduSellerAdmin.findOne({ user: req.user._id, status: 'approved' });
-  if (!sa) return res.status(403).json({ success: false, message: 'SellerAdmin not approved' });
-
-  // Verify the seller belongs to this SA
-  const seller = await KoyambeduSeller.findOne({ _id: req.params.sellerId, createdBySellerAdmin: sa._id });
-  if (!seller) return res.status(403).json({ success: false, message: 'Seller not managed by this SellerAdmin' });
-
-  const product = await KoyambeduProduct.findOne({ _id: req.params.productId, seller: seller._id });
+/** POST /api/koyambedu/admin/products/:productId/approve — approve a new pending product */
+const adminApproveProduct = async (req, res) => {
+  const product = await KoyambeduProduct.findById(req.params.productId);
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+  if (product.approvalStatus !== 'pending') return res.status(400).json({ success: false, message: 'Product is not pending approval' });
+  product.approvalStatus = 'approved';
+  product.approvedBy     = req.user._id;
+  product.approvedAt     = new Date();
+  product.approvalNote   = undefined;
+  await product.save();
+  res.json({ success: true, product });
+};
 
-  // SellerAdmin can update: stock, availability, delivery options, images, variants
-  const allowed = [
-    'name','nameTamil','unit','description','badges',
-    'categoryId','stockQty','isAvailable','isSameDay','isNextDay','sameDayCutoff','weightKg','images',
-  ];
-  for (const k of allowed) {
-    if (req.body[k] !== undefined) product[k] = req.body[k];
+/** POST /api/koyambedu/admin/products/:productId/reject — reject a new pending product */
+const adminRejectProduct = async (req, res) => {
+  const product = await KoyambeduProduct.findById(req.params.productId);
+  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+  if (product.approvalStatus !== 'pending') return res.status(400).json({ success: false, message: 'Product is not pending approval' });
+  product.approvalStatus = 'rejected';
+  product.approvalNote   = req.body.note || '';
+  await product.save();
+  res.json({ success: true, product });
+};
+
+/** POST /api/koyambedu/admin/products/:productId/approve-edit — apply pendingEdit to live product */
+const adminApproveProductEdit = async (req, res) => {
+  const product = await KoyambeduProduct.findById(req.params.productId);
+  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+  if (!product.pendingEdit) return res.status(400).json({ success: false, message: 'No pending edit found' });
+
+  const edit = product.pendingEdit;
+
+  // Apply plain catalog fields
+  const directFields = ['name', 'nameTamil', 'unit', 'description', 'badges', 'categoryId', 'weightKg', 'images'];
+  for (const k of directFields) {
+    if (edit[k] !== undefined) product[k] = edit[k];
   }
 
-  // Variant update (SellerAdmin can re-price variants)
-  if (req.body.variants && Array.isArray(req.body.variants) && req.body.variants.length > 0) {
-    const procPct = Number(req.body.procurementChargePercent ?? product.procurementChargePercent) || 15;
-    const platPct = Number(req.body.platformChargePercent    ?? product.platformChargePercent)    || 10;
-    const logPct  = Number(req.body.logisticsChargePercent   ?? product.logisticsChargePercent)   || 10;
-    const processed = req.body.variants.slice(0, 4).map(v => ({
+  // Apply variants (with recalculation)
+  if (edit.variants && Array.isArray(edit.variants) && edit.variants.length > 0) {
+    const procPct = Number(edit.procurementChargePercent ?? product.procurementChargePercent) || 15;
+    const platPct = Number(edit.platformChargePercent    ?? product.platformChargePercent)    || 10;
+    const logPct  = Number(edit.logisticsChargePercent   ?? product.logisticsChargePercent)   || 10;
+    const processed = edit.variants.slice(0, 4).map(v => ({
       basePrice:  Number(v.basePrice),
       fromQty:    Number(v.fromQty),
       toQty:      (v.toQty !== '' && v.toQty != null) ? Number(v.toQty) : null,
       finalPrice: calcVariantFinalPrice(v.basePrice, procPct, platPct, logPct),
     }));
-    // Validate no overlapping ranges
-    for (let i = 1; i < processed.length; i++) {
-      const prevToQty = processed[i - 1].toQty;
-      if (prevToQty !== null && processed[i].fromQty <= prevToQty) {
-        return res.status(400).json({ success: false, message: `Variant ${i + 1}: qty range overlaps with the previous tier — start must be at least ${prevToQty + 1}` });
-      }
-    }
     product.variants = processed;
     product.procurementChargePercent = procPct;
     product.platformChargePercent    = platPct;
@@ -1913,8 +1946,81 @@ const sellerAdminUpdateProduct = async (req, res) => {
     product.priceUpdatedAt = new Date();
   }
 
+  // Clear the pending edit
+  product.pendingEdit   = undefined;
+  product.pendingEditBy = undefined;
+  product.pendingEditAt = undefined;
+  product.markModified('pendingEdit');
   await product.save();
   res.json({ success: true, product });
+};
+
+/** POST /api/koyambedu/admin/products/:productId/reject-edit — discard pendingEdit without applying */
+const adminRejectProductEdit = async (req, res) => {
+  const product = await KoyambeduProduct.findById(req.params.productId);
+  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+  if (!product.pendingEdit) return res.status(400).json({ success: false, message: 'No pending edit found' });
+  product.pendingEdit   = undefined;
+  product.pendingEditBy = undefined;
+  product.pendingEditAt = undefined;
+  product.markModified('pendingEdit');
+  await product.save();
+  res.json({ success: true, message: 'Pending edit discarded' });
+};
+
+/** DELETE /api/koyambedu/admin/products/:productId — super admin hard-delete */
+const adminDeleteProduct = async (req, res) => {
+  const product = await KoyambeduProduct.findByIdAndDelete(req.params.productId);
+  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+  res.json({ success: true, message: 'Product deleted' });
+};
+
+/** PUT /api/koyambedu/seller-admin/sellers/:sellerId/products/:productId — update product
+ *
+ * Operational fields (stockQty, isAvailable, isSameDay, isNextDay, sameDayCutoff)
+ * are applied immediately.
+ *
+ * Catalog fields (name, description, variants, images, etc.) are parked in
+ * pendingEdit and require superadmin approval before they go live.
+ */
+const sellerAdminUpdateProduct = async (req, res) => {
+  const sa = await KoyambeduSellerAdmin.findOne({ user: req.user._id, status: 'approved' });
+  if (!sa) return res.status(403).json({ success: false, message: 'SellerAdmin not approved' });
+
+  const seller = await KoyambeduSeller.findOne({ _id: req.params.sellerId, createdBySellerAdmin: sa._id });
+  if (!seller) return res.status(403).json({ success: false, message: 'Seller not managed by this SellerAdmin' });
+
+  const product = await KoyambeduProduct.findOne({ _id: req.params.productId, seller: seller._id });
+  if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+
+  // ── 1. Apply operational fields immediately (no approval needed) ──────────
+  const immediateFields = ['stockQty', 'isAvailable', 'isSameDay', 'isNextDay', 'sameDayCutoff'];
+  for (const k of immediateFields) {
+    if (req.body[k] !== undefined) product[k] = req.body[k];
+  }
+
+  // ── 2. Queue catalog fields for superadmin approval ───────────────────────
+  const catalogKeys = [
+    'name', 'nameTamil', 'unit', 'description', 'badges',
+    'categoryId', 'weightKg', 'images',
+    'variants', 'procurementChargePercent', 'platformChargePercent', 'logisticsChargePercent',
+  ];
+  const pendingChanges = {};
+  for (const k of catalogKeys) {
+    if (req.body[k] !== undefined) pendingChanges[k] = req.body[k];
+  }
+
+  let pendingApproval = false;
+  if (Object.keys(pendingChanges).length > 0) {
+    product.pendingEdit   = pendingChanges;
+    product.pendingEditBy = req.user._id;
+    product.pendingEditAt = new Date();
+    product.markModified('pendingEdit');
+    pendingApproval = true;
+  }
+
+  await product.save();
+  res.json({ success: true, product, pendingApproval });
 };
 
 /** GET /api/koyambedu/seller-admin/sellers/:sellerId/products */
@@ -4668,6 +4774,9 @@ module.exports = {
   getOrderTimeline, getOrderCalculation,
   // Admin product management
   adminGetAllProducts, adminUpdateProduct, adminToggleProduct, adminCreateProduct, adminDeleteProduct,
+  // Product approval workflow
+  adminGetPendingProducts, adminApproveProduct, adminRejectProduct,
+  adminApproveProductEdit, adminRejectProductEdit,
   // Admin seller-edit review (SuperAdmin only)
   adminReviewSellerEdit,
   // AI

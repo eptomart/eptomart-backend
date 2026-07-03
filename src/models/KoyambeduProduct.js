@@ -79,6 +79,20 @@ const koyambeduProductSchema = new Schema({
   isNextDay:       { type: Boolean, default: true },
   sameDayCutoff:   { type: String, default: '10:00' },
 
+  // ── Approval workflow (SA changes require superadmin sign-off) ────────────
+  // New products created by SA start as 'pending'; superadmin approves → 'approved'.
+  // Customer-facing APIs only return 'approved' products.
+  approvalStatus:  { type: String, enum: ['pending','approved','rejected'], default: 'approved' },
+  approvalNote:    { type: String },               // rejection reason
+  approvedBy:      { type: Schema.Types.ObjectId, ref: 'User' },
+  approvedAt:      Date,
+
+  // When SA edits a product the raw payload is parked here; superadmin then
+  // applies (approve) or discards (reject) it without touching the live record.
+  pendingEdit:     { type: Schema.Types.Mixed },
+  pendingEditBy:   { type: Schema.Types.ObjectId, ref: 'User' },
+  pendingEditAt:   Date,
+
   // Status & visibility
   isActive:        { type: Boolean, default: true },
   isAvailable:     { type: Boolean, default: true },  // seller toggles daily stock

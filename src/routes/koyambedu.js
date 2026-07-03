@@ -155,11 +155,16 @@ router.post ('/admin/categories',                 protectAdmin, ctrl.adminCreate
 router.put  ('/admin/categories/:catId',          protectAdmin, ctrl.adminEditCategory);
 router.patch('/admin/categories/:catId/approve',  protectAdmin, ctrl.adminApproveCategory);
 router.get  ('/admin/analytics',                  protectAdmin, ctrl.adminAnalytics);
-router.get  ('/admin/products',                   protectAdmin, ctrl.adminGetAllProducts);
-router.put   ('/admin/products/:productId',        protectAdmin,      ctrl.adminUpdateProduct);
-router.patch ('/admin/products/:productId/toggle', protectAdmin,      ctrl.adminToggleProduct);
-router.delete('/admin/products/:productId',        protectSuperAdmin, ctrl.adminDeleteProduct);
-router.post  ('/admin/sellers/:sellerId/products', protectAdmin,      ctrl.adminCreateProduct);
+router.get  ('/admin/products',                              protectAdmin,      ctrl.adminGetAllProducts);
+router.get  ('/admin/products/pending',                      protectSuperAdmin, ctrl.adminGetPendingProducts);
+router.post ('/admin/products/:productId/approve',           protectSuperAdmin, ctrl.adminApproveProduct);
+router.post ('/admin/products/:productId/reject',            protectSuperAdmin, ctrl.adminRejectProduct);
+router.post ('/admin/products/:productId/approve-edit',      protectSuperAdmin, ctrl.adminApproveProductEdit);
+router.post ('/admin/products/:productId/reject-edit',       protectSuperAdmin, ctrl.adminRejectProductEdit);
+router.put   ('/admin/products/:productId',                  protectAdmin,      ctrl.adminUpdateProduct);
+router.patch ('/admin/products/:productId/toggle',           protectAdmin,      ctrl.adminToggleProduct);
+router.delete('/admin/products/:productId',                  protectSuperAdmin, ctrl.adminDeleteProduct);
+router.post  ('/admin/sellers/:sellerId/products',           protectAdmin,      ctrl.adminCreateProduct);
 
 // SellerAdmin management
 router.post ('/admin/sellers/:sellerId/review-edit', protectSuperAdmin, ctrl.adminReviewSellerEdit); // SuperAdmin approves/rejects SA edit request

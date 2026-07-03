@@ -3903,6 +3903,45 @@ const submitDeliveryAck = async (req, res) => {
 };
 
 /**
+ * POST /orders/:orderId/delivery-ack/close  (customer)
+ * After the Super Admin resolves a reported delivery issue, the customer
+ * acknowledges the resolution and the order is closed.
+ */
+const confirmResolutionAndClose = async (req, res) => {
+  try {
+    const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (order.orderStatus === 'closed') {
+      return res.status(400).json({ success: false, message: 'Order is already closed' });
+    }
+    const ack = order.deliveryAck;
+    if (!ack || !['partial_issue', 'not_received'].includes(ack.status)) {
+      return res.status(400).json({ success: false, message: 'No delivery issue on this order' });
+    }
+    if (ack.alert?.active || !ack.alert?.resolvedAt) {
+      return res.status(400).json({ success: false, message: 'The issue is still being worked on — you can close once it is resolved' });
+    }
+
+    order.orderStatus   = 'closed';
+    order.closeComments = `Customer accepted the resolution and closed the order. Resolution: ${ack.alert.resolution || '-'}`;
+    order.deliveryAck.resolutionAccepted   = true;
+    order.deliveryAck.resolutionAcceptedAt = new Date();
+    order.timeline.push({
+      event: 'delivery_acknowledged',
+      description: 'Customer accepted the resolution — order closed',
+      actor: { role: 'customer', userId: req.user._id },
+      timestamp: new Date(),
+    });
+    order.auditLog.push({ action: 'resolution_accepted_closed', actorRole: 'customer', actorId: req.user._id, timestamp: new Date(), newValue: 'closed' });
+    await order.save();
+    res.json({ success: true, message: 'Thank you! Order closed.', orderStatus: 'closed' });
+  } catch (err) {
+    console.error('confirmResolutionAndClose:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
  * GET /seller-admin/alerts — active delivery alerts for this SA's sellers
  */
 const sellerAdminGetAlerts = async (req, res) => {
@@ -3955,9 +3994,28 @@ const adminResolveAlert = async (req, res) => {
     order.deliveryAck.alert.resolvedAt = new Date();
     order.deliveryAck.alert.resolvedBy = req.user._id;
     order.deliveryAck.alert.resolution = resolution.trim();
+    order.timeline.push({
+      event: 'delivery_issue_resolved',
+      description: `Your delivery issue has been resolved: ${resolution.trim()}`,
+      actor: { role: 'super_admin', userId: req.user._id },
+      timestamp: new Date(),
+    });
     order.auditLog.push({ action: 'delivery_alert_resolved', actorRole: 'super_admin', actorId: req.user._id, timestamp: new Date(), notes: resolution.trim() });
     await order.save();
-    res.json({ success: true, message: 'Alert resolved' });
+
+    // Tell the customer and ask them to confirm & close the order
+    setImmediate(() => {
+      try {
+        const { sendMetaWhatsApp } = require('../utils/sendWhatsApp');
+        const phone = _getBuyerPhone(order);
+        if (phone) {
+          sendMetaWhatsApp(phone,
+            `✅ Your delivery issue for order ${order.orderId} has been resolved:\n${resolution.trim()}\n\nPlease open the order in My Orders to confirm and close it.`).catch(() => {});
+        }
+      } catch (e) { /* non-critical */ }
+    });
+
+    res.json({ success: true, message: 'Alert resolved — customer notified and asked to confirm & close' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -4127,7 +4185,7 @@ module.exports = {
   sellerAdminMarkItemAvailable, sellerAdminConfirmAllItems,
   // Super Admin order lifecycle
   adminGetPendingApprovalOrders, adminApproveOrderReview, adminCancelOrder, adminMarkDelivered, adminCloseOrder,
-  submitDeliveryAck, sellerAdminGetAlerts, adminGetAlerts, adminResolveAlert,
+  submitDeliveryAck, confirmResolutionAndClose, sellerAdminGetAlerts, adminGetAlerts, adminResolveAlert,
   // Shared order data
   getOrderTimeline, getOrderCalculation,
   // Admin product management

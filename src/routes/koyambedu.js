@@ -59,6 +59,7 @@ router.post  ('/orders/:orderId/approve-revision', protect, ctrl.approveRevision
 router.post  ('/orders/:orderId/cancel',    protect, ctrl.cancelOrder);
 router.get   ('/orders/:orderId/invoice',   protect, ctrl.getOrderInvoice);
 router.post  ('/orders/:orderId/delivery-ack', protect, ctrl.submitDeliveryAck);
+router.post  ('/orders/:orderId/delivery-ack/close', protect, ctrl.confirmResolutionAndClose);
 router.get   ('/orders/:orderId/timeline',  protect, ctrl.getOrderTimeline);
 router.get   ('/orders/:orderId/calculation', protect, ctrl.getOrderCalculation);
 

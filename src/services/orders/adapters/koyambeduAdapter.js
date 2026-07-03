@@ -37,6 +37,7 @@ const EVENT_LABELS = {
   invoice_generated:  'Invoice Generated',
   delivery_acknowledged:    'Delivery Confirmed by You',
   delivery_issue_reported:  'Delivery Issue Reported',
+  delivery_issue_resolved:  'Delivery Issue Resolved',
 };
 
 // ── Decline visibility gate ───────────────────
@@ -279,7 +280,21 @@ function toDetail(doc, { walletHistory = [] } = {}) {
     support: { ...SUPPORT_DEFAULT },
     // Delivery acknowledgement — customer confirms receipt after delivery
     deliveryAck: doc.deliveryAck && doc.deliveryAck.status !== 'none'
-      ? { status: doc.deliveryAck.status, submittedAt: doc.deliveryAck.submittedAt, issues: doc.deliveryAck.issues || [] }
+      ? {
+          status:      doc.deliveryAck.status,
+          submittedAt: doc.deliveryAck.submittedAt,
+          issues:      doc.deliveryAck.issues || [],
+          alertActive: !!doc.deliveryAck.alert?.active,
+          resolution:  doc.deliveryAck.alert?.resolvedAt
+            ? { note: doc.deliveryAck.alert.resolution || '', resolvedAt: doc.deliveryAck.alert.resolvedAt }
+            : null,
+          resolutionAccepted: !!doc.deliveryAck.resolutionAccepted,
+          // Ask the customer to confirm & close once resolved
+          canConfirmClose: !!doc.deliveryAck.alert?.resolvedAt &&
+            !doc.deliveryAck.alert?.active &&
+            !doc.deliveryAck.resolutionAccepted &&
+            doc.orderStatus !== 'closed',
+        }
       : null,
     canAcknowledgeDelivery: doc.orderStatus === 'delivered' &&
       (!doc.deliveryAck || doc.deliveryAck.status === 'none'),

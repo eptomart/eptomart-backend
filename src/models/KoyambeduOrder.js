@@ -285,6 +285,9 @@ const koyambeduOrderSchema = new Schema({
       missingQty: Number,
       note:       String,
     }],
+    // Customer accepted the Super Admin's resolution → order closed
+    resolutionAccepted:   { type: Boolean, default: false },
+    resolutionAcceptedAt: Date,
     // Raised for partial_issue / not_received — surfaces on SA & admin dashboards
     alert: {
       active:      { type: Boolean, default: false },

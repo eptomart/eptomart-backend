@@ -278,7 +278,7 @@ const getCart = async (req, res) => {
   let cart = await KoyambeduCart.findOne({ user: req.user._id })
     .populate({
       path: 'items.product',
-      select: 'name nameTamil currentPrice unit minQty maxQty qtyStep isAvailable isActive isSameDay isNextDay images weightKg',
+      select: 'name nameTamil currentPrice unit minQty maxQty qtyStep isAvailable isActive isSameDay isNextDay images weightKg variants',
       populate: { path: 'seller', select: 'businessName isActive status' },
     }).lean();
   if (!cart) cart = { items: [] };

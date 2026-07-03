@@ -58,6 +58,7 @@ router.get   ('/my-orders/:orderId',        protect, ctrl.getMyOrder);
 router.post  ('/orders/:orderId/approve-revision', protect, ctrl.approveRevision);
 router.post  ('/orders/:orderId/cancel',    protect, ctrl.cancelOrder);
 router.get   ('/orders/:orderId/invoice',   protect, ctrl.getOrderInvoice);
+router.post  ('/orders/:orderId/delivery-ack', protect, ctrl.submitDeliveryAck);
 router.get   ('/orders/:orderId/timeline',  protect, ctrl.getOrderTimeline);
 router.get   ('/orders/:orderId/calculation', protect, ctrl.getOrderCalculation);
 
@@ -111,6 +112,7 @@ router.put  ('/seller-admin/sellers/:sellerId/products/:productId',        prote
 router.patch('/seller-admin/sellers/:sellerId/products/:productId/toggle', protectSellerAdmin, ctrl.sellerAdminToggleProduct);
 router.patch('/seller-admin/sellers/:sellerId/edit-request',               protectSellerAdmin, ctrl.sellerAdminRequestEdit);
 router.get  ('/seller-admin/orders',                                       protectSellerAdmin, ctrl.sellerAdminGetOrders);
+router.get  ('/seller-admin/alerts',                                       protectSellerAdmin, ctrl.sellerAdminGetAlerts);
 router.patch('/seller-admin/orders/:orderId/status',                       protectSellerAdmin, ctrl.sellerAdminUpdateOrderStatus);
 // ── SA item-level review actions ────────────────────────────────────────
 router.patch('/seller-admin/orders/:orderId/items/:itemId/confirm',        protectSellerAdmin, ctrl.sellerAdminConfirmItem);
@@ -127,6 +129,8 @@ router.get  ('/admin/dashboard',                  protectAdmin, ctrl.adminDashbo
 router.get  ('/admin/orders',                     protectAdmin, ctrl.adminGetOrders);
 router.get  ('/admin/orders/pending-approval',    protectSuperAdmin, ctrl.adminGetPendingApprovalOrders);
 router.patch('/admin/orders/:orderId/close',      protectSuperAdmin, ctrl.adminCloseOrder);
+router.get  ('/admin/alerts',                     protectAdmin,      ctrl.adminGetAlerts);
+router.patch('/admin/orders/:orderId/alerts/resolve', protectSuperAdmin, ctrl.adminResolveAlert);
 router.patch('/admin/orders/:orderId/status',                         protectAdmin, ctrl.adminUpdateOrderStatus);
 router.patch('/admin/orders/:orderId/delivered',                      protectAdmin, ctrl.adminMarkDelivered);
 router.patch('/admin/orders/:orderId/approve-review',                 protectSuperAdmin, ctrl.adminApproveOrderReview);

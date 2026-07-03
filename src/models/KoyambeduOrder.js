@@ -269,6 +269,33 @@ const koyambeduOrderSchema = new Schema({
   cancelReason: String,
   closeComments: String,   // Super Admin's comments when manually closing
 
+  // ── CUSTOMER DELIVERY ACKNOWLEDGEMENT ─────────
+  // After delivery the customer confirms what actually arrived.
+  deliveryAck: {
+    status: {
+      type: String,
+      enum: ['none', 'all_received', 'partial_issue', 'not_received'],
+      default: 'none',
+    },
+    submittedAt: Date,
+    // For partial/damaged: per-item missing quantities reported by customer
+    issues: [{
+      name:       String,
+      unit:       String,
+      missingQty: Number,
+      note:       String,
+    }],
+    // Raised for partial_issue / not_received — surfaces on SA & admin dashboards
+    alert: {
+      active:      { type: Boolean, default: false },
+      type:        { type: String, enum: ['partial_issue', 'not_received'] },
+      raisedAt:    Date,
+      resolvedAt:  Date,
+      resolvedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      resolution:  String,
+    },
+  },
+
   // Internal cost tracking (admin only — never shown to customer)
   adminCosts: {
     actualDeliveryCost: { type: Number, default: 0 },

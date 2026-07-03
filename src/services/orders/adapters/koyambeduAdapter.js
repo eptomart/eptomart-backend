@@ -35,6 +35,8 @@ const EVENT_LABELS = {
   dispatched:         'Out for Delivery',
   delivered:          'Delivered',
   invoice_generated:  'Invoice Generated',
+  delivery_acknowledged:    'Delivery Confirmed by You',
+  delivery_issue_reported:  'Delivery Issue Reported',
 };
 
 // ── Decline visibility gate ───────────────────
@@ -262,6 +264,12 @@ function toDetail(doc, { walletHistory = [] } = {}) {
     walletHistory,
     documents,
     support: { ...SUPPORT_DEFAULT },
+    // Delivery acknowledgement — customer confirms receipt after delivery
+    deliveryAck: doc.deliveryAck && doc.deliveryAck.status !== 'none'
+      ? { status: doc.deliveryAck.status, submittedAt: doc.deliveryAck.submittedAt, issues: doc.deliveryAck.issues || [] }
+      : null,
+    canAcknowledgeDelivery: doc.orderStatus === 'delivered' &&
+      (!doc.deliveryAck || doc.deliveryAck.status === 'none'),
   };
 }
 

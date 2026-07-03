@@ -3792,6 +3792,178 @@ const sellerAdminMarkItemAvailable = async (req, res) => {
 };
 
 /**
+ * POST /orders/:orderId/delivery-ack  (customer)
+ * Body: { status: 'all_received' }
+ *     | { status: 'partial_issue', issues: [{ name, missingQty, note }] }
+ *     | { status: 'not_received' }
+ * all_received  → order closes everywhere.
+ * partial_issue → items + missing quantities recorded, alert raised.
+ * not_received  → immediate alert to Seller Admin + Super Admin.
+ */
+const submitDeliveryAck = async (req, res) => {
+  try {
+    const { status, issues = [] } = req.body;
+    if (!['all_received', 'partial_issue', 'not_received'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid acknowledgement status' });
+    }
+
+    const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (order.orderStatus !== 'delivered') {
+      return res.status(400).json({ success: false, message: 'Order is not delivered yet' });
+    }
+    if (order.deliveryAck?.status && order.deliveryAck.status !== 'none') {
+      return res.status(400).json({ success: false, message: 'Delivery already acknowledged' });
+    }
+
+    order.deliveryAck = { status, submittedAt: new Date(), issues: [], alert: { active: false } };
+
+    if (status === 'all_received') {
+      order.orderStatus   = 'closed';
+      order.closeComments = 'Customer confirmed all items received';
+      order.timeline.push({
+        event: 'delivery_acknowledged',
+        description: 'Customer confirmed all items received — order closed',
+        actor: { role: 'customer', userId: req.user._id },
+        timestamp: new Date(),
+      });
+      order.auditLog.push({ action: 'delivery_ack_all_received', actorRole: 'customer', actorId: req.user._id, timestamp: new Date(), newValue: 'closed' });
+    }
+
+    if (status === 'partial_issue') {
+      const clean = (issues || [])
+        .filter(i => i && i.name && Number(i.missingQty) > 0)
+        .map(i => ({ name: String(i.name), unit: i.unit || '', missingQty: Number(i.missingQty), note: i.note || '' }));
+      if (!clean.length) {
+        return res.status(400).json({ success: false, message: 'Enter the missing quantity for at least one item' });
+      }
+      order.deliveryAck.issues = clean;
+      order.deliveryAck.alert  = { active: true, type: 'partial_issue', raisedAt: new Date() };
+      order.timeline.push({
+        event: 'delivery_issue_reported',
+        description: `Customer reported missing/damaged items: ${clean.map(i => `${i.name} (${i.missingQty}${i.unit ? ' ' + i.unit : ''})`).join(', ')}`,
+        actor: { role: 'customer', userId: req.user._id },
+        timestamp: new Date(),
+      });
+      order.auditLog.push({ action: 'delivery_ack_partial_issue', actorRole: 'customer', actorId: req.user._id, timestamp: new Date(), newValue: clean });
+    }
+
+    if (status === 'not_received') {
+      order.deliveryAck.alert = { active: true, type: 'not_received', raisedAt: new Date() };
+      order.timeline.push({
+        event: 'delivery_issue_reported',
+        description: 'Customer reported: order NOT received',
+        actor: { role: 'customer', userId: req.user._id },
+        timestamp: new Date(),
+      });
+      order.auditLog.push({ action: 'delivery_ack_not_received', actorRole: 'customer', actorId: req.user._id, timestamp: new Date() });
+    }
+
+    await order.save();
+
+    // ── Immediate mobile alerts to Seller Admin + Super Admin ──
+    if (status !== 'all_received') {
+      setImmediate(async () => {
+        try {
+          const { sendMetaWhatsApp } = require('../utils/sendWhatsApp');
+          const label = status === 'not_received' ? 'ORDER NOT RECEIVED' : 'PARTIAL/DAMAGED DELIVERY';
+          const detail = status === 'partial_issue'
+            ? order.deliveryAck.issues.map(i => `${i.name}: ${i.missingQty}${i.unit ? ' ' + i.unit : ''} missing`).join(', ')
+            : 'Customer says the order was not delivered.';
+          const msg = `🚨 ${label}\nOrder: ${order.orderId}\n${detail}\nPlease check the Alerts section.`;
+
+          // Super Admin
+          if (process.env.ADMIN_WHATSAPP_PHONE) {
+            sendMetaWhatsApp(process.env.ADMIN_WHATSAPP_PHONE, msg).catch(() => {});
+          }
+          // Seller Admins whose sellers are on this order
+          const sellerIds = [...new Set((order.items || []).map(it => String(it.seller)).filter(Boolean))];
+          const sellers   = await KoyambeduSeller.find({ _id: { $in: sellerIds } }).select('createdBySellerAdmin').lean();
+          const saIds     = [...new Set(sellers.map(x => String(x.createdBySellerAdmin)).filter(Boolean))];
+          const sas       = await KoyambeduSellerAdmin.find({ _id: { $in: saIds } }).select('contactPhone').lean();
+          for (const sa of sas) {
+            if (sa.contactPhone) sendMetaWhatsApp(sa.contactPhone, msg).catch(() => {});
+          }
+        } catch (e) { console.error('delivery-ack alert failed', e); }
+      });
+    }
+
+    res.json({
+      success: true,
+      message: status === 'all_received'
+        ? 'Thank you! Order closed.'
+        : 'Reported — our team has been alerted and will contact you shortly.',
+      orderStatus: order.orderStatus,
+      deliveryAck: order.deliveryAck,
+    });
+  } catch (err) {
+    console.error('submitDeliveryAck:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * GET /seller-admin/alerts — active delivery alerts for this SA's sellers
+ */
+const sellerAdminGetAlerts = async (req, res) => {
+  try {
+    const sa = req.kbdSellerAdmin;
+    const sellerIds = (await KoyambeduSeller.find({ createdBySellerAdmin: sa._id }).select('_id').lean()).map(x => x._id);
+    const orders = await KoyambeduOrder.find({
+      'deliveryAck.alert.active': true,
+      'items.seller': { $in: sellerIds },
+    })
+      .select('orderId orderStatus deliveryAck deliveryDate deliverySlot pricing.total createdAt')
+      .sort({ 'deliveryAck.alert.raisedAt': -1 })
+      .limit(100)
+      .lean();
+    res.json({ success: true, alerts: orders });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * GET /admin/alerts — all active delivery alerts (admin/super admin)
+ */
+const adminGetAlerts = async (req, res) => {
+  try {
+    const orders = await KoyambeduOrder.find({ 'deliveryAck.alert.active': true })
+      .populate('buyer', 'name phone')
+      .select('orderId orderStatus deliveryAck deliveryDate deliverySlot pricing.total buyer createdAt')
+      .sort({ 'deliveryAck.alert.raisedAt': -1 })
+      .limit(200)
+      .lean();
+    res.json({ success: true, alerts: orders });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * PATCH /admin/orders/:orderId/alerts/resolve — Super Admin resolves an alert
+ */
+const adminResolveAlert = async (req, res) => {
+  try {
+    const { resolution } = req.body;
+    if (!resolution?.trim()) return res.status(400).json({ success: false, message: 'Resolution note is required' });
+    const order = await KoyambeduOrder.findById(req.params.orderId);
+    if (!order || !order.deliveryAck?.alert?.active) {
+      return res.status(404).json({ success: false, message: 'Active alert not found' });
+    }
+    order.deliveryAck.alert.active     = false;
+    order.deliveryAck.alert.resolvedAt = new Date();
+    order.deliveryAck.alert.resolvedBy = req.user._id;
+    order.deliveryAck.alert.resolution = resolution.trim();
+    order.auditLog.push({ action: 'delivery_alert_resolved', actorRole: 'super_admin', actorId: req.user._id, timestamp: new Date(), notes: resolution.trim() });
+    await order.save();
+    res.json({ success: true, message: 'Alert resolved' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
  * PATCH /admin/orders/:orderId/close
  * Super Admin manually closes an order (e.g. after compensating the
  * customer for missing items with an offer). Comments are REQUIRED.
@@ -3955,6 +4127,7 @@ module.exports = {
   sellerAdminMarkItemAvailable, sellerAdminConfirmAllItems,
   // Super Admin order lifecycle
   adminGetPendingApprovalOrders, adminApproveOrderReview, adminCancelOrder, adminMarkDelivered, adminCloseOrder,
+  submitDeliveryAck, sellerAdminGetAlerts, adminGetAlerts, adminResolveAlert,
   // Shared order data
   getOrderTimeline, getOrderCalculation,
   // Admin product management

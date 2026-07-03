@@ -659,7 +659,7 @@ const createRazorpayOrder = async (req, res) => {
   order.paymentDetails.razorpayOrderId = rzpOrder.id;
   await order.save();
 
-  res.json({ success: true, rzpOrderId: rzpOrder.id, amount: order.pricing.total, currency: 'INR', orderId: order._id });
+  res.json({ success: true, rzpOrderId: rzpOrder.id, amount: order.pricing.total, currency: 'INR', orderId: order._id, keyId: process.env.RAZORPAY_KEY_ID });
 };
 
 /** POST /api/koyambedu/orders/verify-payment */

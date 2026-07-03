@@ -116,6 +116,7 @@ router.patch('/seller-admin/orders/:orderId/status',                       prote
 router.patch('/seller-admin/orders/:orderId/items/:itemId/confirm',        protectSellerAdmin, ctrl.sellerAdminConfirmItem);
 router.patch('/seller-admin/orders/:orderId/items/:itemId/decline',        protectSellerAdmin, ctrl.sellerAdminDeclineItem);
 router.patch('/seller-admin/orders/:orderId/items/:itemId/reduce-qty',     protectSellerAdmin, ctrl.sellerAdminReduceItemQty);
+router.patch('/seller-admin/orders/:orderId/items/:itemId/available',      protectSellerAdmin, ctrl.sellerAdminMarkItemAvailable);
 router.post ('/seller-admin/orders/:orderId/submit-review',                protectSellerAdmin, ctrl.sellerAdminSubmitForApproval);
 
 // ══════════════════════════════════════════════

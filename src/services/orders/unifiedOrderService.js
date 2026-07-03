@@ -26,9 +26,14 @@ function getAdapter(verticalKey) {
  * @param {ObjectId} userId
  * @param {Object} opts { vertical: 'all'|key, page, limit }
  */
-async function listOrders(userId, { vertical = 'all', page = 1, limit = 20 } = {}) {
+async function listOrders(userId, { vertical = 'all', page = 1, limit = 20, status, from, to } = {}) {
   page  = Math.max(1, parseInt(page) || 1);
   limit = Math.min(50, Math.max(1, parseInt(limit) || 20));
+
+  // Date range (inclusive) — passed down to each vertical's query
+  const fromDate = from ? new Date(from) : null;
+  const toDate   = to   ? (() => { const d = new Date(to); d.setHours(23, 59, 59, 999); return d; })() : null;
+  const statusSet = status ? new Set(String(status).split(',')) : null;
 
   const keys = vertical === 'all'
     ? Object.keys(ADAPTERS).filter(k => VERTICALS[k])
@@ -43,7 +48,7 @@ async function listOrders(userId, { vertical = 'all', page = 1, limit = 20 } = {
   // Fetch enough from each vertical to fill the requested page, then merge.
   const fetchLimit = page * limit;
   const results = await Promise.allSettled(
-    keys.map(k => ADAPTERS[k].fetchList(userId, { limit: fetchLimit })
+    keys.map(k => ADAPTERS[k].fetchList(userId, { limit: fetchLimit, from: fromDate, to: toDate })
       .then(docs => docs.map(d => ADAPTERS[k].toCard(d)))),
   );
 
@@ -56,6 +61,10 @@ async function listOrders(userId, { vertical = 'all', page = 1, limit = 20 } = {
       console.error(`unifiedOrderService.listOrders [${keys[i]}]:`, r.reason?.message);
     }
   });
+
+  // Canonical-status filter (applied after mapping so it works uniformly
+  // across verticals with different native status vocabularies)
+  if (statusSet) cards = cards.filter(c => statusSet.has(c.status));
 
   cards.sort((a, b) => new Date(b.placedAt || 0) - new Date(a.placedAt || 0));
 

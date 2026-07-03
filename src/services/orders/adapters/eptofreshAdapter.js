@@ -18,8 +18,14 @@ const verticalKey = 'eptofresh';
 const CUSTOMER_SAFE_DESELECT =
   '-deliveryOtp -porter.driverPhone -porter.webhookEvents';
 
-async function fetchList(userId, { limit = 50 } = {}) {
-  return EptoFreshOrder.find({ buyer: userId, orderStatus: { $ne: 'payment_pending' } })
+async function fetchList(userId, { limit = 50, from, to } = {}) {
+  const query = { buyer: userId, orderStatus: { $ne: 'payment_pending' } };
+  if (from || to) {
+    query.createdAt = {};
+    if (from) query.createdAt.$gte = from;
+    if (to)   query.createdAt.$lte = to;
+  }
+  return EptoFreshOrder.find(query)
     .select('orderId orderStatus paymentStatus paymentMethod pricing items.productName items.quantity porter.estimatedDelivery createdAt placedAt refund.status')
     .populate('seller', 'shopName')
     .sort({ createdAt: -1 })

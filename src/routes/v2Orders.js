@@ -20,8 +20,8 @@ router.get('/verticals', protect, (req, res) => {
 // Merged order list
 router.get('/', protect, async (req, res) => {
   try {
-    const { vertical = 'all', page = 1, limit = 20 } = req.query;
-    const result = await svc.listOrders(req.user._id, { vertical, page, limit });
+    const { vertical = 'all', page = 1, limit = 20, status, from, to } = req.query;
+    const result = await svc.listOrders(req.user._id, { vertical, page, limit, status, from, to });
     res.json({ success: true, ...result });
   } catch (err) {
     console.error('GET /v2/orders:', err);

@@ -22,8 +22,8 @@ function test(name, fn) {
 
 // ── Status mapping ───────────────────────────
 console.log('statusMap');
-test('koyambedu sa_review_submitted → changes_pending_approval', () =>
-  assert.equal(toCanonical('koyambedu', 'sa_review_submitted'), 'changes_pending_approval'));
+test('koyambedu sa_review_submitted → seller_review (declines hidden from customer)', () =>
+  assert.equal(toCanonical('koyambedu', 'sa_review_submitted'), 'seller_review'));
 test('eptofresh picked_up → out_for_delivery', () =>
   assert.equal(toCanonical('eptofresh', 'picked_up'), 'out_for_delivery'));
 test('uzhavar auto_cancelled → cancelled + label override', () => {
@@ -106,6 +106,61 @@ test('card shows canonical status + declined flag', () => {
   const card = koyambedu.toCard(kbdOrder);
   assert.equal(card.status, 'confirmed');
   assert.equal(card.hasDeclinedItems, true);
+});
+
+// ── Decline gating: hidden until Super Admin approves ──
+console.log('koyambedu decline gating (pre-approval)');
+const preApproval = {
+  ...kbdOrder,
+  orderStatus: 'sa_review_submitted',
+  adminApproval: { status: 'pending' },
+};
+test('pre-approval: customer sees NO declined items', () => {
+  const d = koyambedu.toDetail(preApproval, { walletHistory: [] });
+  assert.equal(d.itemsDeclined.length, 0);
+  assert.equal(d.itemsConfirmed.find(i => i.name === 'Tomato').quantity, 5); // original qty
+});
+test('pre-approval: payment summary shows original amounts, no refund', () => {
+  const d = koyambedu.toDetail(preApproval, { walletHistory: [] });
+  assert.equal(d.paymentSummary.refundAmount, 0);
+  assert.equal(d.paymentSummary.originalOrderValue, 260);
+});
+test('pre-approval: decline/review events hidden from timeline', () => {
+  const d = koyambedu.toDetail(preApproval, { walletHistory: [] });
+  assert.ok(!d.timeline.some(t => ['item_declined', 'qty_reduced', 'review_submitted'].includes(t.event)));
+});
+test('pre-approval: card shows original total, no declined flag', () => {
+  const c = koyambedu.toCard(preApproval);
+  assert.equal(c.totalAmount, 334);            // original pricing.total
+  assert.equal(c.hasDeclinedItems, false);
+  assert.equal(c.status, 'seller_review');     // not changes_pending_approval
+});
+test('post-approval (existing kbdOrder): declines visible as before', () => {
+  assert.equal(kbdDetail.itemsDeclined.length, 1); // regression guard
+});
+
+// ── Super Admin cancel after partial decline: FULL refund ──
+console.log('koyambedu cancel after partial decline');
+const cancelledOrder = {
+  ...kbdOrder,
+  orderStatus: 'cancelled',
+  paymentStatus: 'refunded',
+  refund: { status: 'completed', amount: 334, reason: 'stock issue', initiatedAt: new Date() },
+};
+test('cancelled order: refund = FULL order value, not just declined part', () => {
+  const d = koyambedu.toDetail(cancelledOrder, { walletHistory: [] });
+  assert.equal(d.refund.amount, 334);
+  assert.equal(d.refund.status, 'completed');
+});
+test('legacy cancelled order without refund record: full paid total shown', () => {
+  const legacy = { ...kbdOrder, orderStatus: 'cancelled', paymentStatus: 'paid', refund: undefined };
+  const d = koyambedu.toDetail(legacy, { walletHistory: [] });
+  assert.equal(d.refund.amount, 334);
+});
+test('cancelled card carries refundStatus for badge', () => {
+  const c = koyambedu.toCard(cancelledOrder);
+  assert.equal(c.refundStatus, 'completed');
+  assert.equal(c.status, 'cancelled');
 });
 
 // ── COD deduction rule ───────────────────────

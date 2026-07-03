@@ -14,8 +14,14 @@ const {
 
 const verticalKey = 'uzhavar';
 
-async function fetchList(userId, { limit = 50 } = {}) {
-  return UzhavarOrder.find({ buyer: userId, status: { $ne: 'payment_pending' } })
+async function fetchList(userId, { limit = 50, from, to } = {}) {
+  const query = { buyer: userId, status: { $ne: 'payment_pending' } };
+  if (from || to) {
+    query.createdAt = {};
+    if (from) query.createdAt.$gte = from;
+    if (to)   query.createdAt.$lte = to;
+  }
+  return UzhavarOrder.find(query)
     .select('orderNumber status paymentStatus paymentMethod items subtotal grandTotal bookingFee scheduledDate createdAt')
     .populate('farmer', 'name')
     .sort({ createdAt: -1 })

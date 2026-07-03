@@ -22,6 +22,7 @@ const EVENT_LABELS = {
   item_confirmed:     'Item Confirmed',
   item_declined:      'Item Declined',
   qty_reduced:        'Quantity Updated',
+  item_restored:      'Item Arranged — Available',
   review_submitted:   'Changes Sent for Approval',
   review_rejected:    'Changes Sent Back for Revision',
   admin_approved:     'Order Confirmed',
@@ -35,9 +36,41 @@ const EVENT_LABELS = {
   invoice_generated:  'Invoice Generated',
 };
 
-async function fetchList(userId, { limit = 50 } = {}) {
-  return KoyambeduOrder.find({ buyer: userId })
-    .select('orderId orderStatus paymentStatus paymentMethod pricing calculatedPricing items.name items.quantity items.confirmedQty items.itemStatus deliveryDate deliverySlot createdAt placedAt refund.status invoices')
+// ── Decline visibility gate ───────────────────
+// Declines / quantity reductions are shown to the CUSTOMER only after
+// Super Admin approval. Until then the customer sees the original order.
+// (Cancelled orders always show their refund.)
+function declinesVisible(doc) {
+  if (doc.adminApproval?.status === 'approved') return true;
+  return ['confirmed', 'packing', 'dispatched', 'delivered', 'cancelled', 'refund_initiated']
+    .includes(doc.orderStatus);
+}
+
+// Timeline events hidden from the customer until approval
+const PRE_APPROVAL_EVENTS = ['item_declined', 'qty_reduced', 'item_restored', 'review_submitted', 'review_rejected', 'sa_review_started', 'refund_calculated'];
+
+/** A masked view of the order as if nothing was declined (pre-approval). */
+function maskedDoc(doc) {
+  return {
+    ...doc,
+    items: (doc.items || []).map(it => ({
+      ...it,
+      itemStatus:   'pending',
+      confirmedQty: it.orderedQty ?? it.quantity,
+      declinedQty:  0,
+    })),
+  };
+}
+
+async function fetchList(userId, { limit = 50, from, to } = {}) {
+  const query = { buyer: userId };
+  if (from || to) {
+    query.createdAt = {};
+    if (from) query.createdAt.$gte = from;
+    if (to)   query.createdAt.$lte = to;
+  }
+  return KoyambeduOrder.find(query)
+    .select('orderId orderStatus paymentStatus paymentMethod pricing calculatedPricing adminApproval.status items.name items.quantity items.confirmedQty items.itemStatus deliveryDate deliverySlot createdAt placedAt refund invoices')
     .sort({ createdAt: -1 })
     .limit(limit)
     .lean();
@@ -54,7 +87,9 @@ function itemCount(doc) {
 }
 
 function displayTotal(doc) {
-  // After SA review/approval, calculatedPricing is authoritative
+  // Before Super Admin approval the customer sees the ORIGINAL total —
+  // recalculated (post-decline) totals only after approval.
+  if (!declinesVisible(doc)) return doc.pricing?.total || 0;
   if (doc.calculatedPricing?.finalPayableAmount > 0 && doc.calculatedPricing?.lastCalculatedAt) {
     return doc.calculatedPricing.finalPayableAmount;
   }
@@ -62,6 +97,7 @@ function displayTotal(doc) {
 }
 
 function toCard(doc) {
+  const visible = declinesVisible(doc);
   const card = baseCard(verticalKey, doc, {
     orderId:       doc.orderId,
     nativeStatus:  doc.orderStatus,
@@ -73,7 +109,8 @@ function toCard(doc) {
     placedAt:      doc.placedAt || doc.createdAt,
   });
   card.deliverySlot = doc.deliverySlot || null;
-  card.hasDeclinedItems = (doc.items || []).some(it => ['declined', 'partial'].includes(it.itemStatus));
+  card.hasDeclinedItems = visible && (doc.items || []).some(it => ['declined', 'partial'].includes(it.itemStatus));
+  card.refundStatus = doc.refund?.status || null;
   return card;
 }
 
@@ -83,6 +120,9 @@ function unitPriceOf(it) {
 
 function toDetail(doc, { walletHistory = [] } = {}) {
   const card = toCard(doc);
+  const visible = declinesVisible(doc);
+  // Pre-approval: customer sees the original order as placed
+  const effectiveDoc = visible ? doc : maskedDoc(doc);
 
   // ── Items Ordered — immutable snapshot ──────
   const snapshot = (doc.itemsOrdered && doc.itemsOrdered.length)
@@ -97,8 +137,8 @@ function toDetail(doc, { walletHistory = [] } = {}) {
         lineTotal: (it.orderedQty || it.quantity || 0) * unitPriceOf(it),
       }));
 
-  // ── Items Declined (full + partial) ─────────
-  const itemsDeclined = (doc.items || [])
+  // ── Items Declined (full + partial) — post-approval only ─────
+  const itemsDeclined = (effectiveDoc.items || [])
     .filter(it => ['declined', 'partial'].includes(it.itemStatus))
     .map(it => {
       const declinedQty = it.itemStatus === 'declined'
@@ -115,7 +155,7 @@ function toDetail(doc, { walletHistory = [] } = {}) {
     });
 
   // ── Items Confirmed (deliverable only) ──────
-  const itemsConfirmed = (doc.items || [])
+  const itemsConfirmed = (effectiveDoc.items || [])
     .filter(it => it.itemStatus !== 'declined')
     .map(it => {
       const qty = it.confirmedQty != null && it.itemStatus !== 'pending'
@@ -130,7 +170,11 @@ function toDetail(doc, { walletHistory = [] } = {}) {
     .filter(r => r.quantity > 0);
 
   // ── Timeline — native timeline[] preferred ──
-  let timeline = (doc.timeline || []).map(t => timelineEvent(
+  // Review/decline events stay hidden from the customer until approval
+  const timelineSource = (doc.timeline || []).filter(
+    t => visible || !PRE_APPROVAL_EVENTS.includes(t.event),
+  );
+  let timeline = timelineSource.map(t => timelineEvent(
     t.event,
     EVENT_LABELS[t.event] || t.event,
     t.timestamp,
@@ -169,8 +213,13 @@ function toDetail(doc, { walletHistory = [] } = {}) {
   }
 
   // ── Refund ──────────────────────────────────
-  const pendingRefund = doc.saReview?.pendingRefundAmount || 0;
+  // Never surfaced to the customer before Super Admin approval
+  const pendingRefund = visible ? (doc.saReview?.pendingRefundAmount || 0) : 0;
   let refund = refundBlock(doc.refund);
+  // Legacy cancelled orders without a refund record: full paid amount
+  if (!refund && doc.orderStatus === 'cancelled' && doc.paymentStatus === 'paid') {
+    refund = { status: 'initiated', amount: round(doc.pricing?.total || 0), method: 'wallet', date: null, note: 'Full order refund on cancellation' };
+  }
   if (!refund && pendingRefund > 0) {
     refund = {
       status: doc.adminApproval?.status === 'approved' ? 'processed' : 'calculated',
@@ -201,9 +250,9 @@ function toDetail(doc, { walletHistory = [] } = {}) {
     itemsDeclined,
     itemsConfirmed,
     timeline,
-    paymentSummary: buildPaymentSummary(verticalKey, doc),
+    paymentSummary: buildPaymentSummary(verticalKey, effectiveDoc),
     refund,
-    partialRefunds: (doc.partialRefunds || []).map(r => ({
+    partialRefunds: (visible ? (doc.partialRefunds || []) : []).map(r => ({
       amount: round(r.amount), status: r.status, date: r.initiatedAt, reason: r.reason || null,
     })),
     walletHistory,

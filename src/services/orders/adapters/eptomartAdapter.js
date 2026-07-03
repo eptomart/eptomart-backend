@@ -13,8 +13,14 @@ const {
 
 const verticalKey = 'eptomart';
 
-async function fetchList(userId, { limit = 50 } = {}) {
-  return Order.find({ user: userId })
+async function fetchList(userId, { limit = 50, from, to } = {}) {
+  const query = { user: userId };
+  if (from || to) {
+    query.createdAt = {};
+    if (from) query.createdAt.$gte = from;
+    if (to)   query.createdAt.$lte = to;
+  }
+  return Order.find(query)
     .select('orderId orderStatus paymentStatus paymentMethod pricing items.name items.quantity estimatedDelivery createdAt refund.status invoice')
     .sort({ createdAt: -1 })
     .limit(limit)

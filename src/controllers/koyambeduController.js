@@ -1409,7 +1409,8 @@ const sellerAdminGetOrders = async (req, res) => {
 
   // Build filter
   const filter = { 'items.seller': { $in: sellerIds } };
-  const { orderDate, deliveryDate, deliverySlot } = req.query;
+  const { orderDate, deliveryDate, deliverySlot, status } = req.query;
+  if (status) filter.orderStatus = { $in: String(status).split(',') };
   if (orderDate) {
     const d = new Date(orderDate);
     filter.createdAt = { $gte: d, $lt: new Date(d.getTime() + 86400000) };
@@ -3504,13 +3505,23 @@ const adminCancelOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Order cannot be cancelled at this stage' });
     }
 
+    // FULL order value is refundable on cancellation — even if items were
+    // partially declined earlier, the customer paid the original total.
     const refundAmt = order.pricing?.total || 0;
+    const isPaid    = order.paymentStatus === 'paid';
 
     order.orderStatus  = 'cancelled';
     order.cancelReason = reason;
+
+    // Record refund on the order so the customer's My Orders reflects it
+    order.refund = isPaid && refundAmt > 0
+      ? { status: 'initiated', amount: refundAmt, reason, initiatedAt: new Date() }
+      : { status: 'not_applicable', amount: 0, reason };
+
     order.timeline.push({
       event:       'order_cancelled',
-      description: `Order cancelled by Super Admin. Reason: ${reason}`,
+      description: `Order cancelled by Super Admin. Reason: ${reason}` +
+        (isPaid && refundAmt > 0 ? ` Full refund of ₹${refundAmt.toFixed(2)} initiated via ${refundMethod}.` : ''),
       actor:       { role: 'super_admin', userId: req.user._id },
       timestamp:   new Date(),
       meta:        { refundAmount: refundAmt, refundMethod },
@@ -3520,7 +3531,7 @@ const adminCancelOrder = async (req, res) => {
     await order.save();
 
     // Process refund
-    if (order.paymentStatus === 'paid' && refundAmt > 0) {
+    if (isPaid && refundAmt > 0) {
       if (refundMethod === 'razorpay' && order.paymentMethod === 'razorpay') {
         setImmediate(() => _refundOrder(order).catch(() => {}));
       } else {
@@ -3529,6 +3540,10 @@ const adminCancelOrder = async (req, res) => {
             let wallet = await KoyambeduWallet.findOne({ user: order.buyer?._id || order.buyer });
             if (!wallet) wallet = await KoyambeduWallet.create({ user: order.buyer?._id || order.buyer });
             await wallet.credit(refundAmt, 'order_cancelled', order.orderId, order._id, `Order ${order.orderId} cancelled — refund`);
+            order.refund.status      = 'completed';
+            order.paymentStatus      = 'refunded';
+            order.auditLog.push({ action: 'refund_credited_wallet', actorRole: 'system', timestamp: new Date(), amount: refundAmt, refundMethod: 'wallet' });
+            await order.save();
           } catch(e) { console.error('Cancel wallet refund failed', e); }
         });
       }
@@ -3538,6 +3553,79 @@ const adminCancelOrder = async (req, res) => {
 
     res.json({ success: true, message: `Order ${order.orderId} cancelled. Refund of ₹${refundAmt.toFixed(2)} initiated.` });
   } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * PATCH /seller-admin/orders/:orderId/items/:itemId/available
+ * After Super Admin sends a review back, the Seller Admin (having
+ * arranged the item) can mark it AVAILABLE again: the decline is
+ * withdrawn, the original quantity is restored, and the pending
+ * refund for that item is cancelled.
+ */
+const sellerAdminMarkItemAvailable = async (req, res) => {
+  try {
+    const sa = req.kbdSellerAdmin;
+    const sellerIds = (await KoyambeduSeller.find({ createdBySellerAdmin: sa._id }).select('_id').lean()).map(s => s._id);
+
+    const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, 'items.seller': { $in: sellerIds } });
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found or not yours' });
+
+    if (!['placed', 'pending_confirmation', 'sa_review_submitted'].includes(order.orderStatus)) {
+      return res.status(400).json({ success: false, message: 'Order is past the review stage' });
+    }
+
+    const item = order.items.id(req.params.itemId);
+    if (!item) return res.status(404).json({ success: false, message: 'Item not found' });
+    if (!sellerIds.some(id => String(id) === String(item.seller))) {
+      return res.status(403).json({ success: false, message: 'This item does not belong to your sellers' });
+    }
+    if (!['declined', 'partial'].includes(item.itemStatus)) {
+      return res.status(400).json({ success: false, message: 'Item is not declined or reduced' });
+    }
+
+    const orderedQty  = item.orderedQty || item.quantity || 0;
+    const price       = item.orderedPrice || item.finalPrice || 0;
+    const withdrawn   = (item.declinedQty || 0) * price;
+    const prevStatus  = item.itemStatus;
+
+    // Restore the ORIGINAL order for this item — refund is withdrawn
+    item.itemStatus     = 'confirmed';
+    item.confirmedQty   = orderedQty;
+    item.quantity       = orderedQty;
+    item.declinedQty    = 0;
+    item.declinedReason = undefined;
+    item.actionedBy     = sa._id;
+    item.actionedAt     = new Date();
+
+    applyCalculation(order);
+    // If review was previously submitted/rejected, it needs re-submission
+    if (order.saReview) {
+      order.saReview.pendingRefundAmount = order.calculatedPricing?.declinedRefundAmount || 0;
+    }
+
+    order.timeline.push({
+      event:       'item_restored',
+      description: `${item.name} arranged and available — original quantity (${orderedQty} ${item.unit || ''}) confirmed, refund withdrawn`,
+      actor:       { role: 'seller_admin', userId: req.user._id },
+      timestamp:   new Date(),
+      meta:        { withdrawnRefund: withdrawn, previousItemStatus: prevStatus },
+    });
+    order.auditLog.push({
+      action: 'item_restored', actorRole: 'seller_admin', actorId: req.user._id,
+      timestamp: new Date(), previousValue: prevStatus, newValue: 'confirmed', amount: withdrawn,
+      notes: 'Item arranged — decline withdrawn, original order confirmed',
+    });
+
+    await order.save();
+    res.json({
+      success: true,
+      message: `${item.name} marked available — refund of ₹${withdrawn.toFixed(2)} withdrawn.`,
+      calculatedPricing: order.calculatedPricing,
+    });
+  } catch (err) {
+    console.error('sellerAdminMarkItemAvailable:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
@@ -3665,6 +3753,7 @@ module.exports = {
   sellerAdminRequestEdit,
   // SA item review
   sellerAdminConfirmItem, sellerAdminDeclineItem, sellerAdminReduceItemQty, sellerAdminSubmitForApproval,
+  sellerAdminMarkItemAvailable,
   // Super Admin order lifecycle
   adminGetPendingApprovalOrders, adminApproveOrderReview, adminCancelOrder, adminMarkDelivered,
   // Shared order data

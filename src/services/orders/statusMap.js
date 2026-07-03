@@ -61,8 +61,10 @@ const MAPS = {
   koyambedu: {
     placed:                 'placed',
     pending_confirmation:   'seller_review',
-    sa_review_submitted:    'changes_pending_approval',
-    price_revision_pending: 'changes_pending_approval',
+    // Customers must NOT learn about declines/changes until Super Admin
+    // approves — so the review-in-flight statuses read as plain review.
+    sa_review_submitted:    'seller_review',
+    price_revision_pending: 'seller_review',
     confirmed:              'confirmed',
     packing:                'packing',
     dispatched:             'out_for_delivery',

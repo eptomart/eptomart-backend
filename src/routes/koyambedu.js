@@ -53,6 +53,8 @@ router.delete('/cart/clear',               protect, ctrl.clearCart);
 router.post  ('/orders',                    protect, ctrl.placeOrder);
 router.post  ('/orders/create-razorpay',    protect, ctrl.createRazorpayOrder);
 router.post  ('/orders/verify-payment',     protect, ctrl.verifyPayment);
+// DEV ONLY — guarded by ENABLE_TEST_PAYMENT_BUTTONS=true on the server; no-op in production
+router.post  ('/orders/test-payment',       protect, ctrl.testPayment);
 router.delete('/orders/:orderId/pending',   protect, ctrl.cancelPendingOrder);
 router.get   ('/my-orders',                 protect, ctrl.getMyOrders);
 router.get   ('/my-orders/:orderId',        protect, ctrl.getMyOrder);

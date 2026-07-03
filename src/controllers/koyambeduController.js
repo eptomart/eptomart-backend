@@ -722,6 +722,53 @@ const verifyPayment = async (req, res) => {
   res.json({ success: true, message: 'Payment confirmed!', orderId: order.orderId });
 };
 
+// ─────────────────────────────────────────────────────────────────
+// DEV-ONLY: Test payment endpoint
+// Guarded by ENABLE_TEST_PAYMENT_BUTTONS=true env var.
+// Never active in production.
+// ─────────────────────────────────────────────────────────────────
+/** POST /api/koyambedu/orders/test-payment — DEV ONLY */
+const testPayment = async (req, res) => {
+  if (process.env.ENABLE_TEST_PAYMENT_BUTTONS !== 'true') {
+    return res.status(403).json({ success: false, message: 'Test payments are not enabled on this server.' });
+  }
+  const { orderId } = req.body;
+  const order = await KoyambeduOrder.findOne({ _id: orderId, buyer: req.user._id });
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  // Mirror verifyPayment logic exactly — no signature check
+  order.paymentStatus = 'paid';
+  order.orderStatus   = 'pending_confirmation';
+  order.paymentDetails.razorpayPaymentId = `test_pay_${Date.now()}`;
+  order.paymentDetails.paidAt = new Date();
+  await order.save();
+
+  // Apply wallet adjustment (same as verifyPayment)
+  const walletAdj = order.pricing?.walletAdjustment || 0;
+  if (walletAdj !== 0) {
+    setImmediate(async () => {
+      try {
+        let w = await KoyambeduWallet.findOne({ user: order.buyer });
+        if (!w) w = new KoyambeduWallet({ user: order.buyer, balance: 0 });
+        if (walletAdj > 0) {
+          await w.debit(walletAdj, 'wallet_applied', {
+            orderId: order.orderId, orderRef: order._id,
+            reason: '[TEST] Wallet credit applied to reduce order total',
+          });
+        } else {
+          await w.credit(Math.abs(walletAdj), 'debt_recovery', {
+            orderId: order.orderId, orderRef: order._id,
+            reason: '[TEST] Pending wallet adjustment recovered in this order',
+          });
+        }
+      } catch (e) { console.error('[KBD][TEST] Wallet apply error:', e.message); }
+    });
+  }
+
+  setImmediate(() => _notifySellerNewOrder(order).catch(() => {}));
+  res.json({ success: true, message: '[TEST] Payment completed!', orderId: order.orderId });
+};
+
 /** GET /api/koyambedu/my-orders */
 const getMyOrders = async (req, res) => {
   const orders = await KoyambeduOrder.find({
@@ -4742,7 +4789,7 @@ module.exports = {
   // Cart
   getCart, updateCart, clearCart,
   // Buyer orders
-  placeOrder, createRazorpayOrder, verifyPayment,
+  placeOrder, createRazorpayOrder, verifyPayment, testPayment,
   getMyOrders, getMyOrder, cancelPendingOrder, approveRevision, cancelOrder, getOrderInvoice,
   // Seller
   sellerRegister, getSellerProfile, updateSellerProfile,

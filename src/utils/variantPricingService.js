@@ -27,12 +27,17 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
  * Given a product and the user-entered base price for its highest-qty variant,
  * calculates base prices and final selling prices for ALL variants.
  *
+ * Business rule: buying MORE = cheaper per unit (wholesale bulk pricing).
+ *   • highestBasePrice is the procurement rate for the LARGEST qty (cheapest tier).
+ *   • Each smaller variant is MORE expensive per unit by variantDiffPercent%.
+ *
  * Algorithm:
  *   1. Sort variants by fromQty descending (largest = index 0).
- *   2. Assign highestBasePrice to index 0.
+ *   2. Assign highestBasePrice to index 0 (cheapest per-unit rate).
  *   3. For each subsequent (smaller) variant:
- *        basePrice[i] = basePrice[i-1] × (1 − variantDiffPercent / 100)
- *   4. finalPrice[i] = basePrice[i] × (1 + totalChargePercent / 100)
+ *        basePrice[i] = basePrice[i-1] × (1 + variantDiffPercent / 100)
+ *   4. finalPrice[i] = Math.round(basePrice[i] × (1 + totalChargePercent / 100))
+ *      → always a whole number (no decimals shown to customers)
  *
  * @param {Object} product - Mongoose doc or plain object with:
  *   .variants[]              — array with fromQty, toQty, basePrice, finalPrice
@@ -41,8 +46,8 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
  *   .logisticsChargePercent   — default 10
  *
  * @param {Object} opts
- *   .highestBasePrice   {Number} — base price per unit for highest-qty variant
- *   .variantDiffPercent {Number} — % reduction per step toward smaller variants
+ *   .highestBasePrice   {Number} — base price per unit for highest-qty (cheapest) variant
+ *   .variantDiffPercent {Number} — % increase per step toward smaller (more expensive) variants
  *
  * @returns {Array} Updated variant objects with basePrice and finalPrice set,
  *                  ordered by fromQty ASC (natural storage order).
@@ -56,9 +61,10 @@ function calculateVariantPricing(product, { highestBasePrice, variantDiffPercent
     (Number(product.platformChargePercent)    || 10) +
     (Number(product.logisticsChargePercent)   || 10);
 
-  const diffMultiplier = 1 - (Number(variantDiffPercent) || 0) / 100;
+  // Each step toward smaller qty multiplies basePrice UP (smaller qty = more expensive per unit)
+  const diffMultiplier = 1 + (Number(variantDiffPercent) || 0) / 100;
 
-  // Sort DESC: index 0 = highest-qty variant = entered price
+  // Sort DESC: index 0 = highest-qty variant (cheapest) = entered price
   const sorted = [...variants]
     .map(v => (v.toObject ? v.toObject() : { ...v }))
     .sort((a, b) => Number(b.fromQty) - Number(a.fromQty));
@@ -67,8 +73,9 @@ function calculateVariantPricing(product, { highestBasePrice, variantDiffPercent
 
   const calculated = sorted.map((variant) => {
     const basePrice  = r2(runningBase);
-    const finalPrice = r2(runningBase * (1 + totalChargePercent / 100));
-    // Advance accumulator (use un-rounded value to avoid rounding drift)
+    // Round to whole number — no paise shown to customers
+    const finalPrice = Math.round(runningBase * (1 + totalChargePercent / 100));
+    // Next (smaller) variant costs MORE per unit
     runningBase = runningBase * diffMultiplier;
     return { ...variant, basePrice, finalPrice };
   });

@@ -110,6 +110,10 @@ test('delivered order: all three available', () => {
   const docs = computeDocuments('koyambedu', kbdDto('delivered'));
   assert.equal(docs.filter(d => d.available).length, 3);
 });
+test('CLOSED order: all three STAY available (closing never revokes invoices)', () => {
+  const docs = computeDocuments('koyambedu', kbdDto('closed'));
+  assert.equal(docs.filter(d => d.available).length, 3);
+});
 test('stored number preserved, buggy legacy URL replaced with v2 URL', () => {
   const byType = Object.fromEntries(computeDocuments('koyambedu', kbdDto('delivered')).map(d => [d.type, d]));
   assert.equal(byType.proforma.number, 'PF-KBDTEST1');

@@ -29,7 +29,8 @@ const PROFORMA_DISCLAIMER =
   'Final Tax Invoice will be generated after successful delivery.';
 
 // Canonical statuses at/after Super Admin approval
-const CONFIRMED_OR_LATER = ['confirmed', 'packing', 'packed', 'out_for_delivery', 'delivered'];
+// ('closed' comes after delivery — documents must stay available)
+const CONFIRMED_OR_LATER = ['confirmed', 'packing', 'packed', 'out_for_delivery', 'delivered', 'closed'];
 
 // ══════════════════════════════════════════════════════════════════
 // DOCUMENT AVAILABILITY — single source of truth
@@ -59,7 +60,9 @@ function computeDocuments(verticalKey, dto) {
       available = CONFIRMED_OR_LATER.includes(dto.status);
       if (!available) note = 'Available after order is confirmed';
     } else if (type === 'tax') {
-      available = dto.status === 'delivered';
+      // Tax invoice exists from delivery onwards — closing the order
+      // afterwards must never revoke access to it.
+      available = ['delivered', 'closed'].includes(dto.status);
       if (!available) note = 'Available after delivery';
       if (verticalKey === 'uzhavar') label = 'Booking Fee Receipt (Tax Invoice)';
     }

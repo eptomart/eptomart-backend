@@ -515,18 +515,27 @@ const placeOrder = async (req, res) => {
   }
 
   // ── 7c. Wallet balance adjustment (Feature 5 — Next Order Recovery) ───────
-  // Positive wallet → apply as discount. Negative wallet → recover debt (add to total).
+  // Positive wallet → apply as discount (capped at order total, never negative).
+  // Negative wallet → recover debt (add to total).
   let walletAdjustment = 0;
   let walletDoc = null;
   try {
     walletDoc = await KoyambeduWallet.findOne({ user: req.user._id });
     if (walletDoc && walletDoc.balance !== 0) {
-      walletAdjustment = parseFloat((walletDoc.balance).toFixed(2));
+      const baseTotal = parseFloat((subtotal + deliveryCharge + platformFee - couponDiscount).toFixed(2));
+      if (walletDoc.balance > 0) {
+        // Credit: cap at base total so final total never goes below ₹0
+        walletAdjustment = Math.min(parseFloat(walletDoc.balance.toFixed(2)), baseTotal);
+      } else {
+        // Debt: add full amount to recover on this order
+        walletAdjustment = parseFloat(walletDoc.balance.toFixed(2));
+      }
     }
   } catch (_) { /* non-blocking */ }
 
   // walletAdjustment: positive = reduces total, negative = increases total
-  const total = parseFloat((subtotal + deliveryCharge + platformFee - couponDiscount - walletAdjustment).toFixed(2));
+  const baseTotal = parseFloat((subtotal + deliveryCharge + platformFee - couponDiscount).toFixed(2));
+  const total = parseFloat((baseTotal - walletAdjustment).toFixed(2));
 
   // ── 8. Save order ─────────────────────────────────────────
   // Validate deliveryDate: must be today or future, not more than 2 days ahead

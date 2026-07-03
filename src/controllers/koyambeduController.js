@@ -717,12 +717,29 @@ const verifyPayment = async (req, res) => {
 
 /** GET /api/koyambedu/my-orders */
 const getMyOrders = async (req, res) => {
-  const orders = await KoyambeduOrder.find({ buyer: req.user._id })
+  const orders = await KoyambeduOrder.find({
+    buyer: req.user._id,
+    paymentStatus: { $ne: 'pending' },  // hide orders where payment was never completed
+  })
     .select('-buyer -shippingAddress.phone -deliveryPersonPhone')
     .populate('items.product', 'name images unit')
     .sort({ createdAt: -1 })
     .lean();
   res.json({ success: true, orders });
+};
+
+/** DELETE /api/koyambedu/orders/:orderId/pending
+ *  Deletes an order only if it belongs to the user AND paymentStatus is still 'pending'.
+ *  Called by the frontend when the user closes Razorpay without paying.
+ */
+const cancelPendingOrder = async (req, res) => {
+  const deleted = await KoyambeduOrder.findOneAndDelete({
+    _id:           req.params.orderId,
+    buyer:         req.user._id,
+    paymentStatus: 'pending',
+  });
+  if (!deleted) return res.status(404).json({ success: false, message: 'No pending order found' });
+  res.json({ success: true, message: 'Pending order removed' });
 };
 
 /** GET /api/koyambedu/my-orders/:orderId */
@@ -4579,7 +4596,7 @@ module.exports = {
   getCart, updateCart, clearCart,
   // Buyer orders
   placeOrder, createRazorpayOrder, verifyPayment,
-  getMyOrders, getMyOrder, approveRevision, cancelOrder, getOrderInvoice,
+  getMyOrders, getMyOrder, cancelPendingOrder, approveRevision, cancelOrder, getOrderInvoice,
   // Seller
   sellerRegister, getSellerProfile, updateSellerProfile,
   getSellerProducts, createSellerProduct, updateSellerProduct,

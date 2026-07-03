@@ -53,6 +53,7 @@ router.delete('/cart/clear',               protect, ctrl.clearCart);
 router.post  ('/orders',                    protect, ctrl.placeOrder);
 router.post  ('/orders/create-razorpay',    protect, ctrl.createRazorpayOrder);
 router.post  ('/orders/verify-payment',     protect, ctrl.verifyPayment);
+router.delete('/orders/:orderId/pending',   protect, ctrl.cancelPendingOrder);
 router.get   ('/my-orders',                 protect, ctrl.getMyOrders);
 router.get   ('/my-orders/:orderId',        protect, ctrl.getMyOrder);
 router.post  ('/orders/:orderId/approve-revision', protect, ctrl.approveRevision);

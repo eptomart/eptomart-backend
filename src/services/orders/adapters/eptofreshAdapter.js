@@ -60,7 +60,7 @@ function toDetail(doc, { walletHistory = [] } = {}) {
 
   const mapItem = it => itemRow(it, {
     name:      it.productName,
-    image:     it.product?.images?.[0] || null,
+    image:     it.product?.images?.find?.(i => i.isPrimary)?.url || it.product?.images?.[0]?.url || null,
     unitPrice: it.unitPrice ?? it.variant?.price,
     lineTotal: it.totalPrice ?? (it.unitPrice || 0) * (it.quantity || 0),
     variantLabel: [it.variant?.label, it.cutType].filter(Boolean).join(' · ') || null,

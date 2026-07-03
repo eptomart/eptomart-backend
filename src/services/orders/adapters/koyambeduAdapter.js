@@ -85,6 +85,8 @@ async function fetchList(userId, { limit = 50, from, to } = {}) {
 async function fetchOne(userId, id) {
   return KoyambeduOrder.findOne({ _id: id, buyer: userId })
     .populate('items.seller', 'businessName stallNumber')
+    .populate('items.product', 'images')
+    .populate('itemsOrdered.product', 'images')
     .lean();
 }
 
@@ -124,6 +126,13 @@ function unitPriceOf(it) {
   return it.orderedPrice ?? it.finalPrice ?? it.unitPrice ?? 0;
 }
 
+/** Product image (primary → first) from a populated item. */
+function imgOf(it) {
+  const imgs = it.product?.images;
+  if (!Array.isArray(imgs) || !imgs.length) return null;
+  return imgs.find(i => i.isPrimary)?.url || imgs[0]?.url || null;
+}
+
 function toDetail(doc, { walletHistory = [] } = {}) {
   const card = toCard(doc);
   const visible = declinesVisible(doc);
@@ -133,11 +142,13 @@ function toDetail(doc, { walletHistory = [] } = {}) {
   // ── Items Ordered — immutable snapshot ──────
   const snapshot = (doc.itemsOrdered && doc.itemsOrdered.length)
     ? doc.itemsOrdered.map(it => itemRow(it, {
+        image:     imgOf(it),
         quantity:  it.orderedQty,
         unitPrice: it.unitPrice,
         lineTotal: it.lineTotal ?? (it.orderedQty || 0) * (it.unitPrice || 0),
       }))
     : (doc.items || []).map(it => itemRow(it, {
+        image:     imgOf(it),
         quantity:  it.orderedQty || it.quantity,
         unitPrice: unitPriceOf(it),
         lineTotal: (it.orderedQty || it.quantity || 0) * unitPriceOf(it),
@@ -151,6 +162,7 @@ function toDetail(doc, { walletHistory = [] } = {}) {
         ? (it.orderedQty || it.quantity || 0)
         : (it.declinedQty || 0);
       return itemRow(it, {
+        image:        imgOf(it),
         quantity:     it.orderedQty || it.quantity,
         unitPrice:    unitPriceOf(it),
         lineTotal:    (it.confirmedQty || 0) * unitPriceOf(it),
@@ -168,6 +180,7 @@ function toDetail(doc, { walletHistory = [] } = {}) {
         ? it.confirmedQty
         : (it.orderedQty || it.quantity || 0);
       return itemRow(it, {
+        image:     imgOf(it),
         quantity:  qty,
         unitPrice: unitPriceOf(it),
         lineTotal: qty * unitPriceOf(it),

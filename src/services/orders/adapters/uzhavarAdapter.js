@@ -32,6 +32,7 @@ async function fetchList(userId, { limit = 50, from, to } = {}) {
 async function fetchOne(userId, id) {
   return UzhavarOrder.findOne({ _id: id, buyer: userId })
     .populate('farmer', 'name')
+    .populate('items.product', 'images image photo')
     .lean();
 }
 

@@ -3861,28 +3861,43 @@ const submitDeliveryAck = async (req, res) => {
 
     await order.save();
 
-    // ── Immediate mobile alerts to Seller Admin + Super Admin ──
+    // ── Immediate alerts: WhatsApp + in-app push to the order's
+    //    Seller Admins and EVERY Super Admin ──
     if (status !== 'all_received') {
       setImmediate(async () => {
         try {
           const { sendMetaWhatsApp } = require('../utils/sendWhatsApp');
+          const { notifyUser } = require('../utils/pushNotification');
           const label = status === 'not_received' ? 'ORDER NOT RECEIVED' : 'PARTIAL/DAMAGED DELIVERY';
           const detail = status === 'partial_issue'
             ? order.deliveryAck.issues.map(i => `${i.name}: ${i.missingQty}${i.unit ? ' ' + i.unit : ''} missing`).join(', ')
             : 'Customer says the order was not delivered.';
           const msg = `🚨 ${label}\nOrder: ${order.orderId}\n${detail}\nPlease check the Alerts section.`;
+          const push = {
+            title: `🚨 ${label} — ${order.orderId}`,
+            body:  detail,
+            tag:   `kbd-alert-${order.orderId}`,
+          };
 
-          // Super Admin
+          // Every Super Admin: WhatsApp (registered phone) + in-app push
+          const superAdmins = await User.find({ role: 'superAdmin' }).select('phone').lean();
+          for (const sa of superAdmins) {
+            if (sa.phone) sendMetaWhatsApp(sa.phone, msg).catch(() => {});
+            notifyUser(sa._id, { ...push, url: '/admin/koyambedu' }).catch(() => {});
+          }
+          // Fallback / additional configured alert phone
           if (process.env.ADMIN_WHATSAPP_PHONE) {
             sendMetaWhatsApp(process.env.ADMIN_WHATSAPP_PHONE, msg).catch(() => {});
           }
-          // Seller Admins whose sellers are on this order
+
+          // Seller Admins whose sellers are on this order: WhatsApp + push
           const sellerIds = [...new Set((order.items || []).map(it => String(it.seller)).filter(Boolean))];
           const sellers   = await KoyambeduSeller.find({ _id: { $in: sellerIds } }).select('createdBySellerAdmin').lean();
           const saIds     = [...new Set(sellers.map(x => String(x.createdBySellerAdmin)).filter(Boolean))];
-          const sas       = await KoyambeduSellerAdmin.find({ _id: { $in: saIds } }).select('contactPhone').lean();
+          const sas       = await KoyambeduSellerAdmin.find({ _id: { $in: saIds } }).select('contactPhone user').lean();
           for (const sa of sas) {
             if (sa.contactPhone) sendMetaWhatsApp(sa.contactPhone, msg).catch(() => {});
+            if (sa.user) notifyUser(sa.user, { ...push, url: '/koyambedu/seller-admin/orders' }).catch(() => {});
           }
         } catch (e) { console.error('delivery-ack alert failed', e); }
       });

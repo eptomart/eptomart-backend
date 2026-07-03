@@ -30,6 +30,10 @@ test('uzhavar auto_cancelled → cancelled + label override', () => {
   assert.equal(toCanonical('uzhavar', 'auto_cancelled'), 'cancelled');
   assert.equal(statusLabel('uzhavar', 'auto_cancelled'), 'Cancelled (Not Confirmed in Time)');
 });
+test('koyambedu reported → canonical Reported status', () => {
+  assert.equal(toCanonical('koyambedu', 'reported'), 'reported');
+  assert.equal(statusLabel('koyambedu', 'reported'), 'Reported');
+});
 test('unknown status passes through without throwing', () =>
   assert.equal(toCanonical('eptomart', 'weird_legacy_status'), 'weird_legacy_status'));
 

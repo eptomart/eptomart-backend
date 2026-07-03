@@ -134,6 +134,7 @@ const koyambeduOrderSchema = new Schema({
       'packing',
       'dispatched',
       'delivered',
+      'reported',                // customer reported a delivery issue (awaiting resolution)
       'cancelled',
       'closed',                  // manually closed by Super Admin (with comments)
       'refund_initiated',

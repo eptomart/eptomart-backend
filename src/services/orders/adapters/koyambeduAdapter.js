@@ -46,7 +46,7 @@ const EVENT_LABELS = {
 // (Cancelled orders always show their refund.)
 function declinesVisible(doc) {
   if (doc.adminApproval?.status === 'approved') return true;
-  return ['confirmed', 'packing', 'dispatched', 'delivered', 'cancelled', 'closed', 'refund_initiated']
+  return ['confirmed', 'packing', 'dispatched', 'delivered', 'reported', 'cancelled', 'closed', 'refund_initiated']
     .includes(doc.orderStatus);
 }
 

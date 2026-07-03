@@ -2990,7 +2990,7 @@ const sellerAdminUpdateOrderStatus = async (req, res) => {
 
     // Delivered / closed / cancelled orders are FINAL for Seller Admin —
     // only Super Admin can modify them from that point.
-    if (['delivered', 'closed', 'cancelled'].includes(order.orderStatus)) {
+    if (['delivered', 'reported', 'closed', 'cancelled'].includes(order.orderStatus)) {
       return res.status(403).json({ success: false, message: 'This order is finalised. Only Super Admin can make changes now.' });
     }
     // Cannot self-confirm while declines/reductions await Super Admin approval
@@ -3831,6 +3831,7 @@ const submitDeliveryAck = async (req, res) => {
     }
 
     if (status === 'partial_issue') {
+      order.orderStatus = 'reported';
       const clean = (issues || [])
         .filter(i => i && i.name && Number(i.missingQty) > 0)
         .map(i => ({ name: String(i.name), unit: i.unit || '', missingQty: Number(i.missingQty), note: i.note || '' }));
@@ -3849,6 +3850,7 @@ const submitDeliveryAck = async (req, res) => {
     }
 
     if (status === 'not_received') {
+      order.orderStatus = 'reported';
       order.deliveryAck.alert = { active: true, type: 'not_received', raisedAt: new Date() };
       order.timeline.push({
         event: 'delivery_issue_reported',

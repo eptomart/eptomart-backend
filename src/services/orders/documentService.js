@@ -30,7 +30,7 @@ const PROFORMA_DISCLAIMER =
 
 // Canonical statuses at/after Super Admin approval
 // ('closed' comes after delivery — documents must stay available)
-const CONFIRMED_OR_LATER = ['confirmed', 'packing', 'packed', 'out_for_delivery', 'delivered', 'closed'];
+const CONFIRMED_OR_LATER = ['confirmed', 'packing', 'packed', 'out_for_delivery', 'delivered', 'reported', 'closed'];
 
 // ══════════════════════════════════════════════════════════════════
 // DOCUMENT AVAILABILITY — single source of truth
@@ -62,7 +62,7 @@ function computeDocuments(verticalKey, dto) {
     } else if (type === 'tax') {
       // Tax invoice exists from delivery onwards — closing the order
       // afterwards must never revoke access to it.
-      available = ['delivered', 'closed'].includes(dto.status);
+      available = ['delivered', 'reported', 'closed'].includes(dto.status);
       if (!available) note = 'Available after delivery';
       if (verticalKey === 'uzhavar') label = 'Booking Fee Receipt (Tax Invoice)';
     }

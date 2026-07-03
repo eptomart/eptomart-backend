@@ -11,6 +11,7 @@ const router  = express.Router();
 const { protect } = require('../middleware/auth');
 const svc = require('../services/orders/unifiedOrderService');
 const { renderOrderDocument } = require('../services/orders/documentService');
+const { reorder } = require('../services/orders/reorderService');
 
 // Tab / vertical configuration (registry-driven)
 router.get('/verticals', protect, (req, res) => {
@@ -25,6 +26,22 @@ router.get('/', protect, async (req, res) => {
     res.json({ success: true, ...result });
   } catch (err) {
     console.error('GET /v2/orders:', err);
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  }
+});
+
+// Reorder — add all of a past order's items back to the vertical's cart.
+// Works for any order status. Items are validated against CURRENT
+// availability and priced at TODAY's rates.
+router.post('/:vertical/:id/reorder', protect, async (req, res) => {
+  try {
+    const result = await reorder(req.user._id, req.params.vertical, req.params.id);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    if (err.name === 'CastError') {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    console.error('POST /v2/orders reorder:', err);
     res.status(err.status || 500).json({ success: false, message: err.message });
   }
 });

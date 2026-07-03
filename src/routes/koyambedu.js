@@ -118,6 +118,7 @@ router.patch('/seller-admin/orders/:orderId/items/:itemId/decline',        prote
 router.patch('/seller-admin/orders/:orderId/items/:itemId/reduce-qty',     protectSellerAdmin, ctrl.sellerAdminReduceItemQty);
 router.patch('/seller-admin/orders/:orderId/items/:itemId/available',      protectSellerAdmin, ctrl.sellerAdminMarkItemAvailable);
 router.post ('/seller-admin/orders/:orderId/submit-review',                protectSellerAdmin, ctrl.sellerAdminSubmitForApproval);
+router.post ('/seller-admin/orders/:orderId/confirm-all',                  protectSellerAdmin, ctrl.sellerAdminConfirmAllItems);
 
 // ══════════════════════════════════════════════
 // ADMIN — admin or superAdmin
@@ -125,6 +126,7 @@ router.post ('/seller-admin/orders/:orderId/submit-review',                prote
 router.get  ('/admin/dashboard',                  protectAdmin, ctrl.adminDashboard);
 router.get  ('/admin/orders',                     protectAdmin, ctrl.adminGetOrders);
 router.get  ('/admin/orders/pending-approval',    protectSuperAdmin, ctrl.adminGetPendingApprovalOrders);
+router.patch('/admin/orders/:orderId/close',      protectSuperAdmin, ctrl.adminCloseOrder);
 router.patch('/admin/orders/:orderId/status',                         protectAdmin, ctrl.adminUpdateOrderStatus);
 router.patch('/admin/orders/:orderId/delivered',                      protectAdmin, ctrl.adminMarkDelivered);
 router.patch('/admin/orders/:orderId/approve-review',                 protectSuperAdmin, ctrl.adminApproveOrderReview);

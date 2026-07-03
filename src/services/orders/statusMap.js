@@ -18,6 +18,7 @@ const CANONICAL = [
   'out_for_delivery',
   'delivered',
   'cancelled',
+  'closed',
   'returned',
   'refund_processing',
   'refunded',
@@ -34,6 +35,7 @@ const CANONICAL_LABELS = {
   out_for_delivery:         'Out for Delivery',
   delivered:                'Delivered',
   cancelled:                'Cancelled',
+  closed:                   'Closed',
   returned:                 'Returned',
   refund_processing:        'Refund Processing',
   refunded:                 'Refunded',
@@ -70,6 +72,7 @@ const MAPS = {
     dispatched:             'out_for_delivery',
     delivered:              'delivered',
     cancelled:              'cancelled',
+    closed:                 'closed',
     refund_initiated:       'refund_processing',
   },
 
@@ -119,6 +122,7 @@ const NATIVE_LABEL_OVERRIDES = {
   },
   koyambedu: {
     dispatched: 'On the Way',
+    packing:    'Procurement in Progress',
   },
 };
 

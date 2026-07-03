@@ -1088,7 +1088,38 @@ const adminGetOrders = async (req, res) => {
       .sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
     KoyambeduOrder.countDocuments(filter),
   ]);
-  res.json({ success: true, orders, total, page: Number(page), pages: Math.ceil(total / limit) });
+  // Decline details become visible to Super Admin only after the Seller
+  // Admin SUBMITS the review. Before that, in-progress edits are masked.
+  const shaped = orders.map(o => {
+    const submitted = !['placed', 'pending_confirmation'].includes(o.orderStatus);
+    if (!submitted) {
+      return {
+        ...o,
+        items: (o.items || []).map(it => ({ ...it, itemStatus: 'pending', declinedQty: 0, confirmedQty: it.orderedQty ?? it.quantity, declinedReason: undefined })),
+        calculatedPricing: o.calculatedPricing
+          ? { ...o.calculatedPricing, declinedRefundAmount: 0, confirmedItemsTotal: o.calculatedPricing.originalOrderValue, finalPayableAmount: o.pricing?.total || 0 }
+          : o.calculatedPricing,
+        saReview: o.saReview ? { ...o.saReview, pendingRefundAmount: 0 } : o.saReview,
+        reviewSummary: null,
+      };
+    }
+    const declined = (o.items || []).filter(it => ['declined', 'partial'].includes(it.itemStatus));
+    return {
+      ...o,
+      reviewSummary: declined.length ? {
+        pendingRefundAmount: o.saReview?.pendingRefundAmount || o.calculatedPricing?.declinedRefundAmount || 0,
+        declinedItems: declined.map(it => ({
+          name: it.name, unit: it.unit,
+          orderedQty: it.orderedQty || it.quantity,
+          declinedQty: it.itemStatus === 'declined' ? (it.orderedQty || it.quantity) : it.declinedQty,
+          refundAmount: (it.itemStatus === 'declined' ? (it.orderedQty || it.quantity || 0) : (it.declinedQty || 0)) * (it.orderedPrice || it.finalPrice || 0),
+          reason: it.declinedReason || 'unavailable',
+        })),
+      } : null,
+    };
+  });
+
+  res.json({ success: true, orders: shaped, total, page: Number(page), pages: Math.ceil(total / limit) });
 };
 
 /** PATCH /api/koyambedu/admin/orders/:orderId/status */
@@ -2957,6 +2988,17 @@ const sellerAdminUpdateOrderStatus = async (req, res) => {
     const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, 'items.seller': { $in: sellerIds } });
     if (!order) return res.status(404).json({ success: false, message: 'Order not found or not yours' });
 
+    // Delivered / closed / cancelled orders are FINAL for Seller Admin —
+    // only Super Admin can modify them from that point.
+    if (['delivered', 'closed', 'cancelled'].includes(order.orderStatus)) {
+      return res.status(403).json({ success: false, message: 'This order is finalised. Only Super Admin can make changes now.' });
+    }
+    // Cannot self-confirm while declines/reductions await Super Admin approval
+    const hasPendingChanges = (order.items || []).some(it => ['declined', 'partial'].includes(it.itemStatus));
+    if (status === 'confirmed' && hasPendingChanges && order.adminApproval?.status !== 'approved') {
+      return res.status(400).json({ success: false, message: 'Order has declined/reduced items — submit for Super Admin approval instead.' });
+    }
+
     order.orderStatus = status;
     if (deliveryPartner) order.deliveryPartner = deliveryPartner;
     if (adminNotes)      order.adminNotes      = adminNotes;
@@ -2979,6 +3021,14 @@ const getOrderInvoice = async (req, res) => {
     .populate('buyer', 'name email phone')
     .lean();
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  // Declines are shown on customer documents only AFTER Super Admin approval
+  const declinesApproved = order.adminApproval?.status === 'approved' ||
+    ['confirmed', 'packing', 'dispatched', 'delivered', 'closed', 'cancelled'].includes(order.orderStatus);
+  if (!declinesApproved && order.items) {
+    order.items = order.items.map(it => ({ ...it, itemStatus: 'pending', declinedQty: 0, confirmedQty: it.orderedQty ?? it.quantity }));
+    if (order.calculatedPricing) order.calculatedPricing = { ...order.calculatedPricing, declinedRefundAmount: 0, finalPayableAmount: 0, lastCalculatedAt: null };
+  }
 
   const doc = new PDFDocument({ size: 'A4', margin: 50 });
   res.setHeader('Content-Type', 'application/pdf');
@@ -3138,6 +3188,42 @@ const _notifyBuyerQtyReduced = (order, item, oldQty, newQty) => {
  * PATCH /seller-admin/orders/:orderId/items/:itemId/confirm
  * SA confirms an item (marks it as confirmed at full orderedQty)
  */
+/**
+ * If every item is confirmed at its ORIGINAL quantity (no declines, no
+ * reductions), the order confirms immediately — Super Admin approval is
+ * only needed when something changed.
+ */
+const _maybeAutoConfirm = (order) => {
+  const items = order.items || [];
+  const allClean = items.length > 0 && items.every(it =>
+    it.itemStatus === 'confirmed' &&
+    (it.declinedQty || 0) === 0 &&
+    Number(it.confirmedQty) === Number(it.orderedQty || it.quantity || 0));
+  if (!allClean) return false;
+  if (!['placed', 'pending_confirmation'].includes(order.orderStatus)) return false;
+
+  order.orderStatus = 'confirmed';
+  order.confirmedAt = new Date();
+  if (order.saReview) {
+    order.saReview.status = 'approved';
+    order.saReview.pendingRefundAmount = 0;
+    order.saReview.refundMethod = 'none';
+  }
+  order.adminApproval = {
+    status: 'approved', approvedAt: new Date(),
+    notes: 'Auto-confirmed — order confirmed in full by Seller Admin, no changes to original order',
+  };
+  order.invoices = order.invoices || {};
+  order.invoices.confirmation = { number: `CONF-${order.orderId}`, generatedAt: new Date(), isAvailable: true };
+  order.timeline.push({
+    event: 'admin_approved',
+    description: 'Order confirmed in full — all items available at ordered quantities',
+    actor: { role: 'system' },
+    timestamp: new Date(),
+  });
+  return true;
+};
+
 const sellerAdminConfirmItem = async (req, res) => {
   try {
     const sa = req.kbdSellerAdmin;
@@ -3161,8 +3247,10 @@ const sellerAdminConfirmItem = async (req, res) => {
     applyCalculation(order);
     order.timeline.push({ event: 'item_confirmed', description: `${item.name} confirmed by Seller Admin`, actor: { role: 'seller_admin', userId: req.user._id }, timestamp: new Date() });
 
+    const autoConfirmed = _maybeAutoConfirm(order);
     await order.save();
-    res.json({ success: true, order });
+    if (autoConfirmed) _notifyBuyerOrderApproved(order);
+    res.json({ success: true, order, autoConfirmed });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -3295,6 +3383,58 @@ const sellerAdminReduceItemQty = async (req, res) => {
  * SA submits all item changes for Super Admin approval.
  * After this, SA cannot make further changes.
  */
+/**
+ * POST /seller-admin/orders/:orderId/confirm-all
+ * Confirms every pending item of this SA's sellers at the ordered
+ * quantity. If the whole order ends up clean, it auto-confirms.
+ */
+const sellerAdminConfirmAllItems = async (req, res) => {
+  try {
+    const sa = req.kbdSellerAdmin;
+    const sellerIds = (await KoyambeduSeller.find({ createdBySellerAdmin: sa._id }).select('_id').lean()).map(s => s._id);
+
+    const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, 'items.seller': { $in: sellerIds } });
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found or not yours' });
+    if (!['placed', 'pending_confirmation'].includes(order.orderStatus)) {
+      return res.status(400).json({ success: false, message: 'Order is past the review stage' });
+    }
+
+    let confirmed = 0;
+    for (const item of order.items) {
+      if (!sellerIds.some(id => String(id) === String(item.seller))) continue;
+      if (item.itemStatus !== 'pending') continue;
+      item.itemStatus   = 'confirmed';
+      item.confirmedQty = item.orderedQty || item.quantity || 0;
+      item.declinedQty  = 0;
+      item.actionedBy   = sa._id;
+      item.actionedAt   = new Date();
+      confirmed++;
+    }
+    if (!confirmed) return res.status(400).json({ success: false, message: 'No pending items to confirm' });
+
+    applyCalculation(order);
+    order.timeline.push({
+      event: 'item_confirmed',
+      description: `${confirmed} item(s) confirmed by Seller Admin (Confirm All)`,
+      actor: { role: 'seller_admin', userId: req.user._id }, timestamp: new Date(),
+    });
+
+    const autoConfirmed = _maybeAutoConfirm(order);
+    await order.save();
+    if (autoConfirmed) _notifyBuyerOrderApproved(order);
+    res.json({
+      success: true, confirmed, autoConfirmed,
+      message: autoConfirmed
+        ? `All items confirmed — order ${order.orderId} is CONFIRMED (no approval needed).`
+        : `${confirmed} item(s) confirmed.`,
+      order: { _id: order._id, orderStatus: order.orderStatus },
+    });
+  } catch (err) {
+    console.error('sellerAdminConfirmAllItems:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 const sellerAdminSubmitForApproval = async (req, res) => {
   try {
     const sa = req.kbdSellerAdmin;
@@ -3379,7 +3519,23 @@ const adminGetPendingApprovalOrders = async (req, res) => {
         .skip(skip).limit(Number(limit)).lean(),
       KoyambeduOrder.countDocuments({ orderStatus: 'sa_review_submitted' }),
     ]);
-    res.json({ success: true, orders, total });
+    const shaped = orders.map(o => {
+      const declined = (o.items || []).filter(it => ['declined', 'partial'].includes(it.itemStatus));
+      return {
+        ...o,
+        reviewSummary: {
+          pendingRefundAmount: o.saReview?.pendingRefundAmount || o.calculatedPricing?.declinedRefundAmount || 0,
+          declinedItems: declined.map(it => ({
+            name: it.name, unit: it.unit,
+            orderedQty: it.orderedQty || it.quantity,
+            declinedQty: it.itemStatus === 'declined' ? (it.orderedQty || it.quantity) : it.declinedQty,
+            refundAmount: (it.itemStatus === 'declined' ? (it.orderedQty || it.quantity || 0) : (it.declinedQty || 0)) * (it.orderedPrice || it.finalPrice || 0),
+            reason: it.declinedReason || 'unavailable',
+          })),
+        },
+      };
+    });
+    res.json({ success: true, orders: shaped, total });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -3454,8 +3610,10 @@ const adminApproveOrderReview = async (req, res) => {
     await order.save();
 
     // ── Process refund ────────────────────────────
+    // COD is NOT refunded — the declined amount is simply deducted from
+    // the payable on delivery. Only online payments get a wallet credit.
     if (refundAmount > 0) {
-      if (refundMethod === 'wallet' || refundMethod === 'cod_deduction') {
+      if (refundMethod === 'wallet' && order.paymentMethod !== 'cod') {
         setImmediate(async () => {
           try {
             let wallet = await KoyambeduWallet.findOne({ user: order.buyer?._id || order.buyer });
@@ -3468,6 +3626,9 @@ const adminApproveOrderReview = async (req, res) => {
           } catch(e) { console.error('Wallet refund failed', e); }
         });
         _notifyBuyerRefundProcessed(order, refundAmount, 'wallet');
+      } else if (refundMethod === 'cod_deduction' || order.paymentMethod === 'cod') {
+        order.auditLog.push({ action: 'cod_deduction_applied', actorRole: 'system', timestamp: new Date(), amount: refundAmount, notes: 'COD — declined amount deducted from payable, no refund issued' });
+        setImmediate(() => order.save().catch(() => {}));
       }
     }
 
@@ -3631,6 +3792,44 @@ const sellerAdminMarkItemAvailable = async (req, res) => {
 };
 
 /**
+ * PATCH /admin/orders/:orderId/close
+ * Super Admin manually closes an order (e.g. after compensating the
+ * customer for missing items with an offer). Comments are REQUIRED.
+ */
+const adminCloseOrder = async (req, res) => {
+  try {
+    const { comments } = req.body;
+    if (!comments?.trim() || comments.trim().length < 5) {
+      return res.status(400).json({ success: false, message: 'Closing comments are required (min 5 characters)' });
+    }
+    const order = await KoyambeduOrder.findById(req.params.orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (['cancelled', 'closed'].includes(order.orderStatus)) {
+      return res.status(400).json({ success: false, message: `Order is already ${order.orderStatus}` });
+    }
+
+    const prevStatus = order.orderStatus;
+    order.orderStatus   = 'closed';
+    order.closeComments = comments.trim();
+    order.timeline.push({
+      event: 'order_closed',
+      description: `Order closed by Super Admin. ${comments.trim()}`,
+      actor: { role: 'super_admin', userId: req.user._id },
+      timestamp: new Date(),
+    });
+    order.auditLog.push({
+      action: 'order_closed', actorRole: 'super_admin', actorId: req.user._id,
+      timestamp: new Date(), previousValue: prevStatus, newValue: 'closed', notes: comments.trim(),
+    });
+    await order.save();
+    res.json({ success: true, message: `Order ${order.orderId} closed.` });
+  } catch (err) {
+    console.error('adminCloseOrder:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
  * GET /orders/:orderId/timeline — buyer can see their own order timeline
  */
 const getOrderTimeline = async (req, res) => {
@@ -3753,9 +3952,9 @@ module.exports = {
   sellerAdminRequestEdit,
   // SA item review
   sellerAdminConfirmItem, sellerAdminDeclineItem, sellerAdminReduceItemQty, sellerAdminSubmitForApproval,
-  sellerAdminMarkItemAvailable,
+  sellerAdminMarkItemAvailable, sellerAdminConfirmAllItems,
   // Super Admin order lifecycle
-  adminGetPendingApprovalOrders, adminApproveOrderReview, adminCancelOrder, adminMarkDelivered,
+  adminGetPendingApprovalOrders, adminApproveOrderReview, adminCancelOrder, adminMarkDelivered, adminCloseOrder,
   // Shared order data
   getOrderTimeline, getOrderCalculation,
   // Admin product management

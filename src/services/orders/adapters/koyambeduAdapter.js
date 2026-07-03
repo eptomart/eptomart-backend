@@ -30,7 +30,8 @@ const EVENT_LABELS = {
   refund_initiated:   'Refund Initiated',
   refund_credited_wallet: 'Refund Credited to Wallet',
   order_cancelled:    'Order Cancelled',
-  packing:            'Packing',
+  order_closed:       'Order Closed',
+  packing:            'Procurement in Progress',
   dispatched:         'Out for Delivery',
   delivered:          'Delivered',
   invoice_generated:  'Invoice Generated',
@@ -42,12 +43,15 @@ const EVENT_LABELS = {
 // (Cancelled orders always show their refund.)
 function declinesVisible(doc) {
   if (doc.adminApproval?.status === 'approved') return true;
-  return ['confirmed', 'packing', 'dispatched', 'delivered', 'cancelled', 'refund_initiated']
+  return ['confirmed', 'packing', 'dispatched', 'delivered', 'cancelled', 'closed', 'refund_initiated']
     .includes(doc.orderStatus);
 }
 
-// Timeline events hidden from the customer until approval
-const PRE_APPROVAL_EVENTS = ['item_declined', 'qty_reduced', 'item_restored', 'review_submitted', 'review_rejected', 'sa_review_started', 'refund_calculated'];
+// Internal Seller Admin ↔ Super Admin approval workflow — NEVER shown
+// to customers, at any stage
+const INTERNAL_EVENTS = ['review_submitted', 'review_rejected', 'sa_review_started', 'refund_calculated'];
+// Decline events additionally hidden until Super Admin approval
+const PRE_APPROVAL_EVENTS = ['item_declined', 'qty_reduced', 'item_restored'];
 
 /** A masked view of the order as if nothing was declined (pre-approval). */
 function maskedDoc(doc) {
@@ -172,7 +176,7 @@ function toDetail(doc, { walletHistory = [] } = {}) {
   // ── Timeline — native timeline[] preferred ──
   // Review/decline events stay hidden from the customer until approval
   const timelineSource = (doc.timeline || []).filter(
-    t => visible || !PRE_APPROVAL_EVENTS.includes(t.event),
+    t => !INTERNAL_EVENTS.includes(t.event) && (visible || !PRE_APPROVAL_EVENTS.includes(t.event)),
   );
   let timeline = timelineSource.map(t => timelineEvent(
     t.event,

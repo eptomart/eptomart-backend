@@ -135,6 +135,7 @@ const koyambeduOrderSchema = new Schema({
       'dispatched',
       'delivered',
       'cancelled',
+      'closed',                  // manually closed by Super Admin (with comments)
       'refund_initiated',
     ],
     default: 'placed',
@@ -266,6 +267,7 @@ const koyambeduOrderSchema = new Schema({
   // Admin notes
   adminNotes:   String,
   cancelReason: String,
+  closeComments: String,   // Super Admin's comments when manually closing
 
   // Internal cost tracking (admin only — never shown to customer)
   adminCosts: {

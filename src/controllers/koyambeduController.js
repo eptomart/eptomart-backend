@@ -3417,12 +3417,51 @@ const sellerAdminUpdateOrderStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Order has declined/reduced items — submit for Super Admin approval instead.' });
     }
 
+    // ── Auto-refresh item prices to current market prices on confirm ──
+    // Koyambedu prices are updated daily after market procurement.
+    // When SA confirms the order, fetch the latest finalPrice for each
+    // product variant and update the order — no super admin needed.
+    if (status === 'confirmed') {
+      const productIds = [...new Set(
+        (order.items || []).map(it => it.product?.toString()).filter(Boolean)
+      )];
+      const currentProducts = await KoyambeduProduct.find({ _id: { $in: productIds } })
+        .select('_id currentPrice variants')
+        .lean();
+      const productMap = {};
+      for (const p of currentProducts) productMap[p._id.toString()] = p;
+
+      for (const item of order.items) {
+        if (item.itemStatus === 'declined') continue;
+        const product = productMap[item.product?.toString()];
+        if (!product) continue;
+
+        let currentPrice = product.currentPrice || 0;
+        // For variant products, find the tier matching ordered quantity
+        if (product.variants?.length) {
+          const qty = Number(item.orderedQty || item.quantity || 0);
+          const match = product.variants
+            .filter(v => qty >= Number(v.fromQty) && (v.toQty == null || qty <= Number(v.toQty)))
+            .sort((a, b) => Number(b.fromQty) - Number(a.fromQty))[0];
+          if (match?.finalPrice) currentPrice = match.finalPrice;
+        }
+
+        if (currentPrice && currentPrice !== item.finalPrice) {
+          item.finalPrice   = currentPrice;
+          item.priceRevised = true;
+          item.markModified?.('finalPrice');
+        }
+      }
+      // Recalculate totals with updated prices
+      applyCalculation(order);
+      order.confirmedAt = new Date();
+    }
+
     order.orderStatus = status;
     if (deliveryPartner) order.deliveryPartner = deliveryPartner;
     if (adminNotes)      order.adminNotes      = adminNotes;
     if (status === 'dispatched')  order.dispatchedAt = new Date();
     if (status === 'delivered')   order.deliveredAt  = new Date();
-    if (status === 'confirmed')   order.confirmedAt  = new Date();
 
     await order.save();
     res.json({ success: true, order: { _id: order._id, orderStatus: order.orderStatus } });

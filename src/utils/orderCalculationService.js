@@ -62,13 +62,14 @@ function calculateOrderTotals(order, opts = {}) {
   }
 
   // ── 3. Confirmed items total ──────────────────
-  // Sum of (confirmedQty * unitPrice) for non-declined items
+  // Sum of (confirmedQty * unitPrice) for non-declined items.
+  // Uses finalPrice (updated on SA confirm to current market price) over orderedPrice.
   let confirmedItemsTotal = 0;
   for (const it of items) {
     const status = it.itemStatus || 'pending';
     if (status === 'declined') continue; // fully declined — don't charge
     const confirmedQty = Number(it.confirmedQty != null ? it.confirmedQty : (it.orderedQty || it.quantity || 0));
-    const price        = Number(it.orderedPrice || it.finalPrice || 0);
+    const price        = Number(it.finalPrice || it.orderedPrice || 0); // finalPrice = current market price
     confirmedItemsTotal += confirmedQty * price;
   }
   // If no SA review done yet, confirmedItemsTotal = originalOrderValue (nothing declined yet)

@@ -34,6 +34,8 @@ async function reorderKoyambedu(userId, orderId) {
 
   let cart = await KoyambeduCart.findOne({ user: userId });
   if (!cart) cart = new KoyambeduCart({ user: userId, items: [] });
+  // Clear existing cart so repeated reorders don't multiply quantities
+  cart.items = [];
 
   let added = 0;
   const skipped = [];

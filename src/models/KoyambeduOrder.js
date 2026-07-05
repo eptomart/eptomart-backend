@@ -13,6 +13,9 @@ const orderItemSchema = new Schema({
   name:          String,
   unit:          String,
   unitLabel:     String,
+  // Grade (null for non-graded products)
+  gradeKey:      { type: String, enum: ['premium','mixed','economy'], default: null },
+  gradeName:     { type: String, default: null },
 
   // Quantities — orderedQty never changes after save
   orderedQty:    { type: Number, default: 0 },   // original qty at order time
@@ -51,6 +54,9 @@ const itemsOrderedSchema = new Schema({
   unitPrice:    Number,
   lineTotal:    Number,
   sellerPayout: Number,
+  // Grade snapshot
+  gradeKey:     { type: String, enum: ['premium','mixed','economy'], default: null },
+  gradeName:    { type: String, default: null },
 }, { _id: true });
 
 // ── Timeline event ─────────────────────────────

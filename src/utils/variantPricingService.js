@@ -134,4 +134,56 @@ function previewVariantPricing(product, opts) {
   }));
 }
 
-module.exports = { calculateVariantPricing, getHighestVariant, getLowestUnitPrice, previewVariantPricing };
+// ── Grade-level helpers ───────────────────────────────────────────────────────
+
+/**
+ * Calculate variant pricing for a single grade.
+ * Works identically to calculateVariantPricing but uses grade.variants
+ * and grade.variantDiffPercent instead of product-level equivalents.
+ *
+ * @param {Object} product      - product doc (for charge percents)
+ * @param {Object} grade        - grade object { variants, variantDiffPercent, ... }
+ * @param {Object} opts
+ *   .highestBasePrice {Number}
+ *   .variantDiffPercent {Number} optional override; falls back to grade.variantDiffPercent
+ * @returns {Array} Updated variant objects for this grade
+ */
+function computeGradeVariants(product, grade, { highestBasePrice, variantDiffPercent }) {
+  const gradeProxy = {
+    variants: grade.variants || [],
+    procurementChargePercent: product.procurementChargePercent,
+    platformChargePercent:    product.platformChargePercent,
+    logisticsChargePercent:   product.logisticsChargePercent,
+  };
+  const diffPct = variantDiffPercent != null
+    ? variantDiffPercent
+    : (grade.variantDiffPercent != null ? grade.variantDiffPercent : 2);
+  return calculateVariantPricing(gradeProxy, { highestBasePrice, variantDiffPercent: diffPct });
+}
+
+/**
+ * Return the lowest per-unit final selling price across ALL active grades.
+ * Used for "From ₹X" on product listing cards when gradesEnabled=true.
+ *
+ * @param {Array} grades - product.grades[]
+ * @returns {Number}
+ */
+function getLowestUnitPriceAcrossGrades(grades) {
+  if (!grades || !grades.length) return 0;
+  let min = Infinity;
+  for (const g of grades) {
+    if (!g.isActive) continue;
+    const lup = getLowestUnitPrice(g.variants || []);
+    if (lup > 0 && lup < min) min = lup;
+  }
+  return min === Infinity ? 0 : min;
+}
+
+module.exports = {
+  calculateVariantPricing,
+  getHighestVariant,
+  getLowestUnitPrice,
+  previewVariantPricing,
+  computeGradeVariants,
+  getLowestUnitPriceAcrossGrades,
+};

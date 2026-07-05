@@ -16,6 +16,9 @@ const koyambeduCartSchema = new Schema({
     unitLabel:    String,
     quantity:     { type: Number, required: true, min: 0 },
     deliveryType: { type: String, enum: ['today','tomorrow'], default: 'tomorrow' },
+    // Grade system — null/undefined for non-graded products (backward compat)
+    gradeKey:     { type: String, enum: ['premium','mixed','economy'], default: null },
+    gradeName:    { type: String, default: null },
     addedAt:      { type: Date, default: Date.now },
   }],
 

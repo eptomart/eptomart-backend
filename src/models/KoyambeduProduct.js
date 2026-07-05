@@ -45,6 +45,26 @@ const koyambeduProductSchema = new Schema({
   // e.g. 2.5 means: 10kg base = 30kg base × (1 - 2.5/100)
   variantDiffPercent: { type: Number, default: 2 },
 
+  // ── Grade System (Premium / Mixed Grade / Economy Grade) ────────────────────
+  // When gradesEnabled=true each grade has its own independent variants & pricing.
+  // The root-level variants[] above are kept for backward-compat but are IGNORED
+  // in favour of each grade's own variants[] when gradesEnabled=true.
+  gradesEnabled: { type: Boolean, default: false },
+  grades: [{
+    gradeKey:   { type: String, enum: ['premium','mixed','economy'], required: true },
+    gradeName:  { type: String, default: '' },  // display label e.g. "Premium"
+    isActive:   { type: Boolean, default: true },
+    variants: [{
+      basePrice:  { type: Number, required: true },
+      fromQty:    { type: Number, required: true },
+      toQty:      { type: Number, default: null },
+      finalPrice: { type: Number, default: 0 },
+    }],
+    variantDiffPercent: { type: Number, default: 2 },
+    // Snapshot of lowest unit price (updated on each daily-price run; used for listing sort/display)
+    lowestUnitPrice: { type: Number, default: 0 },
+  }],
+
   // Legacy single-price fields (kept for backward compat + derived from variants)
   basePrice:            { type: Number, default: 0 },
   platformFeePercent:   { type: Number, default: 10 },

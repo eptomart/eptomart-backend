@@ -159,7 +159,14 @@ const getProducts = async (req, res) => {
         .lean(),
       KoyambeduProduct.countDocuments(filter),
     ]);
-    res.json({ success: true, products, total, page: Number(page), pages: Math.ceil(total / limit) });
+    // Enrich graded products with lowestUnitPrice across all active grades
+    const enrichedProducts = products.map(p => {
+      if (p.gradesEnabled && p.grades?.length > 0) {
+        return { ...p, lowestUnitPrice: getLowestUnitPriceAcrossGrades(p.grades) };
+      }
+      return { ...p, lowestUnitPrice: getLowestUnitPrice(p.variants || []) };
+    });
+    res.json({ success: true, products: enrichedProducts, total, page: Number(page), pages: Math.ceil(total / limit) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -293,7 +300,7 @@ const getCart = async (req, res) => {
 
 /** POST /api/koyambedu/cart — add or update item */
 const updateCart = async (req, res) => {
-  const { productId, quantity, deliveryType = 'tomorrow' } = req.body;
+  const { productId, quantity, deliveryType = 'tomorrow', gradeKey = null } = req.body;
 
   const product = await KoyambeduProduct.findOne({ _id: productId, isActive: true, isAvailable: true })
     .populate('seller', '_id status isActive');
@@ -308,10 +315,28 @@ const updateCart = async (req, res) => {
     return res.status(400).json({ success: false, message: 'Next-day delivery not available for this product' });
   }
 
+  // Resolve grade (for graded products, gradeKey is required)
+  let resolvedGradeKey  = null;
+  let resolvedGradeName = null;
+  let activeVariants    = product.variants || [];
+
+  if (product.gradesEnabled && product.grades?.length > 0) {
+    const effectiveGradeKey = gradeKey || 'premium'; // default to first active grade
+    const grade = product.grades.find(g => g.gradeKey === effectiveGradeKey && g.isActive);
+    if (!grade) return res.status(400).json({ success: false, message: 'Selected grade not available' });
+    resolvedGradeKey  = grade.gradeKey;
+    resolvedGradeName = grade.gradeName || grade.gradeKey;
+    activeVariants    = grade.variants || [];
+  }
+
   let cart = await KoyambeduCart.findOne({ user: req.user._id });
   if (!cart) cart = new KoyambeduCart({ user: req.user._id, items: [] });
 
-  const idx = cart.items.findIndex(i => String(i.product) === String(productId));
+  // For graded products: match on product + gradeKey; otherwise match on product only
+  const idx = cart.items.findIndex(i =>
+    String(i.product) === String(productId) &&
+    (product.gradesEnabled ? (i.gradeKey || null) === (resolvedGradeKey || null) : true)
+  );
 
   const qtyNum = Number(quantity);
 
@@ -319,17 +344,14 @@ const updateCart = async (req, res) => {
     // Explicit remove
     if (idx > -1) cart.items.splice(idx, 1);
   } else {
-    // null maxQty = open-ended — avoid Math.min(null, N) = 0 trap
     const maxQtyVal = (product.maxQty != null) ? product.maxQty : Infinity;
-    // Do NOT clamp to minQty here — cart stepper should be free to decrement;
-    // if the result is below minQty the frontend already handles removal via qty=0.
     const qty = Math.min(maxQtyVal, qtyNum);
 
-    // Determine unit price from the matching variant tier, fall back to currentPrice
+    // Determine unit price from the matching variant tier (grade-aware)
     let unitPrice = product.currentPrice || 0;
-    if (product.variants?.length > 0) {
-      const matchingVariant = product.variants.find(v => {
-        if (!v.toQty) return qty >= v.fromQty;   // open-ended last tier
+    if (activeVariants.length > 0) {
+      const matchingVariant = activeVariants.find(v => {
+        if (!v.toQty) return qty >= v.fromQty;
         return qty >= v.fromQty && qty <= v.toQty;
       });
       if (matchingVariant?.finalPrice) unitPrice = matchingVariant.finalPrice;
@@ -343,6 +365,8 @@ const updateCart = async (req, res) => {
       unit:        product.unit,
       quantity:    qty,
       deliveryType,
+      gradeKey:    resolvedGradeKey,
+      gradeName:   resolvedGradeName,
     };
     if (idx > -1) { Object.assign(cart.items[idx], itemData); }
     else          { cart.items.push(itemData); }
@@ -351,7 +375,7 @@ const updateCart = async (req, res) => {
   await cart.save();
 
   // Populate product so frontend stepper gets full product data (images, qtyStep, etc.)
-  await cart.populate('items.product', 'name unit images qtyStep minQty maxQty currentPrice variants isActive isAvailable');
+  await cart.populate('items.product', 'name unit images qtyStep minQty maxQty currentPrice variants gradesEnabled grades isActive isAvailable');
   res.json({ success: true, cart });
 };
 
@@ -471,6 +495,8 @@ const placeOrder = async (req, res) => {
       orderedPrice: unitPrice,
       finalPrice:   unitPrice,
       sellerPayout: Math.round(sellerPayout * 100) / 100,
+      gradeKey:     ci.gradeKey  || null,
+      gradeName:    ci.gradeName || null,
     });
   }
 
@@ -559,6 +585,8 @@ const placeOrder = async (req, res) => {
     unitPrice:    it.orderedPrice,
     lineTotal:    it.orderedPrice * it.quantity,
     sellerPayout: it.sellerPayout,
+    gradeKey:     it.gradeKey  || null,
+    gradeName:    it.gradeName || null,
   }));
 
   // Enrich items with orderedQty / confirmedQty / itemStatus fields
@@ -2526,7 +2554,7 @@ const generateProductCode = (name) => {
 //   POST  /admin/daily-price/bulk           — admin bulk update
 // ══════════════════════════════════════════════
 const KoyambeduPriceHistory = require('../models/KoyambeduPriceHistory');
-const { calculateVariantPricing, getHighestVariant, getLowestUnitPrice } = require('../utils/variantPricingService');
+const { calculateVariantPricing, getHighestVariant, getLowestUnitPrice, computeGradeVariants, getLowestUnitPriceAcrossGrades } = require('../utils/variantPricingService');
 
 // ── Helper: resolve seller IDs for a price panel request ──────────────
 // • SA role  → only their own sellers (req.user links to a SellerAdmin doc)
@@ -2569,6 +2597,7 @@ const getDailyPricePanel = async (req, res) => {
       .select([
         'name', 'nameTamil', 'productCode', 'unit',
         'variants', 'variantDiffPercent',
+        'gradesEnabled', 'grades',
         'procurementChargePercent', 'platformChargePercent', 'logisticsChargePercent',
         'currentPrice', 'finalPrice', 'basePrice',
         'priceUpdatedAt', 'seller', 'category',
@@ -2577,12 +2606,30 @@ const getDailyPricePanel = async (req, res) => {
 
     // Annotate each product with derived display fields
     const annotated = products.map(p => {
-      const highestVariant = getHighestVariant(p.variants || []);
+      if (p.gradesEnabled && p.grades?.length > 0) {
+        // Grade-enabled: return one annotation per active grade
+        const gradeRows = p.grades.filter(g => g.isActive).map(g => ({
+          gradeKey:          g.gradeKey,
+          gradeName:         g.gradeName || g.gradeKey,
+          highestVariant:    getHighestVariant(g.variants || []),
+          lowestUnitPrice:   getLowestUnitPrice(g.variants || []),
+          variantDiffPercent: g.variantDiffPercent || 2,
+          variants:          g.variants || [],
+        }));
+        return {
+          ...p,
+          gradeRows,
+          highestVariant:    null, // not used for graded products
+          lowestUnitPrice:   getLowestUnitPriceAcrossGrades(p.grades),
+          variantDiffPercent: p.variantDiffPercent || 2,
+        };
+      }
+      const highestVariant  = getHighestVariant(p.variants || []);
       const lowestUnitPrice = getLowestUnitPrice(p.variants || []);
       return {
         ...p,
-        highestVariant,          // { fromQty, basePrice, finalPrice, ... }
-        lowestUnitPrice,         // for "From ₹X/unit" display
+        highestVariant,
+        lowestUnitPrice,
         variantDiffPercent: p.variantDiffPercent || 2,
       };
     });
@@ -2596,7 +2643,7 @@ const getDailyPricePanel = async (req, res) => {
 const updateDailyPrice = async (req, res) => {
   try {
     const { productId } = req.params;
-    const { highestBasePrice, variantDiffPercent, note } = req.body;
+    const { highestBasePrice, variantDiffPercent, note, gradeKey } = req.body;
 
     // Validation
     if (highestBasePrice === undefined || Number(highestBasePrice) <= 0) {
@@ -2619,35 +2666,61 @@ const updateDailyPrice = async (req, res) => {
       }
     }
 
-    const prevHighestVariant = getHighestVariant(product.variants || []);
-    const prevPrice = prevHighestVariant?.finalPrice || product.currentPrice;
+    let updatedVariants, highestUpdated, prevPrice;
 
-    // Save variant diff % if provided
-    if (variantDiffPercent !== undefined) product.variantDiffPercent = Number(variantDiffPercent);
+    if (product.gradesEnabled && gradeKey) {
+      // ── Grade-aware update ──────────────────────────────────
+      const gradeIdx = product.grades.findIndex(g => g.gradeKey === gradeKey);
+      if (gradeIdx === -1) return res.status(404).json({ success: false, message: 'Grade not found' });
+      const grade = product.grades[gradeIdx];
 
-    // Calculate and apply new variant pricing
-    const updatedVariants = calculateVariantPricing(product, {
-      highestBasePrice:   Number(highestBasePrice),
-      variantDiffPercent: product.variantDiffPercent,
-    });
+      const prevHighest = getHighestVariant(grade.variants || []);
+      prevPrice = prevHighest?.finalPrice || 0;
 
-    // Apply updated basePrice + finalPrice back to embedded subdocs
-    for (const upd of updatedVariants) {
-      const v = product.variants.id ? product.variants.id(upd._id) : null;
-      const vByIdx = product.variants.find(x => String(x.fromQty) === String(upd.fromQty));
-      const target = v || vByIdx;
-      if (target) {
-        target.basePrice  = upd.basePrice;
-        target.finalPrice = upd.finalPrice;
+      if (variantDiffPercent !== undefined) grade.variantDiffPercent = Number(variantDiffPercent);
+
+      updatedVariants = computeGradeVariants(product, grade, {
+        highestBasePrice:   Number(highestBasePrice),
+        variantDiffPercent: grade.variantDiffPercent,
+      });
+
+      // Apply back to grade variants
+      for (const upd of updatedVariants) {
+        const v = grade.variants.find(x => String(x.fromQty) === String(upd.fromQty));
+        if (v) { v.basePrice = upd.basePrice; v.finalPrice = upd.finalPrice; }
       }
-    }
+      // Store lowest unit price snapshot on grade
+      highestUpdated = getHighestVariant(updatedVariants);
+      grade.lowestUnitPrice = getLowestUnitPrice(updatedVariants);
 
-    // Also update legacy top-level fields for backward compat
-    const highestUpdated = getHighestVariant(updatedVariants);
-    product.basePrice      = Number(highestBasePrice);
-    product.finalPrice     = highestUpdated?.finalPrice || 0;
-    product.currentPrice   = getLowestUnitPrice(updatedVariants) || highestUpdated?.finalPrice || 0;
-    product.priceUpdatedAt = new Date();
+      // Update top-level currentPrice = cheapest rate across all active grades
+      product.currentPrice   = getLowestUnitPriceAcrossGrades(product.grades) || 0;
+      product.priceUpdatedAt = new Date();
+    } else {
+      // ── Standard (non-graded) update ────────────────────────
+      const prevHighestVariant = getHighestVariant(product.variants || []);
+      prevPrice = prevHighestVariant?.finalPrice || product.currentPrice;
+
+      if (variantDiffPercent !== undefined) product.variantDiffPercent = Number(variantDiffPercent);
+
+      updatedVariants = calculateVariantPricing(product, {
+        highestBasePrice:   Number(highestBasePrice),
+        variantDiffPercent: product.variantDiffPercent,
+      });
+
+      for (const upd of updatedVariants) {
+        const v = product.variants.id ? product.variants.id(upd._id) : null;
+        const vByIdx = product.variants.find(x => String(x.fromQty) === String(upd.fromQty));
+        const target = v || vByIdx;
+        if (target) { target.basePrice = upd.basePrice; target.finalPrice = upd.finalPrice; }
+      }
+
+      highestUpdated = getHighestVariant(updatedVariants);
+      product.basePrice      = Number(highestBasePrice);
+      product.finalPrice     = highestUpdated?.finalPrice || 0;
+      product.currentPrice   = getLowestUnitPrice(updatedVariants) || highestUpdated?.finalPrice || 0;
+      product.priceUpdatedAt = new Date();
+    }
 
     await product.save();
 
@@ -2662,12 +2735,15 @@ const updateDailyPrice = async (req, res) => {
           previousPrice:   prevPrice,
           updatedPrice:    highestUpdated?.finalPrice || 0,
           basePrice:       Number(highestBasePrice),
-          variantDiffPct:  product.variantDiffPercent,
+          variantDiffPct:  gradeKey
+            ? (product.grades.find(g => g.gradeKey === gradeKey)?.variantDiffPercent || 2)
+            : product.variantDiffPercent,
           updatedBy:       req.user._id,
           updatedByName:   req.user.name || req.user.email,
           updatedByRole:   isAdmin ? 'superAdmin' : 'sellerAdmin',
           source:          'manual',
           note,
+          ...(gradeKey ? { gradeKey } : {}),
         });
         await KoyambeduSettings.touchPriceUpdate(req.user._id, req.user.name || req.user.email);
       } catch (_) {}
@@ -2718,26 +2794,45 @@ const bulkUpdateDailyPrice = async (req, res) => {
           }
         }
 
-        const prevHighestVariant = getHighestVariant(product.variants || []);
-        const prevPrice = prevHighestVariant?.finalPrice || product.currentPrice;
+        let updatedVariants, highestUpdated, prevPrice;
 
-        if (u.variantDiffPercent !== undefined) product.variantDiffPercent = Number(u.variantDiffPercent);
-
-        const updatedVariants = calculateVariantPricing(product, {
-          highestBasePrice:   Number(u.highestBasePrice),
-          variantDiffPercent: product.variantDiffPercent,
-        });
-
-        for (const upd of updatedVariants) {
-          const vByIdx = product.variants.find(x => String(x.fromQty) === String(upd.fromQty));
-          if (vByIdx) { vByIdx.basePrice = upd.basePrice; vByIdx.finalPrice = upd.finalPrice; }
+        if (product.gradesEnabled && u.gradeKey) {
+          const gradeIdx = product.grades.findIndex(g => g.gradeKey === u.gradeKey);
+          if (gradeIdx === -1) { results.push({ productId: u.productId, error: 'grade not found' }); continue; }
+          const grade = product.grades[gradeIdx];
+          const prevHighest = getHighestVariant(grade.variants || []);
+          prevPrice = prevHighest?.finalPrice || 0;
+          if (u.variantDiffPercent !== undefined) grade.variantDiffPercent = Number(u.variantDiffPercent);
+          updatedVariants = computeGradeVariants(product, grade, {
+            highestBasePrice:   Number(u.highestBasePrice),
+            variantDiffPercent: grade.variantDiffPercent,
+          });
+          for (const upd of updatedVariants) {
+            const v = grade.variants.find(x => String(x.fromQty) === String(upd.fromQty));
+            if (v) { v.basePrice = upd.basePrice; v.finalPrice = upd.finalPrice; }
+          }
+          highestUpdated = getHighestVariant(updatedVariants);
+          grade.lowestUnitPrice = getLowestUnitPrice(updatedVariants);
+          product.currentPrice   = getLowestUnitPriceAcrossGrades(product.grades) || 0;
+          product.priceUpdatedAt = new Date();
+        } else {
+          const prevHighestVariant = getHighestVariant(product.variants || []);
+          prevPrice = prevHighestVariant?.finalPrice || product.currentPrice;
+          if (u.variantDiffPercent !== undefined) product.variantDiffPercent = Number(u.variantDiffPercent);
+          updatedVariants = calculateVariantPricing(product, {
+            highestBasePrice:   Number(u.highestBasePrice),
+            variantDiffPercent: product.variantDiffPercent,
+          });
+          for (const upd of updatedVariants) {
+            const vByIdx = product.variants.find(x => String(x.fromQty) === String(upd.fromQty));
+            if (vByIdx) { vByIdx.basePrice = upd.basePrice; vByIdx.finalPrice = upd.finalPrice; }
+          }
+          highestUpdated = getHighestVariant(updatedVariants);
+          product.basePrice      = Number(u.highestBasePrice);
+          product.finalPrice     = highestUpdated?.finalPrice || 0;
+          product.currentPrice   = getLowestUnitPrice(updatedVariants) || highestUpdated?.finalPrice || 0;
+          product.priceUpdatedAt = new Date();
         }
-
-        const highestUpdated = getHighestVariant(updatedVariants);
-        product.basePrice      = Number(u.highestBasePrice);
-        product.finalPrice     = highestUpdated?.finalPrice || 0;
-        product.currentPrice   = getLowestUnitPrice(updatedVariants) || highestUpdated?.finalPrice || 0;
-        product.priceUpdatedAt = new Date();
 
         await product.save();
 
@@ -2747,10 +2842,14 @@ const bulkUpdateDailyPrice = async (req, res) => {
               product: product._id, seller: product.seller,
               productName: product.name, productCode: product.productCode,
               previousPrice: prevPrice, updatedPrice: highestUpdated?.finalPrice || 0,
-              basePrice: Number(u.highestBasePrice), variantDiffPct: product.variantDiffPercent,
+              basePrice: Number(u.highestBasePrice),
+              variantDiffPct: u.gradeKey
+                ? (product.grades.find(g => g.gradeKey === u.gradeKey)?.variantDiffPercent || 2)
+                : product.variantDiffPercent,
               updatedBy: req.user._id, updatedByName: req.user.name || req.user.email,
               updatedByRole: isAdmin ? 'superAdmin' : 'sellerAdmin',
               source: 'bulk_update',
+              ...(u.gradeKey ? { gradeKey: u.gradeKey } : {}),
             });
             await KoyambeduSettings.touchPriceUpdate(req.user._id, req.user.name || req.user.email);
           } catch (_) {}

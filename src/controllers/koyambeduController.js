@@ -1700,6 +1700,8 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
     procurementChargePercent,
     platformChargePercent,
     logisticsChargePercent,
+    // Grade system
+    gradesEnabled, grades,
     // Legacy fallback (single-price products)
     currentPrice, minQty, maxQty, qtyStep,
   } = body;
@@ -1711,6 +1713,34 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
   const category = await KoyambeduCategory.findOne({ _id: categoryId, isActive: true });
   if (!category) throw Object.assign(new Error('Invalid or inactive category'), { statusCode: 400 });
 
+  const procPct = procurementChargePercent != null ? Number(procurementChargePercent) : 0;
+  const platPct = Number(platformChargePercent)  || 10;
+  const logPct  = Number(logisticsChargePercent) || 10;
+
+  // ── Grade mode ────────────────────────────────────────────────────────────
+  if (gradesEnabled && grades && Array.isArray(grades) && grades.length > 0) {
+    const processedGrades = _processGradeVariants(grades, procPct, platPct, logPct);
+    const derivedCurrentPrice = getLowestUnitPriceAcrossGrades(processedGrades) || 0;
+    return KoyambeduProduct.create({
+      seller: seller._id, category: category._id,
+      name, nameTamil, description,
+      unit: unit || 'kg',
+      minQty: minQty || 0.5, maxQty: maxQty || null,
+      qtyStep: qtyStep || 0.5,
+      weightKg: weightKg != null ? Number(weightKg) : (unit === 'g' ? 0.001 : 1),
+      currentPrice: derivedCurrentPrice,
+      gradesEnabled: true, grades: processedGrades,
+      procurementChargePercent: procPct, platformChargePercent: platPct, logisticsChargePercent: logPct,
+      stockQty: stockQty || 0,
+      freshArrivalTime: freshArrivalTime || '',
+      freshArrivalDate: freshArrivalTime ? new Date() : undefined,
+      isSameDay: isSameDay !== false, isNextDay: isNextDay !== false,
+      sameDayCutoff: sameDayCutoff || seller.sameDayCutoff || '10:00',
+      badges: badges || [], tags: tags || [], images: body.images || [],
+      approvalStatus: opts.approvalStatus || 'approved',
+    });
+  }
+
   // ── Variant mode ──────────────────────────────────────────────────────────
   let processedVariants = [];
   let derivedCurrentPrice = currentPrice != null ? Number(currentPrice) : null;
@@ -1718,16 +1748,10 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
   let derivedMaxQty = maxQty || 50;
 
   if (variants && Array.isArray(variants) && variants.length > 0) {
-    // Validate + compute finalPrice for each variant
-    const procPct = procurementChargePercent != null ? Number(procurementChargePercent) : 0;
-    const platPct = Number(platformChargePercent)    || 10;
-    const logPct  = Number(logisticsChargePercent)   || 10;
-
     const total = Math.min(variants.length, 4);
     for (let i = 0; i < total; i++) {
       const v = variants[i];
       const isLast = i === total - 1;
-      // Last variant may have empty toQty → open-ended tier (no upper limit)
       if (!v.basePrice || !v.fromQty || (!v.toQty && !isLast)) {
         throw Object.assign(new Error(`Variant ${i + 1}: basePrice and fromQty are required${isLast ? '' : ', toQty also required for non-last tiers'}`), { statusCode: 400 });
       }
@@ -1735,30 +1759,24 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
       if (toQty !== null && Number(v.fromQty) >= toQty) {
         throw Object.assign(new Error(`Variant ${i + 1}: fromQty must be less than toQty`), { statusCode: 400 });
       }
-      const fp = calcVariantFinalPrice(v.basePrice, procPct, platPct, logPct);
       processedVariants.push({
         basePrice:  Number(v.basePrice),
         fromQty:    Number(v.fromQty),
         toQty,
-        finalPrice: fp,
+        finalPrice: calcVariantFinalPrice(v.basePrice, procPct, platPct, logPct),
       });
     }
-
-    // Validate no overlapping ranges (skip check when previous toQty is null — open-ended)
     for (let i = 1; i < processedVariants.length; i++) {
       const prevToQty = processedVariants[i - 1].toQty;
       if (prevToQty !== null && processedVariants[i].fromQty <= prevToQty) {
         throw Object.assign(new Error(`Variant ${i + 1}: qty range overlaps with previous variant`), { statusCode: 400 });
       }
     }
-
-    // Derive product-level fields from variants
-    const finalPrices = processedVariants.map(v => v.finalPrice);
-    derivedCurrentPrice = Math.min(...finalPrices);
+    derivedCurrentPrice = Math.min(...processedVariants.map(v => v.finalPrice));
     derivedMinQty = processedVariants[0].fromQty;
     derivedMaxQty = processedVariants[processedVariants.length - 1].toQty || null;
   } else if (derivedCurrentPrice == null) {
-    throw Object.assign(new Error('Either variants or currentPrice is required'), { statusCode: 400 });
+    throw Object.assign(new Error('Either variants, grades, or currentPrice is required'), { statusCode: 400 });
   }
 
   return KoyambeduProduct.create({
@@ -1772,9 +1790,9 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
     weightKg:  weightKg  != null ? Number(weightKg) : (unit === 'g' ? 0.001 : 1),
     currentPrice: derivedCurrentPrice,
     variants:     processedVariants,
-    procurementChargePercent: procurementChargePercent != null ? Number(procurementChargePercent) : 0,
-    platformChargePercent:    Number(platformChargePercent)    || 10,
-    logisticsChargePercent:   Number(logisticsChargePercent)   || 10,
+    procurementChargePercent: procPct,
+    platformChargePercent:    platPct,
+    logisticsChargePercent:   logPct,
     stockQty:     stockQty || 0,
     freshArrivalTime: freshArrivalTime || '',
     freshArrivalDate: freshArrivalTime ? new Date() : undefined,
@@ -1851,6 +1869,26 @@ const adminGetAllProducts = async (req, res) => {
   res.json({ success: true, products });
 };
 
+// Helper: process grade variants (used in admin create/update/approve-edit)
+const _processGradeVariants = (grades, procPct, platPct, logPct) =>
+  (grades || []).map(g => {
+    const processed = (g.variants || []).map(v => ({
+      basePrice:  Number(v.basePrice),
+      fromQty:    Number(v.fromQty),
+      toQty:      (v.toQty !== '' && v.toQty != null) ? Number(v.toQty) : null,
+      finalPrice: calcVariantFinalPrice(v.basePrice, procPct, platPct, logPct),
+    }));
+    const prices = processed.filter(v => v.finalPrice > 0).map(v => v.finalPrice);
+    return {
+      gradeKey:           g.gradeKey,
+      gradeName:          g.gradeName || '',
+      isActive:           g.isActive !== false,
+      variants:           processed,
+      variantDiffPercent: g.variantDiffPercent != null ? Number(g.variantDiffPercent) : 2,
+      lowestUnitPrice:    prices.length ? Math.min(...prices) : 0,
+    };
+  });
+
 /** PUT /api/koyambedu/admin/products/:productId — admin edits any product */
 const adminUpdateProduct = async (req, res) => {
   const product = await KoyambeduProduct.findById(req.params.productId);
@@ -1865,20 +1903,36 @@ const adminUpdateProduct = async (req, res) => {
     if (req.body[k] !== undefined) product[k] = req.body[k];
   }
 
-  // Variant update
-  if (req.body.variants && Array.isArray(req.body.variants) && req.body.variants.length > 0) {
-    const _procRaw = req.body.procurementChargePercent ?? product.procurementChargePercent;
-    const procPct = _procRaw != null ? Number(_procRaw) : 0;
-    const platPct = Number(req.body.platformChargePercent    ?? product.platformChargePercent)    || 10;
-    const logPct  = Number(req.body.logisticsChargePercent   ?? product.logisticsChargePercent)   || 10;
+  // ── Charge percents (used by both variant + grade paths) ──────────────
+  const _procRaw = req.body.procurementChargePercent ?? product.procurementChargePercent;
+  const procPct = _procRaw != null ? Number(_procRaw) : 0;
+  const platPct = Number(req.body.platformChargePercent  ?? product.platformChargePercent)  || 10;
+  const logPct  = Number(req.body.logisticsChargePercent ?? product.logisticsChargePercent) || 10;
+
+  // ── Grade system ───────────────────────────────────────────────────────
+  if (req.body.gradesEnabled !== undefined) product.gradesEnabled = !!req.body.gradesEnabled;
+
+  if (req.body.grades && Array.isArray(req.body.grades)) {
+    product.procurementChargePercent = procPct;
+    product.platformChargePercent    = platPct;
+    product.logisticsChargePercent   = logPct;
+    product.grades = _processGradeVariants(req.body.grades, procPct, platPct, logPct);
+    product.markModified('grades');
+    if (product.gradesEnabled) {
+      product.currentPrice = getLowestUnitPriceAcrossGrades(product.grades) || 0;
+      product.priceUpdatedAt = new Date();
+    }
+  }
+
+  // ── Standard variant update (non-graded) ──────────────────────────────
+  if (!req.body.gradesEnabled && req.body.variants && Array.isArray(req.body.variants) && req.body.variants.length > 0) {
     const allVars = req.body.variants.slice(0, 4);
-    const processed = allVars.map((v, i) => ({
+    const processed = allVars.map(v => ({
       basePrice:  Number(v.basePrice),
       fromQty:    Number(v.fromQty),
-      toQty:      (v.toQty !== '' && v.toQty != null) ? Number(v.toQty) : null, // null = open-ended last tier
+      toQty:      (v.toQty !== '' && v.toQty != null) ? Number(v.toQty) : null,
       finalPrice: calcVariantFinalPrice(v.basePrice, procPct, platPct, logPct),
     }));
-    // Validate no overlapping ranges
     for (let i = 1; i < processed.length; i++) {
       const prevToQty = processed[i - 1].toQty;
       if (prevToQty !== null && processed[i].fromQty <= prevToQty) {
@@ -1893,7 +1947,7 @@ const adminUpdateProduct = async (req, res) => {
     product.minQty = processed[0].fromQty;
     product.maxQty = processed[processed.length - 1].toQty || null;
     product.priceUpdatedAt = new Date();
-  } else if (req.body.currentPrice !== undefined) {
+  } else if (!req.body.grades && req.body.currentPrice !== undefined) {
     product.currentPrice = Number(req.body.currentPrice);
     product.priceUpdatedAt = new Date();
   }
@@ -1993,12 +2047,28 @@ const adminApproveProductEdit = async (req, res) => {
     if (edit[k] !== undefined) product[k] = edit[k];
   }
 
-  // Apply variants (with recalculation)
-  if (edit.variants && Array.isArray(edit.variants) && edit.variants.length > 0) {
-    const _procRaw2 = edit.procurementChargePercent ?? product.procurementChargePercent;
-    const procPct = _procRaw2 != null ? Number(_procRaw2) : 0;
-    const platPct = Number(edit.platformChargePercent    ?? product.platformChargePercent)    || 10;
-    const logPct  = Number(edit.logisticsChargePercent   ?? product.logisticsChargePercent)   || 10;
+  // Resolve charge percents (used by both paths)
+  const _procRaw2 = edit.procurementChargePercent ?? product.procurementChargePercent;
+  const procPct = _procRaw2 != null ? Number(_procRaw2) : 0;
+  const platPct = Number(edit.platformChargePercent  ?? product.platformChargePercent)  || 10;
+  const logPct  = Number(edit.logisticsChargePercent ?? product.logisticsChargePercent) || 10;
+
+  // Apply grade system fields
+  if (edit.gradesEnabled !== undefined) product.gradesEnabled = !!edit.gradesEnabled;
+  if (edit.grades && Array.isArray(edit.grades)) {
+    product.grades = _processGradeVariants(edit.grades, procPct, platPct, logPct);
+    product.markModified('grades');
+    product.procurementChargePercent = procPct;
+    product.platformChargePercent    = platPct;
+    product.logisticsChargePercent   = logPct;
+    if (product.gradesEnabled) {
+      product.currentPrice   = getLowestUnitPriceAcrossGrades(product.grades) || 0;
+      product.priceUpdatedAt = new Date();
+    }
+  }
+
+  // Apply variants (with recalculation) — non-graded path
+  if (!edit.gradesEnabled && edit.variants && Array.isArray(edit.variants) && edit.variants.length > 0) {
     const processed = edit.variants.slice(0, 4).map(v => ({
       basePrice:  Number(v.basePrice),
       fromQty:    Number(v.fromQty),
@@ -2073,6 +2143,7 @@ const sellerAdminUpdateProduct = async (req, res) => {
     'name', 'nameTamil', 'unit', 'description', 'badges',
     'categoryId', 'weightKg', 'images',
     'variants', 'procurementChargePercent', 'platformChargePercent', 'logisticsChargePercent',
+    'gradesEnabled', 'grades',
   ];
   const pendingChanges = {};
   for (const k of catalogKeys) {

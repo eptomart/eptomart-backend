@@ -6,6 +6,7 @@ const express  = require('express');
 const router   = express.Router();
 const ctrl     = require('../controllers/koyambeduController');
 const schedCtrl = require('../controllers/koyambeduScheduleController');
+const devCtrl   = require('../controllers/koyambeduDevSettingsController');
 const { protect, optionalAuth } = require('../middleware/auth');
 const { uploadKoyambedu } = require('../config/cloudinary');
 const { protectAdmin, protectSuperAdmin } = require('../middleware/adminAuth');
@@ -28,6 +29,18 @@ const protectSellerAdmin = [protect, async (req, res, next) => {
   req.kbdSellerAdmin = sa;
   next();
 }];
+
+// ══════════════════════════════════════════════
+// DEV SETTINGS — public read, superAdmin write
+// ══════════════════════════════════════════════
+// Public: checkout page reads this to decide whether to show test buttons
+router.get('/dev-settings/payment-test-mode',               devCtrl.getPaymentTestModePublic);
+// SuperAdmin: full status + audit log
+router.get('/admin/dev-settings/payment-test-mode',         protectSuperAdmin, devCtrl.getPaymentTestModeAdmin);
+// SuperAdmin: enable (body: { expiresIn: '30m'|'1h'|'2h'|'eod'|'never' })
+router.put('/admin/dev-settings/payment-test-mode/enable',  protectSuperAdmin, devCtrl.enablePaymentTestMode);
+// SuperAdmin: disable
+router.put('/admin/dev-settings/payment-test-mode/disable', protectSuperAdmin, devCtrl.disablePaymentTestMode);
 
 // ══════════════════════════════════════════════
 // PUBLIC — no auth required

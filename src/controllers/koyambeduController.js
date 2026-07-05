@@ -744,13 +744,18 @@ const verifyPayment = async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────
 // DEV-ONLY: Test payment endpoint
-// Guarded by ENABLE_TEST_PAYMENT_BUTTONS=true env var.
-// Never active in production.
+// Guarded by Super Admin-controlled paymentTestMode setting in DB.
+// Backend validates DB flag before processing — hiding the buttons
+// on the frontend is not sufficient security.
 // ─────────────────────────────────────────────────────────────────
 /** POST /api/koyambedu/orders/test-payment — DEV ONLY */
 const testPayment = async (req, res) => {
-  if (process.env.ENABLE_TEST_PAYMENT_BUTTONS !== 'true') {
-    return res.status(403).json({ success: false, message: 'Test payments are not enabled on this server.' });
+  const modeStatus = await KoyambeduSettings.checkPaymentTestMode();
+  if (!modeStatus.enabled) {
+    return res.status(403).json({
+      success: false,
+      message: 'Payment Testing is currently disabled. A Super Admin must enable it from the admin panel.',
+    });
   }
   const { orderId } = req.body;
   const order = await KoyambeduOrder.findOne({ _id: orderId, buyer: req.user._id });

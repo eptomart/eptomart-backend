@@ -5,6 +5,15 @@
 // ============================================
 const mongoose = require('mongoose');
 
+const devAuditLogSchema = new mongoose.Schema({
+  action:    { type: String, enum: ['enabled', 'disabled', 'expired'], required: true },
+  by:        { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  byName:    { type: String },
+  at:        { type: Date, default: Date.now },
+  ip:        { type: String },
+  expiresAt: { type: Date }, // only present on 'enabled' actions
+}, { _id: false });
+
 const koyambeduSettingsSchema = new mongoose.Schema({
   key: { type: String, default: 'global', unique: true },
 
@@ -12,6 +21,17 @@ const koyambeduSettingsSchema = new mongoose.Schema({
   lastProductUpdateTime: { type: Date },
   lastProductUpdateBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   lastProductUpdateByName: { type: String },
+
+  // ── Development Payment Test Mode ──────────────────────────────────
+  // Super Admin controlled — replaces ENABLE_TEST_PAYMENT_BUTTONS env var.
+  paymentTestMode: {
+    enabled:      { type: Boolean, default: false },
+    enabledBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    enabledByName:{ type: String },
+    enabledAt:    { type: Date },
+    expiresAt:    { type: Date },   // null = no expiry (manual disable only)
+    auditLog:     { type: [devAuditLogSchema], default: [] },
+  },
 
 }, { timestamps: true });
 
@@ -29,6 +49,38 @@ koyambeduSettingsSchema.statics.getGlobal = async function() {
   let doc = await this.findOne({ key: 'global' });
   if (!doc) doc = await this.create({ key: 'global' });
   return doc;
+};
+
+/**
+ * Check if payment test mode is currently active.
+ * Automatically expires the mode if expiresAt has passed.
+ * Returns { enabled, expiresAt, justExpired }
+ */
+koyambeduSettingsSchema.statics.checkPaymentTestMode = async function() {
+  const doc = await this.findOne({ key: 'global' });
+  if (!doc || !doc.paymentTestMode?.enabled) return { enabled: false };
+
+  const ptm = doc.paymentTestMode;
+
+  // Check expiry
+  if (ptm.expiresAt && new Date() > ptm.expiresAt) {
+    // Auto-expire
+    await this.findOneAndUpdate(
+      { key: 'global' },
+      {
+        'paymentTestMode.enabled':   false,
+        'paymentTestMode.expiresAt': null,
+        $push: {
+          'paymentTestMode.auditLog': {
+            action: 'expired', by: ptm.enabledBy, byName: ptm.enabledByName, at: new Date(),
+          },
+        },
+      }
+    );
+    return { enabled: false, justExpired: true };
+  }
+
+  return { enabled: true, expiresAt: ptm.expiresAt };
 };
 
 module.exports = mongoose.model('KoyambeduSettings', koyambeduSettingsSchema);

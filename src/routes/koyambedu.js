@@ -5,6 +5,7 @@
 const express  = require('express');
 const router   = express.Router();
 const ctrl     = require('../controllers/koyambeduController');
+const schedCtrl = require('../controllers/koyambeduScheduleController');
 const { protect, optionalAuth } = require('../middleware/auth');
 const { uploadKoyambedu } = require('../config/cloudinary');
 const { protectAdmin, protectSuperAdmin } = require('../middleware/adminAuth');
@@ -37,6 +38,9 @@ router.get ('/products/featured',      ctrl.getFeaturedProducts);
 router.get ('/products/:productId',             ctrl.getProductDetail);
 router.get ('/products/:productId/price-history', ctrl.getProductPriceHistory);
 router.get ('/slots',                  ctrl.getDeliverySlots);
+
+// ── Delivery Schedule (public: available slots for checkout) ──
+router.get('/schedule/available',      optionalAuth, schedCtrl.getAvailableSlots);
 
 // ══════════════════════════════════════════════
 // DELIVERY CHECK — auth optional (returns weight-based charge if logged in)
@@ -239,5 +243,15 @@ router.get  ('/admin/special-requests',              protectAdmin,       ctrl.ge
 router.patch('/admin/special-requests/:id',          protectAdmin,       ctrl.updateSpecialRequest);
 router.get  ('/seller-admin/special-requests',       protectSellerAdmin, ctrl.getSpecialRequests);
 router.patch('/seller-admin/special-requests/:id',   protectSellerAdmin, ctrl.updateSpecialRequest);
+
+// ══════════════════════════════════════════════
+// DELIVERY SCHEDULE MANAGEMENT — Super Admin only
+// ══════════════════════════════════════════════
+router.get  ('/admin/schedule/stats',                             protectSuperAdmin, schedCtrl.getScheduleStats);
+router.get  ('/admin/schedule',                                   protectSuperAdmin, schedCtrl.adminGetSchedules);
+router.post ('/admin/schedule/generate',                          protectSuperAdmin, schedCtrl.generateSchedules);
+router.patch('/admin/schedule/:id/status',                        protectSuperAdmin, schedCtrl.toggleDateStatus);
+router.patch('/admin/schedule/:id/slots/:slotKey/status',         protectSuperAdmin, schedCtrl.toggleSlotStatus);
+router.patch('/admin/schedule/:id/slots/:slotKey/capacity',       protectSuperAdmin, schedCtrl.updateSlotCapacity);
 
 module.exports = router;

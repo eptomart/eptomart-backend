@@ -386,24 +386,16 @@ const placeOrder = async (req, res) => {
     return res.status(400).json({ success: false, message: 'Please select a delivery date.' });
   }
 
-  // ── 1c. Same-day slot availability (IST) ──────────────────
-  // Cutoff: 9 AM IST. If booking after 9 AM, today's date is invalid.
+  // ── 1c. Validate slot against DB schedule (Super Admin managed) ─
+  const { validateSlotForOrder } = require('./koyambeduScheduleController');
+  const slotCheck = await validateSlotForOrder(deliveryDate, deliverySlotKey);
+  if (!slotCheck.valid) {
+    return res.status(400).json({ success: false, message: slotCheck.message });
+  }
+
   const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
   const nowIST    = new Date(Date.now() + IST_OFFSET_MS);
-  const istHour   = nowIST.getUTCHours();
-  const todayISO  = nowIST.toISOString().split('T')[0]; // YYYY-MM-DD in IST
-
-  if (deliveryDate === todayISO && istHour >= 9) {
-    return res.status(400).json({ success: false, message: 'Same-day booking is closed after 9:00 AM. Please select tomorrow.' });
-  }
-  // Slot 1 (07:00–08:59) not available for same-day if ordered at/after 04:00 AM
-  if (deliveryDate === todayISO && deliverySlotKey === 'slot1') {
-    return res.status(400).json({ success: false, message: 'Slot 1 is no longer available for same-day delivery.' });
-  }
-  // Slot 2 (09:00–11:59) not available for same-day if ordered at/after 04:00 AM
-  if (deliveryDate === todayISO && deliverySlotKey === 'slot2' && istHour >= 4) {
-    return res.status(400).json({ success: false, message: 'Slot 2 is no longer available for same-day delivery. Please choose Slot 3 or later.' });
-  }
+  const todayISO  = nowIST.toISOString().split('T')[0];
 
   // ── 2. Distance check ─────────────────────────────────────
   const distanceKm = haversineKm(

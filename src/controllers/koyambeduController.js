@@ -549,8 +549,9 @@ const placeOrder = async (req, res) => {
     if (walletDoc && walletDoc.balance !== 0) {
       const baseTotal = parseFloat((subtotal + deliveryCharge + platformFee - couponDiscount).toFixed(2));
       if (walletDoc.balance > 0) {
-        // Credit: cap at base total so final total never goes below ₹0
-        walletAdjustment = Math.min(parseFloat(walletDoc.balance.toFixed(2)), baseTotal);
+        // Credit: only available balance (total − reserved) can be applied at checkout
+        const available = parseFloat((walletDoc.balance - (walletDoc.reservedBalance || 0)).toFixed(2));
+        walletAdjustment = Math.min(Math.max(0, available), baseTotal);
       } else {
         // Debt: add full amount to recover on this order
         walletAdjustment = parseFloat(walletDoc.balance.toFixed(2));
@@ -3597,12 +3598,27 @@ const requestWalletRefund = async (req, res) => {
   }
   let wallet = await KoyambeduWallet.findOne({ user: req.user._id });
   if (!wallet) return res.status(404).json({ success: false, message: 'Wallet not found' });
-  if (wallet.balance < amount) return res.status(400).json({ success: false, message: 'Insufficient balance' });
 
-  // Check for existing pending request
-  const pending = wallet.refundRequests.find(r => r.status === 'pending');
-  if (pending) return res.status(400).json({ success: false, message: 'You already have a pending refund request' });
+  // Use available balance (total − already reserved)
+  const reserved  = wallet.reservedBalance || 0;
+  const available = wallet.balance - reserved;
+  if (amount > available) {
+    return res.status(400).json({ success: false, message: `Insufficient available balance. Available: ₹${available.toFixed(2)}` });
+  }
 
+  // Block if a pending or confirmed request already exists (funds already reserved)
+  const active = wallet.refundRequests.find(r => r.status === 'pending' || r.status === 'confirmed');
+  if (active) return res.status(400).json({ success: false, message: 'You already have an active refund request' });
+
+  // Reserve the requested amount
+  wallet.reservedBalance = reserved + amount;
+  wallet.transactions.push({
+    type:        'debit',
+    category:    'refund_requested',
+    amount,
+    balanceAfter: wallet.balance, // balance itself unchanged; only reservation increases
+    reason:      `Refund request submitted — ₹${amount} reserved`,
+  });
   wallet.refundRequests.push({ amount, bankAccountName, bankAccountNumber, bankIfsc, bankName: bankName || '' });
   await wallet.save();
   res.json({ success: true, message: 'Refund request submitted' });
@@ -3620,8 +3636,17 @@ const adminGetRefundRequests = async (req, res) => {
     .lean();
   const requests = [];
   wallets.forEach(w => {
+    const reserved  = w.reservedBalance || 0;
+    const available = w.balance - reserved;
     w.refundRequests.filter(r => r.status === status).forEach(r => {
-      requests.push({ ...r, walletId: w._id, userId: w.user, walletBalance: w.balance });
+      requests.push({
+        ...r,
+        walletId:        w._id,
+        userId:          w.user,
+        walletBalance:   w.balance,
+        reservedBalance: reserved,
+        availableBalance: Math.max(0, available),
+      });
     });
   });
   requests.sort((a, b) => new Date(b.requestedAt) - new Date(a.requestedAt));
@@ -3637,24 +3662,55 @@ const adminUpdateRefundRequest = async (req, res) => {
   const rr = wallet.refundRequests.id(requestId);
   if (!rr) return res.status(404).json({ success: false, message: 'Refund request not found' });
 
+  const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+
   if (action === 'confirm') {
+    if (rr.status !== 'pending') return res.status(400).json({ success: false, message: 'Request is not pending' });
     rr.status = 'confirmed';
+
   } else if (action === 'cancel') {
+    if (!['pending', 'confirmed'].includes(rr.status)) {
+      return res.status(400).json({ success: false, message: 'Cannot cancel a completed or already cancelled request' });
+    }
+    // Release reservation → restore available balance
+    wallet.reservedBalance = r2(Math.max(0, (wallet.reservedBalance || 0) - rr.amount));
+    wallet.transactions.push({
+      type:        'credit',
+      category:    'refund_released',
+      amount:       rr.amount,
+      balanceAfter: wallet.balance,
+      reason:       `Refund request cancelled — ₹${rr.amount} reservation released`,
+      adminBy:      req.user._id,
+      adminName:    req.user.name,
+    });
     rr.status = 'cancelled';
+    rr.processedAt = new Date();
+
   } else if (action === 'mark_refunded') {
     if (rr.status !== 'confirmed') return res.status(400).json({ success: false, message: 'Confirm the request first' });
-    // Debit wallet
     if (wallet.balance < rr.amount) return res.status(400).json({ success: false, message: 'Wallet balance insufficient for refund' });
-    wallet.balance -= rr.amount;
-    wallet.transactions.push({ type: 'debit', amount: rr.amount, reason: 'refund_paid', note: adminNote || 'Admin initiated bank transfer' });
+    // Permanently deduct balance + clear reservation
+    wallet.balance = r2(wallet.balance - rr.amount);
+    wallet.reservedBalance = r2(Math.max(0, (wallet.reservedBalance || 0) - rr.amount));
+    wallet.transactions.push({
+      type:        'debit',
+      category:    'refund_paid',
+      amount:       rr.amount,
+      balanceAfter: wallet.balance,
+      reason:      'Bank refund disbursed',
+      note:         adminNote || 'Admin initiated bank transfer',
+      adminBy:      req.user._id,
+      adminName:    req.user.name,
+    });
     rr.status = 'refunded';
     rr.processedAt = new Date();
+
   } else {
     return res.status(400).json({ success: false, message: 'Invalid action' });
   }
   if (adminNote) rr.adminNote = adminNote;
   await wallet.save();
-  res.json({ success: true, message: 'Updated' });
+  res.json({ success: true, message: 'Updated', status: rr.status });
 };
 
 /**

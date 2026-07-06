@@ -26,6 +26,8 @@ const transactionSchema = new mongoose.Schema({
       'manual_credit',          // admin manual credit
       'manual_debit',           // admin manual debit
       'refund_paid',            // bank refund disbursed
+      'refund_requested',       // refund reserved (held from available balance)
+      'refund_released',        // reservation released on cancel/reject
       'manual',                 // legacy fallback
     ],
     default: 'manual',
@@ -64,6 +66,9 @@ const walletSchema = new mongoose.Schema({
   user:     { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
   // Can be negative — represents pending debt to recover on next order
   balance:  { type: Number, default: 0 },
+  // Amount currently reserved for pending/confirmed refund requests
+  // availableBalance = balance - reservedBalance
+  reservedBalance: { type: Number, default: 0 },
   transactions:   [transactionSchema],
   refundRequests: [refundRequestSchema],
 }, { timestamps: true });
@@ -115,28 +120,34 @@ walletSchema.methods.debit = async function(amount, category = 'manual', opts = 
 
 /**
  * Apply wallet at checkout:
- * - Positive balance → debit wallet (apply discount), return positive adjustment
+ * - Positive available balance → debit wallet (apply discount), return positive adjustment
+ *   (available = balance − reservedBalance; reserved funds are never spent at checkout)
  * - Negative balance → credit wallet (recover debt), return negative adjustment
  * Returns the walletAdjustment amount (positive = customer saves, negative = customer pays extra)
  */
 walletSchema.methods.applyAtCheckout = async function(orderRef, orderId) {
-  const bal = r2(this.balance);
+  const bal      = r2(this.balance);
+  const reserved = r2(this.reservedBalance || 0);
+
   if (bal === 0) return 0;
 
   if (bal > 0) {
-    // Apply positive balance as discount
-    this.balance = 0;
+    // Only spend what is NOT reserved for refund requests
+    const available = r2(bal - reserved);
+    if (available <= 0) return 0;
+
+    this.balance = r2(bal - available); // balance now equals reservedBalance
     this.transactions.push({
       type:        'debit',
       category:    'wallet_applied',
-      amount:       bal,
+      amount:       available,
       orderId,
       orderRef,
-      balanceAfter: 0,
+      balanceAfter: this.balance,
       reason:       'Wallet credit applied at checkout',
     });
     await this.save();
-    return bal; // positive → reduces order total
+    return available; // positive → reduces order total
   } else {
     // Recover negative balance (debt)
     const debt = r2(Math.abs(bal));

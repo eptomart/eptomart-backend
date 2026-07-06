@@ -662,6 +662,33 @@ const placeOrder = async (req, res) => {
     await EptoFreshCoupon.findByIdAndUpdate(appliedCoupon._id, { $inc: { usedCount: 1 } });
   }
 
+  // ── Wallet deduction for COD orders ─────────────────────────────────────────
+  // For Razorpay/test-payment orders, wallet deduction is done in verifyPayment /
+  // testPayment AFTER payment is confirmed.  COD orders are confirmed immediately
+  // on placement, so we debit here with the walletDoc fetched above.
+  if (paymentMethod === 'cod' && walletAdjustment !== 0 && walletDoc) {
+    try {
+      if (walletAdjustment > 0) {
+        // Credit applied: customer paid less cash — debit wallet
+        await walletDoc.debit(walletAdjustment, 'wallet_applied', {
+          orderId:  order.orderId,
+          orderRef: order._id,
+          reason:   'Wallet credit applied to reduce COD order total',
+        });
+      } else {
+        // Negative balance (debt): recovered via extra charge — credit wallet back to 0
+        await walletDoc.credit(Math.abs(walletAdjustment), 'debt_recovery', {
+          orderId:  order.orderId,
+          orderRef: order._id,
+          reason:   'Wallet debt recovered via COD order payment',
+        });
+      }
+    } catch (wErr) {
+      // Non-blocking — order is already saved; log and move on
+      console.error('[KBD] Wallet deduction failed for COD order:', wErr.message);
+    }
+  }
+
   // Orders auto-proceed to procurement queue — no seller confirmation required
   setImmediate(() => _notifySellerNewOrder(order).catch(() => {}));
 

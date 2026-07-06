@@ -696,6 +696,14 @@ const verifyPayment = async (req, res) => {
   const order = await KoyambeduOrder.findOne({ _id: orderId, buyer: req.user._id });
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
+  // ── Idempotency guard ───────────────────────────────────────────────────────
+  // Razorpay may fire the success callback more than once (user refreshes, webhook
+  // retry, etc.). If the order is already marked paid we skip all side-effects and
+  // return success so the frontend can safely proceed to the confirmation page.
+  if (order.paymentStatus === 'paid') {
+    return res.json({ success: true, message: 'Payment already confirmed', orderId: order.orderId });
+  }
+
   const secret = process.env.RAZORPAY_KEY_SECRET;
   const body   = `${razorpayOrderId}|${razorpayPaymentId}`;
   const expectedSig = crypto.createHmac('sha256', secret).update(body).digest('hex');
@@ -711,31 +719,32 @@ const verifyPayment = async (req, res) => {
   order.paymentDetails.paidAt = new Date();
   await order.save();
 
-  // ── Apply wallet adjustment after successful payment ──────────────────────
-  // walletAdjustment stored in pricing: positive = credit applied, negative = debt recovered
+  // ── Apply wallet adjustment synchronously before responding ─────────────────
+  // Deduct BEFORE sending the response so the customer's wallet page shows the
+  // updated balance immediately after they land on the confirmation screen.
+  // walletAdjustment: positive = credit was applied (debit wallet), negative = debt (credit wallet)
   const walletAdj = order.pricing?.walletAdjustment || 0;
   if (walletAdj !== 0) {
-    setImmediate(async () => {
-      try {
-        let w = await KoyambeduWallet.findOne({ user: order.buyer });
-        if (!w) w = new KoyambeduWallet({ user: order.buyer, balance: 0 });
-        if (walletAdj > 0) {
-          // Positive wallet was applied as discount — debit the wallet
-          await w.debit(walletAdj, 'wallet_applied', {
-            orderId:  order.orderId,
-            orderRef: order._id,
-            reason:   'Wallet credit applied to reduce order total',
-          });
-        } else {
-          // Negative balance (debt) was added to order total — credit wallet back to zero
-          await w.credit(Math.abs(walletAdj), 'debt_recovery', {
-            orderId:  order.orderId,
-            orderRef: order._id,
-            reason:   'Pending wallet adjustment recovered in this order',
-          });
-        }
-      } catch (e) { console.error('[KBD] Wallet apply error:', e.message); }
-    });
+    try {
+      let w = await KoyambeduWallet.findOne({ user: order.buyer });
+      if (!w) w = new KoyambeduWallet({ user: order.buyer, balance: 0 });
+      if (walletAdj > 0) {
+        await w.debit(walletAdj, 'wallet_applied', {
+          orderId:  order.orderId,
+          orderRef: order._id,
+          reason:   'Wallet credit applied to reduce order total',
+        });
+      } else {
+        await w.credit(Math.abs(walletAdj), 'debt_recovery', {
+          orderId:  order.orderId,
+          orderRef: order._id,
+          reason:   'Pending wallet adjustment recovered in this order',
+        });
+      }
+    } catch (e) {
+      // Non-blocking — payment is already captured; log and continue
+      console.error('[KBD] Wallet apply error after verifyPayment:', e.message);
+    }
   }
 
   setImmediate(() => _notifySellerNewOrder(order).catch(() => {}));
@@ -762,6 +771,11 @@ const testPayment = async (req, res) => {
   const order = await KoyambeduOrder.findOne({ _id: orderId, buyer: req.user._id });
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
+  // Idempotency guard — same as verifyPayment
+  if (order.paymentStatus === 'paid') {
+    return res.json({ success: true, message: '[TEST] Payment already confirmed', orderId: order.orderId });
+  }
+
   // Mirror verifyPayment logic exactly — no signature check
   order.paymentStatus = 'paid';
   order.orderStatus   = 'pending_confirmation';
@@ -769,26 +783,24 @@ const testPayment = async (req, res) => {
   order.paymentDetails.paidAt = new Date();
   await order.save();
 
-  // Apply wallet adjustment (same as verifyPayment)
+  // Apply wallet adjustment synchronously (same as verifyPayment)
   const walletAdj = order.pricing?.walletAdjustment || 0;
   if (walletAdj !== 0) {
-    setImmediate(async () => {
-      try {
-        let w = await KoyambeduWallet.findOne({ user: order.buyer });
-        if (!w) w = new KoyambeduWallet({ user: order.buyer, balance: 0 });
-        if (walletAdj > 0) {
-          await w.debit(walletAdj, 'wallet_applied', {
-            orderId: order.orderId, orderRef: order._id,
-            reason: '[TEST] Wallet credit applied to reduce order total',
-          });
-        } else {
-          await w.credit(Math.abs(walletAdj), 'debt_recovery', {
-            orderId: order.orderId, orderRef: order._id,
-            reason: '[TEST] Pending wallet adjustment recovered in this order',
-          });
-        }
-      } catch (e) { console.error('[KBD][TEST] Wallet apply error:', e.message); }
-    });
+    try {
+      let w = await KoyambeduWallet.findOne({ user: order.buyer });
+      if (!w) w = new KoyambeduWallet({ user: order.buyer, balance: 0 });
+      if (walletAdj > 0) {
+        await w.debit(walletAdj, 'wallet_applied', {
+          orderId: order.orderId, orderRef: order._id,
+          reason: '[TEST] Wallet credit applied to reduce order total',
+        });
+      } else {
+        await w.credit(Math.abs(walletAdj), 'debt_recovery', {
+          orderId: order.orderId, orderRef: order._id,
+          reason: '[TEST] Pending wallet adjustment recovered in this order',
+        });
+      }
+    } catch (e) { console.error('[KBD][TEST] Wallet apply error:', e.message); }
   }
 
   setImmediate(() => _notifySellerNewOrder(order).catch(() => {}));

@@ -12,6 +12,14 @@ const businessSettingsSchema = new mongoose.Schema({
   state:   { type: String, default: 'Tamil Nadu' },
   city:    { type: String, default: 'Chennai' },
   pincode: { type: String, default: '600095' },
+
+  // Koyambedu Daily home hero video (admin-configurable)
+  koyambeduHeroVideo: {
+    enabled: { type: Boolean, default: false },
+    url:     { type: String, default: '' },   // mp4/webm URL (Cloudinary etc.)
+    poster:  { type: String, default: '' },   // image shown before video loads
+    caption: { type: String, default: 'Fresh from Koyambedu market — every morning' },
+  },
 }, { timestamps: true });
 
 // Always return the single settings document, creating it if missing

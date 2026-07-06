@@ -15,6 +15,13 @@ const updateSettings = async (req, res) => {
   const allowed = ['name', 'tagline', 'address', 'phone', 'email', 'website', 'gstNo', 'state', 'city', 'pincode'];
   let settings = await BusinessSettings.getSettings();
   allowed.forEach(k => { if (req.body[k] !== undefined) settings[k] = req.body[k]; });
+  // Koyambedu hero video (nested — merged field by field)
+  if (req.body.koyambeduHeroVideo && typeof req.body.koyambeduHeroVideo === 'object') {
+    settings.koyambeduHeroVideo = {
+      ...(settings.koyambeduHeroVideo?.toObject?.() || settings.koyambeduHeroVideo || {}),
+      ...req.body.koyambeduHeroVideo,
+    };
+  }
   await settings.save();
   res.json({ success: true, settings });
 };

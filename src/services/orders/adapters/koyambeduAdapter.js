@@ -107,17 +107,21 @@ function displayTotal(doc) {
 
 function toCard(doc) {
   const visible = declinesVisible(doc);
+  const walletAdj = doc.pricing?.walletAdjustment || 0;
+  // Show the pre-wallet order value so customers see the full order amount
+  const preWalletTotal = displayTotal(doc) + walletAdj;
   const card = baseCard(verticalKey, doc, {
     orderId:       doc.orderId,
     nativeStatus:  doc.orderStatus,
     paymentStatus: doc.paymentStatus,
     paymentMethod: doc.paymentMethod,
     itemCount:     itemCount(doc),
-    totalAmount:   displayTotal(doc),
+    totalAmount:   preWalletTotal,
     deliveryDate:  doc.deliveryDate,
     placedAt:      doc.placedAt || doc.createdAt,
   });
-  card.deliverySlot = doc.deliverySlot || null;
+  card.deliverySlot    = doc.deliverySlot || null;
+  card.walletAdjustment = walletAdj;          // non-zero only when wallet was used
   card.hasDeclinedItems = visible && (doc.items || []).some(it => ['declined', 'partial'].includes(it.itemStatus));
   card.refundStatus = doc.refund?.status || null;
   return card;

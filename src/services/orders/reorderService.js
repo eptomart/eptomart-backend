@@ -51,16 +51,30 @@ async function reorderKoyambedu(userId, orderId) {
       continue;
     }
 
-    // Current price (variant tier → currentPrice), same rules as updateCart
+    // ── Current price: grade-specific variants → root variants → currentPrice ──
     let unitPrice = product.currentPrice || 0;
-    if (product.variants?.length > 0) {
+    if (it.gradeKey && product.gradesEnabled && product.grades?.length > 0) {
+      // Graded product: price comes from the grade's own variant tiers
+      const grade = product.grades.find(g => g.gradeKey === it.gradeKey);
+      if (grade?.variants?.length > 0) {
+        const v = grade.variants.find(v =>
+          v.toQty ? (qty >= v.fromQty && qty <= v.toQty) : qty >= v.fromQty);
+        if (v?.finalPrice) unitPrice = v.finalPrice;
+        else unitPrice = grade.variants[grade.variants.length - 1]?.finalPrice || unitPrice;
+      }
+    } else if (product.variants?.length > 0) {
+      // Non-graded variant product: standard tier lookup
       const v = product.variants.find(v =>
-        !v.toQty ? qty >= v.fromQty : (qty >= v.fromQty && qty <= v.toQty));
+        v.toQty ? (qty >= v.fromQty && qty <= v.toQty) : qty >= v.fromQty);
       if (v?.finalPrice) unitPrice = v.finalPrice;
     }
 
     const maxQtyVal = (product.maxQty != null) ? product.maxQty : Infinity;
-    const idx = cart.items.findIndex(i => String(i.product) === String(product._id));
+    // IMPORTANT: match by product _id AND gradeKey — grades are distinct line items
+    const idx = cart.items.findIndex(i =>
+      String(i.product) === String(product._id) &&
+      (i.gradeKey || null) === (it.gradeKey || null)
+    );
     const newQty = Math.min(maxQtyVal, (idx > -1 ? Number(cart.items[idx].quantity || 0) : 0) + qty);
 
     const itemData = {
@@ -71,6 +85,8 @@ async function reorderKoyambedu(userId, orderId) {
       unit:         product.unit,
       quantity:     newQty,
       deliveryType: product.isNextDay ? 'tomorrow' : 'today',
+      gradeKey:     it.gradeKey  || undefined,
+      gradeName:    it.gradeName || undefined,
     };
     if (idx > -1) Object.assign(cart.items[idx], itemData);
     else cart.items.push(itemData);

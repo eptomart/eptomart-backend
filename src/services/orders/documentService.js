@@ -332,6 +332,7 @@ function proformaTotals(dto) {
     ['Delivery Charge (est.)', s.deliveryCharge],
     ['GST (est.)', s.gst],
     ['Coupon Discount', s.couponDiscount, true],
+    ['Wallet Credit Applied', s.walletAdjustment, true],
   ];
 }
 

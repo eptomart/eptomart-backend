@@ -51,7 +51,7 @@ const koyambeduProductSchema = new Schema({
   // in favour of each grade's own variants[] when gradesEnabled=true.
   gradesEnabled: { type: Boolean, default: false },
   grades: [{
-    gradeKey:   { type: String, enum: ['premium','mixed','economy','base'], required: true },
+    gradeKey:   { type: String, enum: ['premium','mixed','economy'], required: true },
     gradeName:  { type: String, default: '' },  // display label e.g. "Premium"
     isActive:   { type: Boolean, default: true },
     variants: [{

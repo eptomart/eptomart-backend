@@ -1724,7 +1724,7 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
 
   // ── Grade mode ────────────────────────────────────────────────────────────
   if (gradesEnabled && grades && Array.isArray(grades) && grades.length > 0) {
-    const processedGrades = _injectBaseGrade(_processGradeVariants(grades, procPct, platPct, logPct));
+    const processedGrades = _processGradeVariants(grades, procPct, platPct, logPct);
     const derivedCurrentPrice = getLowestUnitPriceAcrossGrades(processedGrades) || 0;
     return KoyambeduProduct.create({
       seller: seller._id, category: category._id,
@@ -1947,7 +1947,7 @@ const adminUpdateProduct = async (req, res) => {
     product.procurementChargePercent = procPct;
     product.platformChargePercent    = platPct;
     product.logisticsChargePercent   = logPct;
-    product.grades = _injectBaseGrade(_processGradeVariants(req.body.grades, procPct, platPct, logPct));
+    product.grades = _processGradeVariants(req.body.grades, procPct, platPct, logPct);
     product.markModified('grades');
     if (product.gradesEnabled) {
       product.currentPrice = getLowestUnitPriceAcrossGrades(product.grades) || 0;
@@ -2087,7 +2087,7 @@ const adminApproveProductEdit = async (req, res) => {
   // Apply grade system fields
   if (edit.gradesEnabled !== undefined) product.gradesEnabled = !!edit.gradesEnabled;
   if (edit.grades && Array.isArray(edit.grades)) {
-    product.grades = _injectBaseGrade(_processGradeVariants(edit.grades, procPct, platPct, logPct));
+    product.grades = _processGradeVariants(edit.grades, procPct, platPct, logPct);
     product.markModified('grades');
     product.procurementChargePercent = procPct;
     product.platformChargePercent    = platPct;

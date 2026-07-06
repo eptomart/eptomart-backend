@@ -1724,7 +1724,7 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
 
   // ── Grade mode ────────────────────────────────────────────────────────────
   if (gradesEnabled && grades && Array.isArray(grades) && grades.length > 0) {
-    const processedGrades = _processGradeVariants(grades, procPct, platPct, logPct);
+    const processedGrades = _injectBaseGrade(_processGradeVariants(grades, procPct, platPct, logPct));
     const derivedCurrentPrice = getLowestUnitPriceAcrossGrades(processedGrades) || 0;
     return KoyambeduProduct.create({
       seller: seller._id, category: category._id,
@@ -1876,23 +1876,49 @@ const adminGetAllProducts = async (req, res) => {
 
 // Helper: process grade variants (used in admin create/update/approve-edit)
 const _processGradeVariants = (grades, procPct, platPct, logPct) =>
-  (grades || []).map(g => {
-    const processed = (g.variants || []).map(v => ({
-      basePrice:  Number(v.basePrice),
-      fromQty:    Number(v.fromQty),
-      toQty:      (v.toQty !== '' && v.toQty != null) ? Number(v.toQty) : null,
-      finalPrice: calcVariantFinalPrice(v.basePrice, procPct, platPct, logPct),
-    }));
-    const prices = processed.filter(v => v.finalPrice > 0).map(v => v.finalPrice);
-    return {
-      gradeKey:           g.gradeKey,
-      gradeName:          g.gradeName || '',
-      isActive:           g.isActive !== false,
-      variants:           processed,
-      variantDiffPercent: g.variantDiffPercent != null ? Number(g.variantDiffPercent) : 2,
-      lowestUnitPrice:    prices.length ? Math.min(...prices) : 0,
-    };
-  });
+  (grades || [])
+    .filter(g => g.gradeKey !== 'base') // strip any incoming base grade — we auto-inject it below
+    .map(g => {
+      // Only include variants that have a real basePrice (guard against empty form rows)
+      const rawVariants = (g.variants || []).filter(v => v.basePrice && Number(v.basePrice) > 0 && v.fromQty);
+      const processed = rawVariants.map(v => ({
+        basePrice:  Number(v.basePrice),
+        fromQty:    Number(v.fromQty),
+        toQty:      (v.toQty !== '' && v.toQty != null) ? Number(v.toQty) : null,
+        finalPrice: calcVariantFinalPrice(v.basePrice, procPct, platPct, logPct),
+      }));
+      const prices = processed.filter(v => v.finalPrice > 0).map(v => v.finalPrice);
+      return {
+        gradeKey:           g.gradeKey,
+        gradeName:          g.gradeName || '',
+        isActive:           g.isActive !== false,
+        variants:           processed,
+        variantDiffPercent: g.variantDiffPercent != null ? Number(g.variantDiffPercent) : 2,
+        lowestUnitPrice:    prices.length ? Math.min(...prices) : 0,
+      };
+    })
+    .filter(g => g.variants.length > 0); // drop grades with no valid variants
+
+// Helper: auto-inject a hidden 'base' grade (copy of first active grade's structure).
+// The base grade is a backend-only reference used for procurement costing and
+// daily-price fallback. It must NEVER appear in any customer or admin UI.
+const _injectBaseGrade = (processedGrades) => {
+  // Find the first active grade that has real variant data
+  const source = processedGrades.find(
+    g => g.gradeKey !== 'base' && g.isActive !== false && g.variants && g.variants.some(v => v.basePrice > 0)
+  );
+  if (!source) return processedGrades; // nothing to copy from — leave as-is
+  const baseGrade = {
+    gradeKey:           'base',
+    gradeName:          'Base Grade',
+    isActive:           true,
+    variants:           source.variants.map(v => ({ ...v })),
+    variantDiffPercent: source.variantDiffPercent,
+    lowestUnitPrice:    source.lowestUnitPrice,
+  };
+  // Replace any existing base grade (handles re-saves / updates)
+  return [...processedGrades.filter(g => g.gradeKey !== 'base'), baseGrade];
+};
 
 /** PUT /api/koyambedu/admin/products/:productId — admin edits any product */
 const adminUpdateProduct = async (req, res) => {
@@ -1921,7 +1947,7 @@ const adminUpdateProduct = async (req, res) => {
     product.procurementChargePercent = procPct;
     product.platformChargePercent    = platPct;
     product.logisticsChargePercent   = logPct;
-    product.grades = _processGradeVariants(req.body.grades, procPct, platPct, logPct);
+    product.grades = _injectBaseGrade(_processGradeVariants(req.body.grades, procPct, platPct, logPct));
     product.markModified('grades');
     if (product.gradesEnabled) {
       product.currentPrice = getLowestUnitPriceAcrossGrades(product.grades) || 0;
@@ -2061,7 +2087,7 @@ const adminApproveProductEdit = async (req, res) => {
   // Apply grade system fields
   if (edit.gradesEnabled !== undefined) product.gradesEnabled = !!edit.gradesEnabled;
   if (edit.grades && Array.isArray(edit.grades)) {
-    product.grades = _processGradeVariants(edit.grades, procPct, platPct, logPct);
+    product.grades = _injectBaseGrade(_processGradeVariants(edit.grades, procPct, platPct, logPct));
     product.markModified('grades');
     product.procurementChargePercent = procPct;
     product.platformChargePercent    = platPct;
@@ -2683,8 +2709,8 @@ const getDailyPricePanel = async (req, res) => {
     // Annotate each product with derived display fields
     const annotated = products.map(p => {
       if (p.gradesEnabled && p.grades?.length > 0) {
-        // Grade-enabled: return one annotation per active grade
-        const gradeRows = p.grades.filter(g => g.isActive).map(g => ({
+        // Grade-enabled: return one annotation per active grade (skip hidden 'base' grade)
+        const gradeRows = p.grades.filter(g => g.isActive && g.gradeKey !== 'base').map(g => ({
           gradeKey:          g.gradeKey,
           gradeName:         g.gradeName || g.gradeKey,
           highestVariant:    getHighestVariant(g.variants || []),
@@ -3067,11 +3093,8 @@ const approveForecast = async (req, res) => {
 // ══════════════════════════════════════════════
 const procurementReport = async (req, res) => {
   try {
-    const { date } = req.query;
+    const { date, gradeKey } = req.query;
     const cycle = date || getProcurementCycle();
-
-    const startOfDay = new Date(`${cycle}T00:00:00.000+05:30`);
-    const endOfDay   = new Date(`${cycle}T23:59:59.999+05:30`);
 
     const orders = await KoyambeduOrder.find({
       cutoffCycle: cycle,
@@ -3079,31 +3102,60 @@ const procurementReport = async (req, res) => {
       orderStatus: { $nin: ['cancelled'] },
     }).populate('items.product', 'name unit').lean();
 
-    // Aggregate by product
+    // Aggregate by product + grade composite key
     const summary = {};
     for (const order of orders) {
       for (const item of order.items) {
-        const key = item.product?._id?.toString() || item.name;
-        if (!summary[key]) {
-          summary[key] = {
-            productId:   key,
+        // Apply grade filter if requested
+        if (gradeKey && gradeKey !== 'all' && item.gradeKey !== gradeKey) continue;
+
+        const compositeKey = item.gradeKey
+          ? `${item.product?._id?.toString() || item.name}__${item.gradeKey}`
+          : (item.product?._id?.toString() || item.name);
+
+        if (!summary[compositeKey]) {
+          summary[compositeKey] = {
+            productId:   item.product?._id?.toString() || item.name,
             productName: item.name,
-            unit:        item.unit || 'kg',
+            gradeKey:    item.gradeKey || null,
+            gradeName:   item.gradeName || null,
             unit:        item.unit || 'kg',
             totalQty:    0,
+            totalValue:  0,
             orderCount:  0,
           };
         }
-        summary[key].totalQty  += item.quantity || 0;
-        summary[key].orderCount += 1;
+        summary[compositeKey].totalQty   += item.quantity || 0;
+        summary[compositeKey].totalValue += (item.orderedPrice || item.finalPrice || 0) * (item.quantity || 0);
+        summary[compositeKey].orderCount += 1;
       }
     }
+
+    const summaryRows = Object.values(summary).sort((a, b) => {
+      const nameComp = a.productName.localeCompare(b.productName);
+      if (nameComp !== 0) return nameComp;
+      return (a.gradeKey || '').localeCompare(b.gradeKey || '');
+    });
+
+    // Grade-wise summary (aggregate across all products, grouped by grade)
+    const gradeMap = {};
+    for (const row of summaryRows) {
+      const gKey = row.gradeKey || '__none__';
+      if (!gradeMap[gKey]) {
+        gradeMap[gKey] = { gradeKey: row.gradeKey, gradeName: row.gradeName, totalQty: 0, totalValue: 0, orderCount: 0 };
+      }
+      gradeMap[gKey].totalQty   += row.totalQty;
+      gradeMap[gKey].totalValue += row.totalValue;
+      gradeMap[gKey].orderCount += row.orderCount;
+    }
+    const gradeWiseSummary = Object.values(gradeMap).filter(g => g.gradeKey);
 
     res.json({
       success: true,
       cycle,
       totalOrders: orders.length,
-      summary: Object.values(summary).sort((a, b) => a.productName.localeCompare(b.productName)),
+      summary: summaryRows,
+      gradeWiseSummary,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -3139,7 +3191,7 @@ const slotWiseReport = async (req, res) => {
       grouped[key].push({
         orderId:    order.orderId,
         buyerName:  order.buyer?.name || order.shippingAddress?.fullName,
-        items:      order.items.map(i => `${i.name} x${i.quantity}${i.unit}`).join(', '),
+        items:      order.items.map(i => `${i.name}${i.gradeKey ? ` (${i.gradeName || i.gradeKey})` : ''} x${i.quantity}${i.unit}`).join(', '),
         amount:     order.pricing?.total,
         slot:       order.deliverySlot,
       });

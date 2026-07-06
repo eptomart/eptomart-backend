@@ -127,4 +127,21 @@ const uploadKoyambedu = multer({
   },
 });
 
-module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, uploadBill, uploadKoyambedu, deleteImage };
+// Hero video storage (Koyambedu home banner) — mp4/webm up to 50MB
+const heroVideoStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'eptomart/koyambedu/hero',
+    resource_type: 'video',
+  },
+});
+const uploadHeroVideo = multer({
+  storage: heroVideoStorage,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('video/')) cb(null, true);
+    else cb(new Error('Video files only (mp4/webm)'), false);
+  },
+});
+
+module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, uploadBill, uploadKoyambedu, uploadHeroVideo, deleteImage };

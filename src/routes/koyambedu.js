@@ -153,6 +153,16 @@ router.get  ('/admin/dashboard',                  protectAdmin, ctrl.adminDashbo
 router.get  ('/admin/orders',                     protectAdmin, ctrl.adminGetOrders);
 router.get  ('/admin/orders/pending-approval',    protectSuperAdmin, ctrl.adminGetPendingApprovalOrders);
 router.patch('/admin/orders/:orderId/close',      protectSuperAdmin, ctrl.adminCloseOrder);
+
+// Hero video upload (Koyambedu home banner) — Super Admin only
+const { uploadHeroVideo } = require('../config/cloudinary');
+router.post('/admin/hero-video/upload', protectSuperAdmin, uploadHeroVideo.single('video'), (req, res) => {
+  if (!req.file?.path) return res.status(400).json({ success: false, message: 'No video uploaded' });
+  const url = req.file.path;
+  // Cloudinary derives a poster frame by swapping the extension to .jpg
+  const poster = url.replace(/\.(mp4|webm|mov|m4v)(\?.*)?$/i, '.jpg');
+  res.json({ success: true, url, poster });
+});
 router.get  ('/admin/alerts',                     protectAdmin,      ctrl.adminGetAlerts);
 router.patch('/admin/orders/:orderId/alerts/resolve', protectSuperAdmin, ctrl.adminResolveAlert);
 router.patch('/admin/orders/:orderId/status',                         protectAdmin, ctrl.adminUpdateOrderStatus);

@@ -3204,7 +3204,7 @@ const slotWiseReport = async (req, res) => {
       grouped[key].push({
         orderId:    order.orderId,
         buyerName:  order.buyer?.name || order.shippingAddress?.fullName,
-        items:      order.items.map(i => `${i.name}${i.gradeKey ? ` (${i.gradeName || i.gradeKey})` : ''} x${i.quantity}${i.unit}`).join(', '),
+        items:      order.items.map(i => `${i.name}${i.gradeKey ? ` - ${i.gradeName || i.gradeKey}` : ''} x${i.quantity}${i.unit}`).join(', '),
         amount:     order.pricing?.total,
         slot:       order.deliverySlot,
       });
@@ -3990,7 +3990,8 @@ const getOrderInvoice = async (req, res) => {
     const fill   = idx % 2 === 0 ? '#f9fafb' : '#ffffff';
     doc.rect(50, rowY, 495, 18).fill(fill);
     doc.fontSize(9).font('Helvetica').fillColor(declined ? '#9ca3af' : '#111827');
-    const name = declined ? `${item.name} (Declined)` : item.name;
+    const nameWithGrade = item.gradeKey ? `${item.name} - ${item.gradeName || item.gradeKey}` : item.name;
+    const name = declined ? `${nameWithGrade} (Declined)` : nameWithGrade;
     doc.text(name, 55, rowY + 5, { width: 240, ellipsis: true });
     doc.text(`${declined ? item.quantity : billQty} ${item.unit}`, 300, rowY + 5);
     doc.text(`₹${price.toFixed(2)}`, 360, rowY + 5);
@@ -4014,7 +4015,7 @@ const getOrderInvoice = async (req, res) => {
     (pricing.deliveryCharge || pricing.deliveryFee) > 0 ? ['Delivery Fee', `₹${(pricing.deliveryCharge || pricing.deliveryFee).toFixed(2)}`] : null,
     pricing.platformFee > 0 ? ['Platform Fee', `₹${pricing.platformFee.toFixed(2)}`] : null,
     pricing.packingLogisticsFee > 0 ? ['Packing & Logistics', `₹${pricing.packingLogisticsFee.toFixed(2)}`] : null,
-    calc.walletAdjustment > 0 ? ['Wallet Adjustment', `-₹${calc.walletAdjustment.toFixed(2)}`] : null,
+    (calc.walletAdjustment || pricing.walletAdjustment) > 0 ? ['Wallet Credit Applied', `-₹${(calc.walletAdjustment || pricing.walletAdjustment).toFixed(2)}`] : null,
   ].filter(Boolean);
   rows.forEach(([label, val]) => {
     doc.fontSize(9).font('Helvetica').fillColor('#374151').text(label, 340, rowY, { width: 115 }).text(val, 460, rowY);

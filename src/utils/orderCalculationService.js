@@ -25,7 +25,7 @@
 function calculateOrderTotals(order, opts = {}) {
   const items   = order.items || [];
   const pricing = order.pricing || {};
-  const walletAdj = Number(opts.walletAdjustment || order.calculatedPricing?.walletAdjustment || 0);
+  const walletAdj = Number(opts.walletAdjustment ?? order.calculatedPricing?.walletAdjustment ?? order.pricing?.walletAdjustment ?? 0);
 
   // ── 1. Original order value ──────────────────
   // Use itemsOrdered if available (new orders), else sum items using orderedQty/orderedPrice

@@ -610,6 +610,14 @@ const placeOrder = async (req, res) => {
     total,
   };
 
+  // ── 9. Build the order ───────────────────────────────────────────────────────
+  // For Razorpay: order status is 'payment_pending' until verifyPayment succeeds.
+  //   - Cart is NOT cleared here (preserved so customer can retry if payment fails)
+  //   - Coupon usage is NOT incremented here (done in verifyPayment after confirmation)
+  //   - Seller notification is NOT sent here (sent after payment confirmation)
+  // For COD: order is immediately placed, cart cleared, coupon incremented, seller notified.
+  const isRazorpay = paymentMethod === 'razorpay';
+
   const order = new KoyambeduOrder({
     buyer:        req.user._id,
     buyerLocation: {
@@ -631,20 +639,24 @@ const placeOrder = async (req, res) => {
     cutoffCycle:     getProcurementCycle(new Date()),
     procurementDate: new Date(getProcurementCycle(new Date())),
     paymentMethod,
-    paymentStatus:'pending',
-    orderStatus:  'placed',
+    paymentStatus: 'pending',
+    // Razorpay: hold at payment_pending until payment is verified.
+    // COD: immediately placed.
+    orderStatus:  isRazorpay ? 'payment_pending' : 'placed',
     pricing:      pricingObj,
     adminNotes:   notes || '',
-    invoices: {
+    invoices: isRazorpay ? {} : {
+      // For COD, generate proforma immediately. For Razorpay, generated in verifyPayment.
       proforma: {
         number:      `PRO-${Date.now().toString(36).toUpperCase()}`,
         generatedAt: new Date(),
         isAvailable: true,
       },
     },
-    timeline: [{
+    timeline: isRazorpay ? [] : [{
+      // For Razorpay, timeline starts in verifyPayment. For COD, record placement now.
       event:       'order_placed',
-      description: `Order placed by customer`,
+      description: 'Order placed by customer (COD)',
       actor:       { role: 'customer', userId: req.user._id, name: req.user.name || '' },
       timestamp:   new Date(),
     }],
@@ -655,42 +667,37 @@ const placeOrder = async (req, res) => {
 
   await order.save();
 
-  await KoyambeduCart.findOneAndUpdate({ user: req.user._id }, { items: [] });
+  if (!isRazorpay) {
+    // ── COD only: clear cart, increment coupon, deduct wallet, notify sellers ──
+    await KoyambeduCart.findOneAndUpdate({ user: req.user._id }, { items: [] });
 
-  // Increment coupon usage
-  if (appliedCoupon) {
-    await EptoFreshCoupon.findByIdAndUpdate(appliedCoupon._id, { $inc: { usedCount: 1 } });
-  }
-
-  // ── Wallet deduction for COD orders ─────────────────────────────────────────
-  // For Razorpay/test-payment orders, wallet deduction is done in verifyPayment /
-  // testPayment AFTER payment is confirmed.  COD orders are confirmed immediately
-  // on placement, so we debit here with the walletDoc fetched above.
-  if (paymentMethod === 'cod' && walletAdjustment !== 0 && walletDoc) {
-    try {
-      if (walletAdjustment > 0) {
-        // Credit applied: customer paid less cash — debit wallet
-        await walletDoc.debit(walletAdjustment, 'wallet_applied', {
-          orderId:  order.orderId,
-          orderRef: order._id,
-          reason:   'Wallet credit applied to reduce COD order total',
-        });
-      } else {
-        // Negative balance (debt): recovered via extra charge — credit wallet back to 0
-        await walletDoc.credit(Math.abs(walletAdjustment), 'debt_recovery', {
-          orderId:  order.orderId,
-          orderRef: order._id,
-          reason:   'Wallet debt recovered via COD order payment',
-        });
-      }
-    } catch (wErr) {
-      // Non-blocking — order is already saved; log and move on
-      console.error('[KBD] Wallet deduction failed for COD order:', wErr.message);
+    if (appliedCoupon) {
+      await EptoFreshCoupon.findByIdAndUpdate(appliedCoupon._id, { $inc: { usedCount: 1 } });
     }
-  }
 
-  // Orders auto-proceed to procurement queue — no seller confirmation required
-  setImmediate(() => _notifySellerNewOrder(order).catch(() => {}));
+    // Wallet deduction for COD orders
+    if (walletAdjustment !== 0 && walletDoc) {
+      try {
+        if (walletAdjustment > 0) {
+          await walletDoc.debit(walletAdjustment, 'wallet_applied', {
+            orderId:  order.orderId,
+            orderRef: order._id,
+            reason:   'Wallet credit applied to reduce COD order total',
+          });
+        } else {
+          await walletDoc.credit(Math.abs(walletAdjustment), 'debt_recovery', {
+            orderId:  order.orderId,
+            orderRef: order._id,
+            reason:   'Wallet debt recovered via COD order payment',
+          });
+        }
+      } catch (wErr) {
+        console.error('[KBD] Wallet deduction failed for COD order:', wErr.message);
+      }
+    }
+
+    setImmediate(() => _notifySellerNewOrder(order).catch(() => {}));
+  }
 
   res.status(201).json({ success: true, order: { _id: order._id, orderId: order.orderId, total, paymentMethod, deliveryCharge } });
 };
@@ -744,7 +751,37 @@ const verifyPayment = async (req, res) => {
   order.paymentDetails.razorpayPaymentId = razorpayPaymentId;
   order.paymentDetails.razorpaySignature = razorpaySignature;
   order.paymentDetails.paidAt = new Date();
+
+  // ── Post-payment side effects (done here, not in placeOrder, for Razorpay) ──
+  // Generate proforma invoice now that payment is confirmed
+  if (!order.invoices?.proforma?.isAvailable) {
+    order.invoices = order.invoices || {};
+    order.invoices.proforma = {
+      number:      `PRO-${Date.now().toString(36).toUpperCase()}`,
+      generatedAt: new Date(),
+      isAvailable: true,
+    };
+  }
+  // Add order_placed timeline event
+  order.timeline.push({
+    event:       'order_placed',
+    description: 'Order placed — payment confirmed',
+    actor:       { role: 'customer', userId: order.buyer, name: '' },
+    timestamp:   new Date(),
+  });
+
   await order.save();
+
+  // Clear the customer's cart (preserved during payment_pending state)
+  await KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [] });
+
+  // Increment coupon usage now that payment is confirmed
+  if (order.pricing?.couponCode) {
+    await EptoFreshCoupon.findOneAndUpdate(
+      { code: order.pricing.couponCode },
+      { $inc: { usedCount: 1 } }
+    ).catch(() => {}); // Non-blocking
+  }
 
   // ── Apply wallet adjustment synchronously before responding ─────────────────
   // Deduct BEFORE sending the response so the customer's wallet page shows the
@@ -808,7 +845,32 @@ const testPayment = async (req, res) => {
   order.orderStatus   = 'pending_confirmation';
   order.paymentDetails.razorpayPaymentId = `test_pay_${Date.now()}`;
   order.paymentDetails.paidAt = new Date();
+
+  // Generate proforma invoice if not already present
+  if (!order.invoices?.proforma?.isAvailable) {
+    order.invoices = order.invoices || {};
+    order.invoices.proforma = {
+      number:      `PRO-${Date.now().toString(36).toUpperCase()}`,
+      generatedAt: new Date(),
+      isAvailable: true,
+    };
+  }
+  order.timeline.push({
+    event:       'order_placed',
+    description: '[TEST] Order placed — test payment confirmed',
+    actor:       { role: 'customer', userId: order.buyer, name: '' },
+    timestamp:   new Date(),
+  });
   await order.save();
+
+  // Clear cart and increment coupon (same as verifyPayment)
+  await KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [] });
+  if (order.pricing?.couponCode) {
+    await EptoFreshCoupon.findOneAndUpdate(
+      { code: order.pricing.couponCode },
+      { $inc: { usedCount: 1 } }
+    ).catch(() => {});
+  }
 
   // Apply wallet adjustment synchronously (same as verifyPayment)
   const walletAdj = order.pricing?.walletAdjustment || 0;
@@ -1742,6 +1804,7 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
     badges, tags, weightKg,
     // Variant pricing
     variants,
+    variantDiffPercent,
     procurementChargePercent,
     platformChargePercent,
     logisticsChargePercent,
@@ -1835,6 +1898,7 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
     weightKg:  weightKg  != null ? Number(weightKg) : (unit === 'g' ? 0.001 : 1),
     currentPrice: derivedCurrentPrice,
     variants:     processedVariants,
+    variantDiffPercent: variantDiffPercent != null ? Number(variantDiffPercent) : 2,
     procurementChargePercent: procPct,
     platformChargePercent:    platPct,
     logisticsChargePercent:   logPct,
@@ -2014,6 +2078,9 @@ const adminUpdateProduct = async (req, res) => {
     product.procurementChargePercent = procPct;
     product.platformChargePercent    = platPct;
     product.logisticsChargePercent   = logPct;
+    if (req.body.variantDiffPercent !== undefined) {
+      product.variantDiffPercent = Number(req.body.variantDiffPercent);
+    }
     product.currentPrice = Math.min(...processed.map(v => v.finalPrice));
     product.minQty = processed[0].fromQty;
     product.maxQty = processed[processed.length - 1].toQty || null;
@@ -2150,6 +2217,9 @@ const adminApproveProductEdit = async (req, res) => {
     product.procurementChargePercent = procPct;
     product.platformChargePercent    = platPct;
     product.logisticsChargePercent   = logPct;
+    if (edit.variantDiffPercent !== undefined) {
+      product.variantDiffPercent = Number(edit.variantDiffPercent);
+    }
     product.currentPrice = Math.min(...processed.map(v => v.finalPrice));
     product.minQty = processed[0].fromQty;
     product.maxQty = processed[processed.length - 1].toQty || null;
@@ -2213,7 +2283,7 @@ const sellerAdminUpdateProduct = async (req, res) => {
   const catalogKeys = [
     'name', 'nameTamil', 'unit', 'description', 'badges',
     'categoryId', 'weightKg', 'images',
-    'variants', 'procurementChargePercent', 'platformChargePercent', 'logisticsChargePercent',
+    'variants', 'variantDiffPercent', 'procurementChargePercent', 'platformChargePercent', 'logisticsChargePercent',
     'gradesEnabled', 'grades',
   ];
   const pendingChanges = {};

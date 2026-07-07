@@ -67,13 +67,16 @@ function timelineFromStatusHistory(verticalKey, statusHistory = []) {
 }
 
 /** Canonical item row. */
-function itemRow(it, { name, image, quantity, unit, unitPrice, lineTotal, declinedQty, refundAmount, reason, variantLabel } = {}) {
+function itemRow(it, { name, image, quantity, unit, unitPrice, lineTotal, declinedQty, refundAmount, reason, variantLabel, gradeName, gradeKey } = {}) {
   return {
     productId:  it.product ? String(it.product._id || it.product) : null,
     name:       name ?? it.name ?? it.productName ?? '',
     image:      image ?? it.image ?? null,
     unit:       unit ?? it.unit ?? null,
     variantLabel: variantLabel ?? it.variantLabel ?? null,
+    // Grade fields — populated for koyambedu graded products
+    gradeName:  gradeName ?? it.gradeName ?? null,
+    gradeKey:   gradeKey  ?? it.gradeKey  ?? null,
     quantity:   Number(quantity ?? it.quantity ?? 0),
     unitPrice:  round(unitPrice),
     lineTotal:  round(lineTotal),

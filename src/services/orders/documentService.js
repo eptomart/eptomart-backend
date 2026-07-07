@@ -253,7 +253,10 @@ function itemsTable(doc, y, title, items = [], color) {
     y = ensureSpace(doc, y, 20);
     doc.rect(50, y, 495, 16).fill(idx % 2 === 0 ? '#f9fafb' : '#ffffff');
     doc.fontSize(8).font('Helvetica').fillColor('#111827');
-    doc.text(`${it.name}${it.variantLabel ? ` (${it.variantLabel})` : ''}`, 55, y + 4, { width: 235, ellipsis: true });
+    // Build display name: Product (Grade) · Variant  e.g. "Tomato (Premium) · 100–199 kg"
+    const gradePart   = it.gradeName ? ` (${it.gradeName})` : '';
+    const variantPart = it.variantLabel ? ` · ${it.variantLabel}` : '';
+    doc.text(`${it.name}${gradePart}${variantPart}`, 55, y + 4, { width: 235, ellipsis: true });
     doc.text(`${it.quantity}${it.unit ? ` ${it.unit}` : ''}`, 300, y + 4);
     doc.text(money(it.unitPrice), 370, y + 4);
     doc.text(money(it.lineTotal), 470, y + 4);
@@ -283,7 +286,8 @@ function declinedTable(doc, y, items = []) {
     y = ensureSpace(doc, y, 20);
     doc.rect(50, y, 495, 16).fill(idx % 2 === 0 ? '#fffbeb' : '#ffffff');
     doc.fontSize(8).font('Helvetica').fillColor('#111827');
-    doc.text(it.name, 55, y + 4, { width: 175, ellipsis: true });
+    const decGradePart = it.gradeName ? ` (${it.gradeName})` : '';
+    doc.text(`${it.name}${decGradePart}`, 55, y + 4, { width: 175, ellipsis: true });
     doc.text(`${it.declinedQty}${it.unit ? ` ${it.unit}` : ''}`, 240, y + 4);
     doc.text(money(it.unitPrice), 320, y + 4);
     doc.text(money(it.refundAmount), 400, y + 4);

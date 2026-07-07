@@ -70,7 +70,11 @@ function maskedDoc(doc) {
 }
 
 async function fetchList(userId, { limit = 50, from, to } = {}) {
-  const query = { buyer: userId };
+  const query = {
+    buyer: userId,
+    // Exclude orders still awaiting payment confirmation — only show paid/COD orders
+    paymentStatus: { $ne: 'pending' },
+  };
   if (from || to) {
     query.createdAt = {};
     if (from) query.createdAt.$gte = from;

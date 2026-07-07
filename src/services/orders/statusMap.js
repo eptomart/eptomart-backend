@@ -63,6 +63,7 @@ const MAPS = {
   },
 
   koyambedu: {
+    payment_pending:        'payment_pending',
     placed:                 'placed',
     pending_confirmation:   'seller_review',
     // Customers must NOT learn about declines/changes until Super Admin

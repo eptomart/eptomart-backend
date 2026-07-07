@@ -132,6 +132,7 @@ const koyambeduOrderSchema = new Schema({
   orderStatus: {
     type: String,
     enum: [
+      'payment_pending',         // razorpay order created, awaiting payment confirmation
       'placed',                  // payment received / COD placed
       'pending_confirmation',    // waiting for SA review
       'sa_review_submitted',     // SA submitted changes, waiting Super Admin approval

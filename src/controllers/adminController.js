@@ -527,7 +527,7 @@ const adminCancelWithRefund = async (req, res) => {
 };
 
 // ── Admin Account Management (superAdmin only) ───────────
-const VALID_PERMISSIONS = ['orders', 'products', 'approvals', 'sellers', 'users', 'analytics', 'categories', 'expenses', 'settlements', 'admins'];
+const VALID_PERMISSIONS = ['orders', 'products', 'approvals', 'sellers', 'users', 'analytics', 'categories', 'expenses', 'settlements', 'admins', 'koyambedu', 'uzhavar'];
 
 const listAdmins = async (req, res) => {
   const admins = await User.find({ role: { $in: ['admin', 'superAdmin'] } })

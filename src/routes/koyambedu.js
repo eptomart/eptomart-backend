@@ -137,7 +137,7 @@ router.patch('/seller-admin/sellers/:sellerId/products/:productId/toggle', prote
 router.patch('/seller-admin/sellers/:sellerId/edit-request',               protectSellerAdmin, ctrl.sellerAdminRequestEdit);
 router.get  ('/seller-admin/orders',                                       protectSellerAdmin, ctrl.sellerAdminGetOrders);
 router.get  ('/seller-admin/alerts',                                       protectSellerAdmin, ctrl.sellerAdminGetAlerts);
-router.patch('/seller-admin/orders/:orderId/status',                       protectSellerAdmin, ctrl.sellerAdminUpdateOrderStatus);
+// router.patch('/seller-admin/orders/:orderId/status', ...) — REVOKED: SA no longer allowed to change order status
 // ── SA item-level review actions ────────────────────────────────────────
 router.patch('/seller-admin/orders/:orderId/items/:itemId/confirm',        protectSellerAdmin, ctrl.sellerAdminConfirmItem);
 router.patch('/seller-admin/orders/:orderId/items/:itemId/decline',        protectSellerAdmin, ctrl.sellerAdminDeclineItem);

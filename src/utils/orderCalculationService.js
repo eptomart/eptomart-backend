@@ -49,14 +49,17 @@ function calculateOrderTotals(order, opts = {}) {
   for (const it of items) {
     const status = it.itemStatus || 'pending';
     if (status === 'declined') {
-      // Fully declined: refund all of orderedQty
+      // Fully declined: refund orderedQty at the last-known finalPrice.
+      // Using finalPrice (not orderedPrice) ensures correctness when daily price
+      // revision has already credited/debited the wallet for price changes — the
+      // math nets out exactly to what the customer originally paid.
       const qty   = Number(it.orderedQty || it.quantity || 0);
-      const price = Number(it.orderedPrice || it.finalPrice || 0);
+      const price = Number(it.finalPrice || it.orderedPrice || 0);
       declinedRefundAmount += qty * price;
     } else if (status === 'partial') {
-      // Partially declined: refund the declined portion
+      // Partially declined: refund the declined portion at last-known finalPrice
       const decQty = Number(it.declinedQty || 0);
-      const price  = Number(it.orderedPrice || it.finalPrice || 0);
+      const price  = Number(it.finalPrice || it.orderedPrice || 0);
       declinedRefundAmount += decQty * price;
     }
   }

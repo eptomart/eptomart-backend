@@ -208,6 +208,8 @@ router.patch('/admin/orders/:orderId/costs',             protectAdmin, ctrl.admi
 router.patch('/admin/orders/:orderId/partial-refund',    protectSuperAdmin, ctrl.adminPartialRefund);
 // Procurement invoice — generate final invoice with actual prices + wallet adjustment
 router.post ('/admin/orders/:id/procurement-invoice',   protectSuperAdmin, ctrl.generateProcurementInvoice);
+// Manual price revision trigger — Super Admin can force-apply daily price changes to a single order
+router.post ('/admin/orders/:orderId/apply-price-revision', protectSuperAdmin, ctrl.adminApplyPriceRevision);
 // ── Reports ───────────────────────────────────────────────────────
 router.get('/admin/reports/order-report',            protectAdmin, ctrl.adminOrderReport);
 router.get('/admin/reports/product-consolidation',   protectAdmin, ctrl.adminProductConsolidationReport);

@@ -352,6 +352,40 @@ const koyambeduOrderSchema = new Schema({
     updatedBy:          { type: Schema.Types.ObjectId, ref: 'User' },
   },
 
+  // ── DAILY PRICE REVISION (automatic market-price sync) ──────────────────
+  // Each time an admin action triggers the price revision service, it checks
+  // if today's product prices differ from the last known finalPrice on each item.
+  // If prices changed, wallet adjustments are created and item.finalPrice is updated.
+  // Idempotency: lastRevisionHash is a SHA-256 of the current prices. If it
+  // matches what was last applied, the service skips processing (prices unchanged).
+  // priceLocked = true once the Procurement/Tax invoice is generated — no further revisions.
+  dailyPriceRevision: {
+    lastRevisionHash:   { type: String, default: null },   // SHA-256 of price snapshot
+    lastAppliedAt:      { type: Date },
+    totalCreditApplied: { type: Number, default: 0 },      // cumulative wallet credits
+    totalDebitApplied:  { type: Number, default: 0 },      // cumulative wallet debits
+    priceLocked:        { type: Boolean, default: false },  // true after procurement invoice
+    lockedAt:           { type: Date },
+    revisions: [{
+      appliedAt:      { type: Date, default: Date.now },
+      triggeredBy:    String,   // 'confirm_item' | 'decline_item' | 'reduce_qty' | 'status_update' | 'manual' etc.
+      items: [{
+        productId:           { type: mongoose.Schema.Types.ObjectId, ref: 'KoyambeduProduct' },
+        name:                String,
+        gradeKey:            String,
+        qty:                 Number,
+        previousFinalPrice:  Number,
+        newFinalPrice:       Number,
+        diff:                Number,   // previousFinalPrice - newFinalPrice (+ve = price dropped)
+        walletAction:        { type: String, enum: ['credit', 'debit', 'none'] },
+        walletAmount:        Number,
+      }],
+      totalCredit:      { type: Number, default: 0 },
+      totalDebit:       { type: Number, default: 0 },
+      netWalletChange:  Number,   // totalCredit - totalDebit (+ve = net credit to customer)
+    }],
+  },
+
   // ── TIMELINE & AUDIT ─────────────────────────
   timeline: [timelineSchema],
   auditLog:  [auditLogSchema],

@@ -28,6 +28,8 @@ const transactionSchema = new mongoose.Schema({
       'refund_paid',            // bank refund disbursed
       'refund_requested',       // refund reserved (held from available balance)
       'refund_released',        // reservation released on cancel/reject
+      'price_revision_credit',  // daily price dropped after order → wallet credit
+      'price_revision_debit',   // daily price rose after order → wallet debit (debt)
       'manual',                 // legacy fallback
     ],
     default: 'manual',

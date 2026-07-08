@@ -8,6 +8,7 @@
 'use strict';
 
 const { applyCalculation, calculateOrderTotals } = require('../utils/orderCalculationService');
+const { applyPriceRevision, lockOrderPrices }   = require('../utils/priceRevisionService');
 
 const KoyambeduSeller       = require('../models/KoyambeduSeller');
 const KoyambeduSellerAdmin  = require('../models/KoyambeduSellerAdmin');
@@ -1392,6 +1393,10 @@ const adminUpdateOrderStatus = async (req, res) => {
   if (deliveryPersonPhone)order.deliveryPersonPhone = deliveryPersonPhone;
   if (status === 'dispatched') order.dispatchedAt = new Date();
   if (status === 'delivered')  order.deliveredAt  = new Date();
+
+  // Apply daily price revision before saving (idempotent — skips if prices unchanged)
+  await applyPriceRevision(order, { triggeredBy: 'status_update', actorId: req.user._id });
+
   await order.save();
 
   // Notify buyer on key status changes
@@ -1433,7 +1438,13 @@ const adminDeclineOrderItem = async (req, res) => {
   if (!item) return res.status(404).json({ success: false, message: 'Item not found' });
   if (item.itemStatus === 'declined') return res.status(400).json({ success: false, message: 'Item already declined' });
 
-  const price        = item.orderedPrice || item.finalPrice || 0;
+  // Apply market-price revision before modifying item status so that the
+  // declined refund is computed at the current (revised) finalPrice.
+  await applyPriceRevision(order, { triggeredBy: 'admin_decline_item', actorId: req.user._id });
+
+  // Use finalPrice (may have been revised above) — ensures declined refund
+  // nets out correctly with any prior wallet credits/debits from price revision.
+  const price        = item.finalPrice || item.orderedPrice || 0;
   const refundAmount = price * (item.orderedQty || item.quantity || 0);
 
   item.itemStatus  = 'declined';
@@ -3545,7 +3556,9 @@ const generateProcurementInvoice = async (req, res) => {
     const procItems = confirmedItems.map(item => {
       const actualEntry = actualItems.find(a => String(a.productId) === String(item.product));
       const actualUnitPrice = actualEntry ? r2(Number(actualEntry.actualUnitPrice)) : r2(item.orderedPrice);
-      const estimatedUnitPrice = r2(item.orderedPrice || item.finalPrice || 0);
+      // Use finalPrice (post-revision price) as the estimate so that daily price
+      // revisions don't create double-adjustments in the procurement invoice.
+      const estimatedUnitPrice = r2(item.finalPrice || item.orderedPrice || 0);
       const qty = r2(item.confirmedQty);
 
       const lineEstimated = r2(estimatedUnitPrice * qty);
@@ -3649,6 +3662,10 @@ const generateProcurementInvoice = async (req, res) => {
       generatedAt: new Date(),
       isAvailable: true,
     };
+
+    // Lock prices — no further daily price revisions can occur once the
+    // procurement/tax invoice is generated.
+    lockOrderPrices(order);
 
     await order.save();
 
@@ -4241,6 +4258,7 @@ const sellerAdminConfirmItem = async (req, res) => {
     item.actionedBy   = sa._id;
     item.actionedAt   = new Date();
 
+    await applyPriceRevision(order, { triggeredBy: 'confirm_item', actorId: req.user._id });
     applyCalculation(order);
     order.timeline.push({ event: 'item_confirmed', description: `${item.name} confirmed by Seller Admin`, actor: { role: 'seller_admin', userId: req.user._id }, timestamp: new Date() });
 
@@ -4276,7 +4294,11 @@ const sellerAdminDeclineItem = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Item is already declined' });
     }
 
-    const price        = item.orderedPrice || item.finalPrice || 0;
+    await applyPriceRevision(order, { triggeredBy: 'decline_item', actorId: req.user._id });
+
+    // Use finalPrice (revised price) so declined refund nets out with any prior
+    // price-revision wallet credits/debits.
+    const price        = item.finalPrice || item.orderedPrice || 0;
     const orderedQty   = item.orderedQty || item.quantity || 0;
     const refundAmount = price * orderedQty;
 
@@ -4352,7 +4374,9 @@ const sellerAdminReduceItemQty = async (req, res) => {
     item.actionedBy     = sa._id;
     item.actionedAt     = new Date();
 
-    const price        = item.orderedPrice || item.finalPrice || 0;
+    await applyPriceRevision(order, { triggeredBy: 'reduce_qty', actorId: req.user._id });
+
+    const price        = item.finalPrice || item.orderedPrice || 0;
     const refundAmount = price * item.declinedQty;
 
     applyCalculation(order);
@@ -4409,6 +4433,7 @@ const sellerAdminConfirmAllItems = async (req, res) => {
     }
     if (!confirmed) return res.status(400).json({ success: false, message: 'No pending items to confirm' });
 
+    await applyPriceRevision(order, { triggeredBy: 'confirm_all', actorId: req.user._id });
     applyCalculation(order);
     order.timeline.push({
       event: 'item_confirmed',
@@ -4456,6 +4481,7 @@ const sellerAdminSubmitForApproval = async (req, res) => {
       }
     }
 
+    await applyPriceRevision(order, { triggeredBy: 'submit_for_approval', actorId: req.user._id });
     applyCalculation(order);
 
     const pendingRefund = order.calculatedPricing?.declinedRefundAmount || 0;
@@ -4570,6 +4596,9 @@ const adminApproveOrderReview = async (req, res) => {
     }
 
     // ── APPROVE ──────────────────────────────────
+    // Run price revision first — ensure final prices are current before
+    // calculating declined refund and confirmed items total.
+    await applyPriceRevision(order, { triggeredBy: 'approve_review', actorId: req.user._id });
     applyCalculation(order);
     const calc            = order.calculatedPricing;
     const refundAmount    = calc.declinedRefundAmount || 0;
@@ -5167,6 +5196,42 @@ exports._generateProductCode  = generateProductCode;
 exports._DELIVERY_SLOTS       = DELIVERY_SLOTS;
 
 // ══════════════════════════════════════════════
+// ── Manual price revision trigger (Super Admin) ───────────────────────────────
+// POST /api/koyambedu/admin/orders/:orderId/apply-price-revision
+// Lets a Super Admin manually trigger a price revision for a single order.
+// Useful when prices changed mid-day and the admin wants to apply the adjustment
+// immediately rather than waiting for the next automated trigger.
+const adminApplyPriceRevision = async (req, res) => {
+  try {
+    const order = await KoyambeduOrder.findById(req.params.orderId)
+      .populate('buyer', 'name phone email');
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    const result = await applyPriceRevision(order, {
+      triggeredBy: 'manual',
+      actorId:     req.user._id,
+    });
+
+    if (result.revised) {
+      await order.save();
+      return res.json({
+        success:         true,
+        revised:         true,
+        message:         `Price revision applied. ${result.changes.length} item(s) updated.`,
+        changes:         result.changes,
+        totalCredit:     result.totalCredit,
+        totalDebit:      result.totalDebit,
+        netWalletChange: result.netWalletChange,
+        calculatedPricing: order.calculatedPricing,
+      });
+    }
+
+    res.json({ success: true, revised: false, reason: result.reason });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 module.exports = {
   // Public
   getCategories, getProducts, getFeaturedProducts, getProductDetail, getDeliverySlots,
@@ -5237,6 +5302,8 @@ module.exports = {
   adminPartialRefund,
   // Reports
   adminOrderReport, adminProductConsolidationReport, adminCashflowReport,
+  // Manual price revision trigger
+  adminApplyPriceRevision,
 };
 
 // ══════════════════════════════════════════════════════════════════

@@ -4215,7 +4215,7 @@ const getOrderInvoice = async (req, res) => {
     .lean();
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
-  // Declines are shown on customer documents only AFTER Super Admin approval
+  // Declines shown only after Super Admin approval
   const declinesApproved = order.adminApproval?.status === 'approved' ||
     ['confirmed', 'packing', 'dispatched', 'delivered', 'closed', 'cancelled'].includes(order.orderStatus);
   if (!declinesApproved && order.items) {
@@ -4223,113 +4223,271 @@ const getOrderInvoice = async (req, res) => {
     if (order.calculatedPricing) order.calculatedPricing = { ...order.calculatedPricing, declinedRefundAmount: 0, finalPayableAmount: 0, lastCalculatedAt: null };
   }
 
-  const doc = new PDFDocument({ size: 'A4', margin: 50 });
+  const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+  const fmtAmt = n => `INR ${r2(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtDate = d => new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+
+  const doc = new PDFDocument({ size: 'A4', margin: 45, info: { Title: `Invoice ${order.orderId}`, Author: 'Eptomart' } });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="Invoice-${order.orderId}.pdf"`);
   doc.pipe(res);
 
-  // ── Header ───────────────────────────────────────────────
-  doc.fontSize(20).font('Helvetica-Bold').fillColor('#065f46').text('EPTOMART', 50, 50);
-  doc.fontSize(10).font('Helvetica').fillColor('#6b7280').text('Koyambedu Daily', 50, 75);
-  doc.fontSize(16).font('Helvetica-Bold').fillColor('#111827').text('TAX INVOICE', 400, 50, { align: 'right' });
-  doc.fontSize(10).font('Helvetica').fillColor('#6b7280').text(`Invoice #: ${order.orderId}`, 400, 75, { align: 'right' });
-  const orderDate = new Date(order.placedAt || order.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-  doc.text(`Date: ${orderDate}`, 400, 90, { align: 'right' });
+  const L = 45;   // left margin
+  const R = 550;  // right edge
+  const W = R - L; // content width = 505
 
-  doc.moveTo(50, 115).lineTo(545, 115).strokeColor('#e5e7eb').lineWidth(1).stroke();
+  // ── Column positions (ISO 6-column layout) ──────────────
+  // S.No | Description | Qty | Unit | Rate | Amount
+  const C = { sno: L, desc: L+28, qty: L+248, unit: L+300, rate: L+338, amt: L+418 };
+  const CW = { sno: 26, desc: 218, qty: 50, unit: 36, rate: 78, amt: 87 };
 
-  // ── Bill To ───────────────────────────────────────────────
-  doc.moveDown(1.5);
-  doc.fontSize(10).font('Helvetica-Bold').fillColor('#374151').text('BILL TO:');
+  // ── HEADER ───────────────────────────────────────────────
+  // Brand block (left)
+  doc.fontSize(22).font('Helvetica-Bold').fillColor('#065f46').text('EPTOMART', L, 45, { width: 200 });
+  doc.fontSize(10).font('Helvetica').fillColor('#374151').text('Koyambedu Daily — Fresh from the Market', L, 72);
+  doc.fontSize(9).fillColor('#6b7280')
+    .text('GSTIN: Exempt (Fresh Produce)', L, 85)
+    .text('Email: support@eptomart.com', L, 97);
+
+  // Invoice details block (right)
+  const invoiceTitle = declinesApproved ? 'TAX INVOICE' : 'PROFORMA INVOICE';
+  doc.fontSize(18).font('Helvetica-Bold').fillColor('#065f46')
+    .text(invoiceTitle, L+200, 45, { width: 305, align: 'right' });
+  const invoiceNo = declinesApproved
+    ? (order.invoices?.tax?.number    || `TAX-${order.orderId}`)
+    : (order.invoices?.proforma?.number || `PRO-${order.orderId}`);
+  doc.fontSize(9).font('Helvetica').fillColor('#374151')
+    .text(`Invoice No.:`, L+200, 72, { width: 305, align: 'right', continued: false })
+    .text(`${invoiceNo}`, L+200, 83, { width: 305, align: 'right' })
+    .text(`Order Ref.:  ${order.orderId}`, L+200, 94, { width: 305, align: 'right' })
+    .text(`Date:  ${fmtDate(order.placedAt || order.createdAt)}`, L+200, 105, { width: 305, align: 'right' });
+
+  // Divider
+  doc.moveTo(L, 120).lineTo(R, 120).strokeColor('#065f46').lineWidth(1.5).stroke();
+
+  // ── PARTY BLOCKS ─────────────────────────────────────────
   const addr = order.shippingAddress || {};
-  doc.fontSize(10).font('Helvetica').fillColor('#374151')
-    .text(addr.fullName || order.buyer?.name || '-')
-    .text([addr.address, addr.city, addr.state, addr.pincode].filter(Boolean).join(', '))
-    .text(`Phone: ${addr.phone || order.buyer?.phone || '-'}`);
+  const bTop = 128;
+  doc.fontSize(8).font('Helvetica-Bold').fillColor('#065f46').text('BILLED TO', L, bTop);
+  doc.fontSize(9).font('Helvetica-Bold').fillColor('#111827').text(addr.fullName || order.buyer?.name || '—', L, bTop+12);
+  doc.fontSize(8.5).font('Helvetica').fillColor('#374151');
+  const addrParts = [addr.addressLine1 || addr.address, addr.addressLine2, addr.city, addr.state, addr.pincode].filter(Boolean);
+  doc.text(addrParts.join(', '), L, bTop+24, { width: 220 });
+  doc.text(`Phone: ${addr.phone || order.buyer?.phone || '—'}`, L, doc.y + 2);
+  if (order.buyer?.email) doc.text(`Email: ${order.buyer.email}`, L, doc.y + 2);
 
-  // ── Delivery info ─────────────────────────────────────────
-  if (order.deliveryDate || order.deliverySlot) {
-    doc.moveDown(0.5);
-    if (order.deliveryDate) {
-      const dDate = new Date(order.deliveryDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-      doc.fontSize(10).font('Helvetica').fillColor('#374151').text(`Delivery Date: ${dDate}`);
-    }
-    if (order.deliverySlot) {
-      doc.text(`Delivery Slot: ${order.deliverySlot}`);
-    }
-  }
-
-  // ── Items table ───────────────────────────────────────────
-  const tableTop = doc.y + 20;
-  doc.fontSize(9).font('Helvetica-Bold').fillColor('#ffffff');
-  doc.rect(50, tableTop, 495, 20).fill('#065f46');
-  doc.text('Item', 55, tableTop + 6);
-  doc.text('Qty', 300, tableTop + 6);
-  doc.text('Unit Price', 360, tableTop + 6);
-  doc.text('Amount', 460, tableTop + 6);
-
-  let rowY = tableTop + 20;
-  let subtotal = 0;
-  (order.items || []).forEach((item, idx) => {
-    // FIX (Stage C): schema field is itemStatus (not item.status), and
-    // declined items/quantities must never be counted in the subtotal.
-    const declined  = item.itemStatus === 'declined';
-    const price     = item.finalPrice || item.orderedPrice || 0;
-    // For partial declines, bill only the confirmed quantity
-    const billQty   = declined ? 0
-      : (item.confirmedQty != null && item.itemStatus !== 'pending'
-          ? item.confirmedQty : item.quantity);
-    const line      = price * billQty;
-    subtotal += line;
-    const fill   = idx % 2 === 0 ? '#f9fafb' : '#ffffff';
-    doc.rect(50, rowY, 495, 18).fill(fill);
-    doc.fontSize(9).font('Helvetica').fillColor(declined ? '#9ca3af' : '#111827');
-    const nameWithGrade = item.gradeKey ? `${item.name} - ${item.gradeName || item.gradeKey}` : item.name;
-    const name = declined ? `${nameWithGrade} (Declined)` : nameWithGrade;
-    doc.text(name, 55, rowY + 5, { width: 240, ellipsis: true });
-    doc.text(`${declined ? item.quantity : billQty} ${item.unit}`, 300, rowY + 5);
-    doc.text(`₹${price.toFixed(2)}`, 360, rowY + 5);
-    doc.text(declined ? '—' : `₹${line.toFixed(2)}`, 460, rowY + 5);
-    rowY += 18;
+  // Right block — delivery & payment
+  doc.fontSize(8).font('Helvetica-Bold').fillColor('#065f46').text('DELIVERY DETAILS', L+265, bTop, { width: 240 });
+  const delivFields = [
+    order.deliveryDate ? ['Delivery Date', fmtDate(order.deliveryDate)] : null,
+    order.deliverySlot ? ['Slot', order.deliverySlot] : null,
+    ['Payment', (order.paymentMethod || 'Online').toUpperCase()],
+    ['Status', (order.orderStatus || '').replace(/_/g, ' ').toUpperCase()],
+  ].filter(Boolean);
+  let dY = bTop + 12;
+  delivFields.forEach(([label, val]) => {
+    doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#374151').text(`${label}:`, L+265, dY, { width: 80, continued: true });
+    doc.font('Helvetica').text(`  ${val}`, { width: 160 });
+    dY += 13;
   });
 
-  // ── Totals ────────────────────────────────────────────────
-  rowY += 10;
-  doc.moveTo(50, rowY).lineTo(545, rowY).strokeColor('#e5e7eb').lineWidth(0.5).stroke();
-  rowY += 8;
+  // Thin separator
+  const secTop = Math.max(doc.y, dY) + 14;
+  doc.moveTo(L, secTop).lineTo(R, secTop).strokeColor('#e5e7eb').lineWidth(0.5).stroke();
 
-  // FIX (Stage C): after declines, calculatedPricing (central calc
-  // service) is authoritative — never the original pricing.total.
+  // ── ITEMS TABLE HEADER ────────────────────────────────────
+  const tHdr = secTop + 8;
+  const ROW_H = 18;
+  doc.rect(L, tHdr, W, ROW_H).fill('#065f46');
+  doc.fontSize(8).font('Helvetica-Bold').fillColor('#ffffff');
+  doc.text('S.No', C.sno, tHdr+5, { width: CW.sno, align: 'center' });
+  doc.text('Description / Grade', C.desc, tHdr+5, { width: CW.desc });
+  doc.text('Qty', C.qty, tHdr+5, { width: CW.qty, align: 'right' });
+  doc.text('Unit', C.unit, tHdr+5, { width: CW.unit, align: 'center' });
+  doc.text('Rate', C.rate, tHdr+5, { width: CW.rate, align: 'right' });
+  doc.text('Amount', C.amt, tHdr+5, { width: CW.amt, align: 'right' });
+
+  // ── ITEMS ROWS ────────────────────────────────────────────
+  let rowY = tHdr + ROW_H;
+  let subtotal = 0;
+  const billedItems   = [];
+  const declinedItems = [];
+
+  (order.items || []).forEach(item => {
+    const isDeclined = item.itemStatus === 'declined';
+    const price = r2(item.finalPrice || item.orderedPrice || 0);
+    const billQty = isDeclined ? 0
+      : r2(item.confirmedQty != null && item.itemStatus !== 'pending'
+          ? item.confirmedQty : (item.quantity || 0));
+    if (isDeclined) declinedItems.push({ ...item, price });
+    else { billedItems.push({ ...item, price, billQty }); subtotal += r2(price * billQty); }
+  });
+
+  billedItems.forEach((item, idx) => {
+    const lineAmt = r2(item.price * item.billQty);
+    const rH = item.gradeKey ? 26 : ROW_H;
+    const fill = idx % 2 === 0 ? '#f9fafb' : '#ffffff';
+    doc.rect(L, rowY, W, rH).fill(fill);
+    const yMid = rowY + (item.gradeKey ? 5 : 5);
+
+    doc.fontSize(8).font('Helvetica').fillColor('#6b7280')
+      .text(String(idx + 1), C.sno, yMid, { width: CW.sno, align: 'center' });
+    doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#111827')
+      .text(item.name, C.desc, yMid, { width: CW.desc });
+    if (item.gradeKey) {
+      const gradeLabel = item.gradeName || item.gradeKey;
+      doc.fontSize(7.5).font('Helvetica-Oblique').fillColor('#6b7280')
+        .text(`Grade: ${gradeLabel}`, C.desc, yMid + 12, { width: CW.desc });
+    }
+    doc.fontSize(8.5).font('Helvetica').fillColor('#111827')
+      .text(String(item.billQty), C.qty, yMid, { width: CW.qty, align: 'right' })
+      .text(item.unit || '', C.unit, yMid, { width: CW.unit, align: 'center' })
+      .text(fmtAmt(item.price), C.rate, yMid, { width: CW.rate, align: 'right' })
+      .text(fmtAmt(lineAmt), C.amt, yMid, { width: CW.amt, align: 'right' });
+    rowY += rH;
+  });
+
+  // Bottom border of items table
+  doc.rect(L, tHdr, W, rowY - tHdr).stroke('#e5e7eb').lineWidth(0.5);
+
+  // ── DECLINED ITEMS (if any, after approval) ───────────────
+  if (declinedItems.length > 0) {
+    rowY += 10;
+    doc.fontSize(8).font('Helvetica-Bold').fillColor('#dc2626')
+      .text('ITEMS DECLINED / NOT DELIVERED', L, rowY);
+    rowY += 12;
+    doc.rect(L, rowY, W, ROW_H).fill('#fef2f2');
+    doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#dc2626');
+    doc.text('S.No', C.sno, rowY+5, { width: CW.sno, align: 'center' });
+    doc.text('Product / Grade', C.desc, rowY+5, { width: CW.desc });
+    doc.text('Ordered Qty', C.qty, rowY+5, { width: CW.qty, align: 'right' });
+    doc.text('Unit', C.unit, rowY+5, { width: CW.unit, align: 'center' });
+    doc.text('Rate', C.rate, rowY+5, { width: CW.rate, align: 'right' });
+    doc.text('Refund', C.amt, rowY+5, { width: CW.amt, align: 'right' });
+    rowY += ROW_H;
+    declinedItems.forEach((item, idx) => {
+      const decQty = r2(item.declinedQty || item.orderedQty || item.quantity || 0);
+      doc.rect(L, rowY, W, ROW_H).fill(idx % 2 === 0 ? '#fff5f5' : '#ffffff');
+      doc.fontSize(8).font('Helvetica').fillColor('#374151')
+        .text(String(idx + 1), C.sno, rowY+5, { width: CW.sno, align: 'center' });
+      doc.font('Helvetica-Bold').fillColor('#dc2626')
+        .text(item.name + (item.gradeKey ? ` (${item.gradeName || item.gradeKey})` : ''), C.desc, rowY+5, { width: CW.desc });
+      doc.font('Helvetica').fillColor('#374151')
+        .text(String(decQty), C.qty, rowY+5, { width: CW.qty, align: 'right' })
+        .text(item.unit || '', C.unit, rowY+5, { width: CW.unit, align: 'center' })
+        .text(fmtAmt(item.price), C.rate, rowY+5, { width: CW.rate, align: 'right' })
+        .text(fmtAmt(r2(item.price * decQty)), C.amt, rowY+5, { width: CW.amt, align: 'right' });
+      rowY += ROW_H;
+    });
+    doc.rect(L, rowY - declinedItems.length * ROW_H - ROW_H, W, declinedItems.length * ROW_H + ROW_H).stroke('#fca5a5').lineWidth(0.5);
+  }
+
+  // ── TOTALS SECTION ────────────────────────────────────────
+  rowY += 16;
   const pricing = order.pricing || {};
   const calc    = order.calculatedPricing || {};
-  const hasCalc = calc.lastCalculatedAt && calc.finalPayableAmount > 0;
-  const declinedRefund = calc.declinedRefundAmount || 0;
-  const rows = [
-    ['Subtotal', `₹${subtotal.toFixed(2)}`],
-    (pricing.deliveryCharge || pricing.deliveryFee) > 0 ? ['Delivery Fee', `₹${(pricing.deliveryCharge || pricing.deliveryFee).toFixed(2)}`] : null,
-    pricing.platformFee > 0 ? ['Platform Fee', `₹${pricing.platformFee.toFixed(2)}`] : null,
-    pricing.packingLogisticsFee > 0 ? ['Packing & Logistics', `₹${pricing.packingLogisticsFee.toFixed(2)}`] : null,
-    (calc.walletAdjustment || pricing.walletAdjustment) > 0 ? ['Wallet Credit Applied', `-₹${(calc.walletAdjustment || pricing.walletAdjustment).toFixed(2)}`] : null,
-  ].filter(Boolean);
-  rows.forEach(([label, val]) => {
-    doc.fontSize(9).font('Helvetica').fillColor('#374151').text(label, 340, rowY, { width: 115 }).text(val, 460, rowY);
-    rowY += 14;
-  });
-  rowY += 4;
-  const grandTotal = hasCalc ? calc.finalPayableAmount : (pricing.total || subtotal);
-  doc.fontSize(11).font('Helvetica-Bold').fillColor('#065f46')
-    .text('TOTAL', 340, rowY)
-    .text(`₹${grandTotal.toFixed(2)}`, 460, rowY);
-  if (declinedRefund > 0) {
-    rowY += 18;
-    doc.fontSize(8).font('Helvetica-Oblique').fillColor('#92400e')
-      .text(`Note: ₹${declinedRefund.toFixed(2)} for declined/reduced items has been refunded and is not billed above.`, 50, rowY, { width: 495 });
+  const hasCalc = !!(calc.lastCalculatedAt || calc.finalPayableAmount);
+  const declinedRefund   = r2(calc.declinedRefundAmount || 0);
+  const walletAdj        = r2(calc.walletAdjustment || pricing.walletAdjustment || 0);
+  // Price revision wallet credits/debits (from daily price changes post-order)
+  const priceRevCredit   = r2(order.dailyPriceRevision?.totalCreditToWallet || 0);
+  const priceRevDebit    = r2(order.dailyPriceRevision?.totalDebitFromWallet || 0);
+  // Procurement price revision (from admin-generated procurement invoice)
+  const procCredit       = r2(order.procurementPricing?.totalWalletCredit || 0);
+  const procDebit        = r2(order.procurementPricing?.totalWalletDue || 0);
+
+  // Right-side totals box
+  const boxX  = L + 220;
+  const boxW  = W - 220;
+  const lblW  = 170;
+  const valW  = boxW - lblW - 12;
+  const valX  = boxX + lblW;
+
+  const drawTotalRow = (label, value, opts = {}) => {
+    const rh = opts.rh || 15;
+    if (opts.bg) doc.rect(boxX, rowY, boxW, rh).fill(opts.bg);
+    doc.fontSize(opts.bold ? 9.5 : 8.5)
+      .font(opts.bold ? 'Helvetica-Bold' : 'Helvetica')
+      .fillColor(opts.color || '#374151')
+      .text(label, boxX + 6, rowY + (rh - (opts.bold ? 9.5 : 8.5)) / 2, { width: lblW });
+    doc.fontSize(opts.bold ? 9.5 : 8.5)
+      .font(opts.bold ? 'Helvetica-Bold' : 'Helvetica')
+      .fillColor(opts.valColor || opts.color || '#374151')
+      .text(value, valX, rowY + (rh - (opts.bold ? 9.5 : 8.5)) / 2, { width: valW, align: 'right' });
+    rowY += rh;
+  };
+
+  // Section label
+  doc.fontSize(8).font('Helvetica-Bold').fillColor('#6b7280').text('PRICE SUMMARY', L, rowY);
+  rowY += 12;
+
+  drawTotalRow('Items Subtotal', fmtAmt(subtotal));
+  const delivFee = r2(calc.deliveryCharge || pricing.deliveryCharge || pricing.deliveryFee || 0);
+  if (delivFee > 0) drawTotalRow('Delivery Charge', fmtAmt(delivFee));
+  const platFee = r2(calc.platformFee || pricing.platformFee || 0);
+  if (platFee > 0) drawTotalRow('Platform Fee', fmtAmt(platFee));
+  const packFee = r2(calc.packingLogisticsFee || pricing.packingLogisticsFee || 0);
+  if (packFee > 0) drawTotalRow('Packing & Logistics', fmtAmt(packFee));
+  const coupon = r2(calc.couponDiscount || pricing.discount || 0);
+  if (coupon > 0) drawTotalRow('Coupon Discount (−)', `− ${fmtAmt(coupon)}`, { color: '#16a34a' });
+
+  // Wallet adjustment (applied at checkout)
+  if (walletAdj > 0) {
+    drawTotalRow('Wallet Credit Applied (−)', `− ${fmtAmt(walletAdj)}`, { color: '#16a34a', bg: '#f0fdf4' });
+  } else if (walletAdj < 0) {
+    drawTotalRow('Wallet Debt Recovered (+)', `+ ${fmtAmt(Math.abs(walletAdj))}`, { color: '#dc2626', bg: '#fff7ed' });
   }
 
-  // ── Footer ────────────────────────────────────────────────
-  doc.fontSize(8).font('Helvetica').fillColor('#9ca3af')
-    .text('Thank you for shopping with Eptomart — Koyambedu Daily', 50, 750, { align: 'center', width: 495 })
-    .text('This is a computer-generated invoice and does not require a signature.', 50, 762, { align: 'center', width: 495 });
+  // Daily price revision adjustments
+  if (priceRevCredit > 0) {
+    drawTotalRow('Price Revision Credit (−)', `− ${fmtAmt(priceRevCredit)}`, { color: '#16a34a', bg: '#f0fdf4' });
+  }
+  if (priceRevDebit > 0) {
+    drawTotalRow('Price Revision Debit (+)', `+ ${fmtAmt(priceRevDebit)}`, { color: '#dc2626', bg: '#fff7ed' });
+  }
+
+  // Procurement price adjustments (shown after procurement invoice is generated)
+  if (procCredit > 0) {
+    drawTotalRow('Procurement Credit (−)', `− ${fmtAmt(procCredit)}`, { color: '#16a34a', bg: '#f0fdf4' });
+  }
+  if (procDebit > 0) {
+    drawTotalRow('Procurement Debit (+)', `+ ${fmtAmt(procDebit)}`, { color: '#dc2626', bg: '#fff7ed' });
+  }
+
+  // GST line
+  drawTotalRow('GST / Tax', 'NIL (Exempt)', { color: '#6b7280' });
+
+  // Grand total
+  rowY += 2;
+  const grandTotal = hasCalc && calc.finalPayableAmount > 0 ? calc.finalPayableAmount : (pricing.total || subtotal);
+  drawTotalRow('TOTAL AMOUNT PAYABLE', fmtAmt(r2(grandTotal)),
+    { bold: true, color: '#ffffff', valColor: '#ffffff', bg: '#065f46', rh: 22 });
+
+  // Declined refund note
+  if (declinedRefund > 0) {
+    rowY += 6;
+    doc.rect(L, rowY, W, 24).fill('#fff7ed');
+    doc.fontSize(8).font('Helvetica').fillColor('#92400e')
+      .text(`Note: ${fmtAmt(declinedRefund)} for declined/reduced items has been credited to your Eptomart Wallet and is not charged above.`,
+        L + 8, rowY + 7, { width: W - 16 });
+    rowY += 24;
+  }
+
+  // ── PAYMENT CONFIRMATION ──────────────────────────────────
+  rowY += 10;
+  doc.fontSize(8).font('Helvetica-Bold').fillColor('#374151')
+    .text('PAYMENT STATUS:', L, rowY);
+  doc.fontSize(8).font('Helvetica').fillColor('#16a34a')
+    .text(`  PAID via ${(order.paymentMethod || 'Online').toUpperCase()}`, L + 85, rowY);
+
+  // ── FOOTER ───────────────────────────────────────────────
+  const footerY = 795;
+  doc.moveTo(L, footerY - 8).lineTo(R, footerY - 8).strokeColor('#e5e7eb').lineWidth(0.5).stroke();
+  doc.fontSize(7.5).font('Helvetica').fillColor('#9ca3af')
+    .text('Fresh vegetables and fruits are exempt from GST under Indian GST law (Chapter 7 & 8, Notification 2/2017-CT(Rate)).',
+      L, footerY, { width: W, align: 'center' })
+    .text('This is a computer-generated document and does not require a signature. | eptomart.com',
+      L, footerY + 11, { width: W, align: 'center' });
 
   doc.end();
 };

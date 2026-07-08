@@ -226,17 +226,18 @@ const koyambeduOrderSchema = new Schema({
   // ── PRICING — single source of truth ──────────
   // pricing: original values set at order time (never mutated)
   pricing: {
-    subtotal:         { type: Number, default: 0 },
-    deliveryCharge:   { type: Number, default: 249 },
-    deliveryDistance: { type: Number, default: 0 },
-    platformFee:      { type: Number, default: 15 },
+    subtotal:            { type: Number, default: 0 },
+    deliveryCharge:      { type: Number, default: 249 },
+    deliveryDistance:    { type: Number, default: 0 },
+    platformFee:         { type: Number, default: 15 },
     packingLogisticsFee: { type: Number, default: 0 },
-    serviceFee:       { type: Number, default: 0 },  // legacy
-    discount:         { type: Number, default: 0 },
-    couponCode:       String,
-    total:            { type: Number, default: 0 },
-    revisedTotal:     Number,
-    refundAmount:     Number,
+    serviceFee:          { type: Number, default: 0 },  // legacy
+    discount:            { type: Number, default: 0 },
+    couponCode:          String,
+    walletAdjustment:    { type: Number, default: 0 }, // wallet credits applied at checkout (positive = saves, negative = debt)
+    total:               { type: Number, default: 0 },
+    revisedTotal:        Number,
+    refundAmount:        Number,
   },
 
   // calculatedPricing: always recomputed by orderCalculationService, stored for synchronization

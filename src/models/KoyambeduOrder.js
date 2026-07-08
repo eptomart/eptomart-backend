@@ -213,7 +213,7 @@ const koyambeduOrderSchema = new Schema({
   },
 
   // Payment
-  paymentMethod: { type: String, enum: ['razorpay','cod','upi'], default: 'razorpay' },
+  paymentMethod: { type: String, enum: ['razorpay','cod','upi','wallet_full'], default: 'razorpay' },
   paymentStatus: { type: String, enum: ['pending','paid','refunded','failed'], default: 'pending' },
   paymentDetails: {
     razorpayOrderId:   String,

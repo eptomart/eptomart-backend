@@ -616,8 +616,15 @@ const placeOrder = async (req, res) => {
   //   - Cart is NOT cleared here (preserved so customer can retry if payment fails)
   //   - Coupon usage is NOT incremented here (done in verifyPayment after confirmation)
   //   - Seller notification is NOT sent here (sent after payment confirmation)
-  // For COD: order is immediately placed, cart cleared, coupon incremented, seller notified.
+  // For COD / wallet_full: order is immediately placed, cart cleared, coupon incremented,
+  //   wallet deducted, seller notified.
   const isRazorpay = paymentMethod === 'razorpay';
+  const isWalletFull = paymentMethod === 'wallet_full';
+
+  // Description label used in timeline event
+  const orderPlacedDesc = isWalletFull
+    ? 'Order placed by customer (Wallet — full payment)'
+    : 'Order placed by customer (COD)';
 
   const order = new KoyambeduOrder({
     buyer:        req.user._id,
@@ -640,14 +647,15 @@ const placeOrder = async (req, res) => {
     cutoffCycle:     getProcurementCycle(new Date()),
     procurementDate: new Date(getProcurementCycle(new Date())),
     paymentMethod,
-    paymentStatus: 'pending',
+    // wallet_full is fully paid at placement (no cash collected, wallet was debited)
+    paymentStatus: isWalletFull ? 'paid' : 'pending',
     // Razorpay: hold at payment_pending until payment is verified.
-    // COD: immediately placed.
+    // COD / wallet_full: immediately placed.
     orderStatus:  isRazorpay ? 'payment_pending' : 'placed',
     pricing:      pricingObj,
     adminNotes:   notes || '',
     invoices: isRazorpay ? {} : {
-      // For COD, generate proforma immediately. For Razorpay, generated in verifyPayment.
+      // For COD/wallet_full, generate proforma immediately. For Razorpay, generated in verifyPayment.
       proforma: {
         number:      `PRO-${Date.now().toString(36).toUpperCase()}`,
         generatedAt: new Date(),
@@ -655,9 +663,9 @@ const placeOrder = async (req, res) => {
       },
     },
     timeline: isRazorpay ? [] : [{
-      // For Razorpay, timeline starts in verifyPayment. For COD, record placement now.
+      // For Razorpay, timeline starts in verifyPayment. For others, record placement now.
       event:       'order_placed',
-      description: 'Order placed by customer (COD)',
+      description: orderPlacedDesc,
       actor:       { role: 'customer', userId: req.user._id, name: req.user.name || '' },
       timestamp:   new Date(),
     }],
@@ -669,31 +677,33 @@ const placeOrder = async (req, res) => {
   await order.save();
 
   if (!isRazorpay) {
-    // ── COD only: clear cart, increment coupon, deduct wallet, notify sellers ──
+    // ── COD / wallet_full: clear cart, increment coupon, deduct wallet, notify sellers ──
     await KoyambeduCart.findOneAndUpdate({ user: req.user._id }, { items: [] });
 
     if (appliedCoupon) {
       await EptoFreshCoupon.findByIdAndUpdate(appliedCoupon._id, { $inc: { usedCount: 1 } });
     }
 
-    // Wallet deduction for COD orders
+    // Wallet deduction for COD / wallet_full orders
     if (walletAdjustment !== 0 && walletDoc) {
       try {
         if (walletAdjustment > 0) {
           await walletDoc.debit(walletAdjustment, 'wallet_applied', {
             orderId:  order.orderId,
             orderRef: order._id,
-            reason:   'Wallet credit applied to reduce COD order total',
+            reason:   isWalletFull
+              ? 'Full order paid via wallet balance'
+              : 'Wallet credit applied to reduce COD order total',
           });
         } else {
           await walletDoc.credit(Math.abs(walletAdjustment), 'debt_recovery', {
             orderId:  order.orderId,
             orderRef: order._id,
-            reason:   'Wallet debt recovered via COD order payment',
+            reason:   'Wallet debt recovered via order payment',
           });
         }
       } catch (wErr) {
-        console.error('[KBD] Wallet deduction failed for COD order:', wErr.message);
+        console.error('[KBD] Wallet deduction failed for order:', wErr.message);
       }
     }
 

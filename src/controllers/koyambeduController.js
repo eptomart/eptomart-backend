@@ -991,55 +991,36 @@ const cancelOrder = async (req, res) => {
   }
   order.orderStatus  = 'cancelled';
   order.cancelReason = req.body.reason || 'Cancelled by buyer';
+
+  // Refund = subtotal + delivery charge − coupon discount (platform fee is NON-refundable).
+  // This single credit covers both the cash paid (Razorpay/COD) and the wallet portion
+  // that was applied at checkout — no separate wallet-adj reversal needed.
+  const refundAmt = parseFloat((
+    (order.pricing?.subtotal      || 0) +
+    (order.pricing?.deliveryCharge || 0) -
+    (order.pricing?.discount       || 0)
+  ).toFixed(2));
+
+  order.refund = order.paymentStatus === 'paid' && refundAmt > 0
+    ? { status: 'initiated', amount: refundAmt, reason: order.cancelReason, initiatedAt: new Date() }
+    : { status: 'not_applicable', amount: 0, reason: order.cancelReason };
+
   await order.save();
 
-  const total     = order.pricing?.total || 0;
-  const walletAdj = order.pricing?.walletAdjustment || 0; // positive = was deducted from wallet at checkout
-
-  if (order.paymentStatus === 'paid') {
-    if (order.paymentMethod === 'razorpay') {
-      // Gateway refund for the amount actually charged (pricing.total)
-      setImmediate(() => _refundOrder(order).catch(() => {}));
-    } else {
-      // COD — customer already paid on delivery; credit the full payment back to wallet
-      setImmediate(async () => {
-        try {
-          let wallet = await KoyambeduWallet.findOne({ user: order.buyer });
-          if (!wallet) wallet = await KoyambeduWallet.create({ user: order.buyer });
-          await wallet.credit(total, 'order_cancelled', {
-            orderId:  order.orderId,
-            orderRef: order._id,
-            reason:   `COD payment refunded — order ${order.orderId} cancelled`,
-          });
-        } catch(e) { console.error('Wallet credit failed', e); }
-      });
-    }
-  }
-
-  // Always reverse the wallet adjustment that was applied at checkout,
-  // regardless of payment status (for COD the wallet is debited at placeOrder
-  // even though paymentStatus stays 'pending' until delivery).
-  if (walletAdj !== 0) {
+  if (order.paymentStatus === 'paid' && refundAmt > 0) {
     setImmediate(async () => {
       try {
         let wallet = await KoyambeduWallet.findOne({ user: order.buyer });
         if (!wallet) wallet = await KoyambeduWallet.create({ user: order.buyer });
-        if (walletAdj > 0) {
-          // Wallet was debited at checkout (credit applied) → reverse with a credit
-          await wallet.credit(walletAdj, 'order_cancelled', {
-            orderId:  order.orderId,
-            orderRef: order._id,
-            reason:   `Wallet adjustment reversed — order ${order.orderId} cancelled`,
-          });
-        } else {
-          // Wallet was credited at checkout (debt recovered) → reverse with a debit
-          await wallet.debit(Math.abs(walletAdj), 'order_cancelled', {
-            orderId:  order.orderId,
-            orderRef: order._id,
-            reason:   `Debt recovery reversed — order ${order.orderId} cancelled`,
-          });
-        }
-      } catch(e) { console.error('Wallet adjustment reversal failed:', e); }
+        await wallet.credit(refundAmt, 'order_cancelled', {
+          orderId:  order.orderId,
+          orderRef: order._id,
+          reason:   `Order ${order.orderId} cancelled — refund (platform fee excluded)`,
+        });
+        order.refund.status = 'completed';
+        order.paymentStatus = 'refunded';
+        await order.save();
+      } catch(e) { console.error('[KBD] Cancel wallet refund failed:', e.message); }
     });
   }
 
@@ -4742,9 +4723,14 @@ const adminCancelOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Order cannot be cancelled at this stage' });
     }
 
-    // FULL order value is refundable on cancellation — even if items were
-    // partially declined earlier, the customer paid the original total.
-    const refundAmt = order.pricing?.total || 0;
+    // Refund = subtotal + delivery charge − coupon discount (platform fee NON-refundable).
+    // This single credit covers both cash paid and wallet adjustment applied at checkout —
+    // no separate wallet-adj reversal needed.
+    const refundAmt = parseFloat((
+      (order.pricing?.subtotal       || 0) +
+      (order.pricing?.deliveryCharge || 0) -
+      (order.pricing?.discount       || 0)
+    ).toFixed(2));
     const isPaid    = order.paymentStatus === 'paid';
 
     order.orderStatus  = 'cancelled';
@@ -4758,70 +4744,39 @@ const adminCancelOrder = async (req, res) => {
     order.timeline.push({
       event:       'order_cancelled',
       description: `Order cancelled by Super Admin. Reason: ${reason}` +
-        (isPaid && refundAmt > 0 ? ` Full refund of ₹${refundAmt.toFixed(2)} initiated via ${refundMethod}.` : ''),
+        (isPaid && refundAmt > 0 ? ` Refund of ₹${refundAmt.toFixed(2)} (excl. platform fee) credited to wallet.` : ''),
       actor:       { role: 'super_admin', userId: req.user._id },
       timestamp:   new Date(),
-      meta:        { refundAmount: refundAmt, refundMethod },
+      meta:        { refundAmount: refundAmt, refundMethod: 'wallet' },
     });
-    order.auditLog.push({ action: 'order_cancelled', actorRole: 'super_admin', actorId: req.user._id, timestamp: new Date(), amount: refundAmt, refundMethod, notes: reason });
+    order.auditLog.push({ action: 'order_cancelled', actorRole: 'super_admin', actorId: req.user._id, timestamp: new Date(), amount: refundAmt, refundMethod: 'wallet', notes: reason });
 
     await order.save();
 
-    // ── Process payment refund ────────────────────────────
+    // ── Always wallet refund (platform fee excluded) ──────────────────────────
+    // Covers both cash paid (Razorpay/COD) and wallet adjustment from checkout.
     const buyerRef = order.buyer?._id || order.buyer;
     if (isPaid && refundAmt > 0) {
-      if (refundMethod === 'razorpay' && order.paymentMethod === 'razorpay') {
-        setImmediate(() => _refundOrder(order).catch(() => {}));
-      } else {
-        setImmediate(async () => {
-          try {
-            let wallet = await KoyambeduWallet.findOne({ user: buyerRef });
-            if (!wallet) wallet = await KoyambeduWallet.create({ user: buyerRef });
-            await wallet.credit(refundAmt, 'order_cancelled', {
-              orderId:  order.orderId,
-              orderRef: order._id,
-              reason:   `Order ${order.orderId} cancelled — full refund`,
-            });
-            order.refund.status = 'completed';
-            order.paymentStatus = 'refunded';
-            order.auditLog.push({ action: 'refund_credited_wallet', actorRole: 'system', timestamp: new Date(), amount: refundAmt, refundMethod: 'wallet' });
-            await order.save();
-          } catch(e) { console.error('Cancel wallet refund failed', e); }
-        });
-      }
-    }
-
-    // ── Always reverse the wallet adjustment applied at checkout ──
-    // The wallet adj was applied when the order was placed (even for unpaid COD
-    // orders). It must be reversed on any cancellation.
-    const walletAdj = order.pricing?.walletAdjustment || 0;
-    if (walletAdj !== 0) {
       setImmediate(async () => {
         try {
           let wallet = await KoyambeduWallet.findOne({ user: buyerRef });
           if (!wallet) wallet = await KoyambeduWallet.create({ user: buyerRef });
-          if (walletAdj > 0) {
-            // Wallet was debited at checkout (positive credit applied) → reverse with credit
-            await wallet.credit(walletAdj, 'order_cancelled', {
-              orderId:  order.orderId,
-              orderRef: order._id,
-              reason:   `Wallet adjustment reversed — order ${order.orderId} cancelled`,
-            });
-          } else {
-            // Wallet was credited at checkout (debt recovery) → reverse with debit
-            await wallet.debit(Math.abs(walletAdj), 'order_cancelled', {
-              orderId:  order.orderId,
-              orderRef: order._id,
-              reason:   `Debt recovery reversed — order ${order.orderId} cancelled`,
-            });
-          }
-        } catch(e) { console.error('Cancel wallet adj reversal failed:', e); }
+          await wallet.credit(refundAmt, 'order_cancelled', {
+            orderId:  order.orderId,
+            orderRef: order._id,
+            reason:   `Order ${order.orderId} cancelled — refund (platform fee excluded)`,
+          });
+          order.refund.status = 'completed';
+          order.paymentStatus = 'refunded';
+          order.auditLog.push({ action: 'refund_credited_wallet', actorRole: 'system', timestamp: new Date(), amount: refundAmt, refundMethod: 'wallet' });
+          await order.save();
+        } catch(e) { console.error('[KBD] SA cancel wallet refund failed:', e.message); }
       });
     }
 
     _kbdNotify(_getBuyerPhone(order), 'order_cancelled', [order.orderId, reason]);
 
-    res.json({ success: true, message: `Order ${order.orderId} cancelled. Refund of ₹${refundAmt.toFixed(2)} initiated.` });
+    res.json({ success: true, message: `Order ${order.orderId} cancelled. Refund of ₹${refundAmt.toFixed(2)} (excl. platform fee) credited to wallet.` });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

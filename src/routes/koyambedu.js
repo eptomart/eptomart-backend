@@ -175,6 +175,11 @@ router.patch('/admin/orders/:orderId/items/:itemIndex/decline',       protectAdm
 // Wallet refund request management (SuperAdmin)
 router.get  ('/admin/refund-requests',                                protectAdmin, ctrl.adminGetRefundRequests);
 router.patch('/admin/refund-requests/:walletId/:requestId',           protectAdmin, ctrl.adminUpdateRefundRequest);
+// All-customer wallet management (SuperAdmin)
+router.get  ('/admin/wallets',                                        protectSuperAdmin, ctrl.adminGetAllWallets);
+router.get  ('/admin/wallets/:walletId/transactions',                 protectSuperAdmin, ctrl.adminGetWalletTransactions);
+router.post ('/admin/wallets/:walletId/manual-credit',                protectSuperAdmin, ctrl.adminWalletManualCredit);
+router.post ('/admin/wallets/:walletId/manual-debit',                 protectSuperAdmin, ctrl.adminWalletManualDebit);
 router.get  ('/admin/sellers',                    protectAdmin,      ctrl.adminGetSellers);
 router.post ('/admin/sellers',                    protectSuperAdmin, ctrl.adminCreateSeller);
 router.patch('/admin/sellers/:sellerId/approve',  protectAdmin,      ctrl.adminApproveSeller);

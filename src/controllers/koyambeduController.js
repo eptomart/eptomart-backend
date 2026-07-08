@@ -3892,6 +3892,133 @@ const adminUpdateRefundRequest = async (req, res) => {
   res.json({ success: true, message: 'Updated', status: rr.status });
 };
 
+// ══════════════════════════════════════════════
+// WALLET — Super Admin all-customers view
+// ══════════════════════════════════════════════
+
+/**
+ * GET /admin/wallets
+ * List all customer wallets with balance summary.
+ * Query: search, balanceFilter (all/positive/negative/zero), sort (balance_desc/balance_asc/name), page, limit
+ */
+const adminGetAllWallets = async (req, res) => {
+  try {
+    const { search = '', balanceFilter = 'all', sort = 'balance_desc', page = 1, limit = 50 } = req.query;
+    let wallets = await KoyambeduWallet.find().populate('user', 'name email phone').lean();
+
+    if (search.trim()) {
+      const s = search.trim().toLowerCase();
+      wallets = wallets.filter(w =>
+        w.user?.name?.toLowerCase().includes(s) ||
+        w.user?.phone?.includes(s) ||
+        w.user?.email?.toLowerCase().includes(s)
+      );
+    }
+    if (balanceFilter === 'positive')  wallets = wallets.filter(w => w.balance > 0);
+    else if (balanceFilter === 'negative') wallets = wallets.filter(w => w.balance < 0);
+    else if (balanceFilter === 'zero') wallets = wallets.filter(w => w.balance === 0);
+
+    if (sort === 'balance_desc') wallets.sort((a, b) => b.balance - a.balance);
+    else if (sort === 'balance_asc') wallets.sort((a, b) => a.balance - b.balance);
+    else if (sort === 'name') wallets.sort((a, b) => (a.user?.name || '').localeCompare(b.user?.name || ''));
+
+    const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+    const totalLiability     = wallets.filter(w => w.balance > 0).reduce((s, w) => s + w.balance, 0);
+    const negativeCount      = wallets.filter(w => w.balance < 0).length;
+    const pendingRefundCount = wallets.reduce((s, w) => s + (w.refundRequests || []).filter(r => r.status === 'pending').length, 0);
+    const totalPendingRefund = wallets.reduce((s, w) => s + (w.refundRequests || []).filter(r => r.status === 'pending').reduce((x, r) => x + r.amount, 0), 0);
+
+    const skip = (Number(page) - 1) * Number(limit);
+    const paginated = wallets.slice(skip, skip + Number(limit));
+
+    const result = paginated.map(w => ({
+      _id:              w._id,
+      user:             w.user,
+      balance:          r2(w.balance),
+      reservedBalance:  r2(w.reservedBalance || 0),
+      availableBalance: r2(Math.max(0, (w.balance || 0) - (w.reservedBalance || 0))),
+      txnCount:         (w.transactions || []).length,
+      pendingRefunds:   (w.refundRequests || []).filter(r => r.status === 'pending'),
+      allRefundRequests: (w.refundRequests || []).slice().reverse().slice(0, 10),
+      recentTxns:       (w.transactions || []).slice().reverse().slice(0, 5),
+      updatedAt:        w.updatedAt,
+    }));
+
+    res.json({
+      success: true,
+      wallets: result,
+      total: wallets.length,
+      page: Number(page),
+      pages: Math.ceil(wallets.length / Number(limit)),
+      summary: { totalLiability: r2(totalLiability), negativeCount, pendingRefundCount, totalPendingRefund: r2(totalPendingRefund) },
+    });
+  } catch (err) {
+    console.error('adminGetAllWallets:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * GET /admin/wallets/:walletId/transactions — full history for one wallet
+ */
+const adminGetWalletTransactions = async (req, res) => {
+  try {
+    const wallet = await KoyambeduWallet.findById(req.params.walletId).populate('user', 'name email phone').lean();
+    if (!wallet) return res.status(404).json({ success: false, message: 'Wallet not found' });
+    const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+    res.json({
+      success: true,
+      user:             wallet.user,
+      balance:          r2(wallet.balance),
+      reservedBalance:  r2(wallet.reservedBalance || 0),
+      availableBalance: r2(Math.max(0, (wallet.balance || 0) - (wallet.reservedBalance || 0))),
+      transactions:     (wallet.transactions || []).slice().reverse(),
+      refundRequests:   (wallet.refundRequests || []).slice().reverse(),
+    });
+  } catch (err) {
+    console.error('adminGetWalletTransactions:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * POST /admin/wallets/:walletId/manual-credit — Body: { amount, reason }
+ */
+const adminWalletManualCredit = async (req, res) => {
+  try {
+    const { amount, reason } = req.body;
+    const amt = Number(amount);
+    if (!amt || amt <= 0) return res.status(400).json({ success: false, message: 'Invalid amount' });
+    if (!reason?.trim()) return res.status(400).json({ success: false, message: 'Reason is required' });
+    const wallet = await KoyambeduWallet.findById(req.params.walletId);
+    if (!wallet) return res.status(404).json({ success: false, message: 'Wallet not found' });
+    await wallet.credit(amt, 'manual_credit', { adminBy: req.user._id, adminName: req.user.name, reason: reason.trim() });
+    res.json({ success: true, message: `₹${amt} credited`, balance: wallet.balance });
+  } catch (err) {
+    console.error('adminWalletManualCredit:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * POST /admin/wallets/:walletId/manual-debit — Body: { amount, reason }
+ */
+const adminWalletManualDebit = async (req, res) => {
+  try {
+    const { amount, reason } = req.body;
+    const amt = Number(amount);
+    if (!amt || amt <= 0) return res.status(400).json({ success: false, message: 'Invalid amount' });
+    if (!reason?.trim()) return res.status(400).json({ success: false, message: 'Reason is required' });
+    const wallet = await KoyambeduWallet.findById(req.params.walletId);
+    if (!wallet) return res.status(404).json({ success: false, message: 'Wallet not found' });
+    await wallet.debit(amt, 'manual_debit', { adminBy: req.user._id, adminName: req.user.name, reason: reason.trim() });
+    res.json({ success: true, message: `₹${amt} debited`, balance: wallet.balance });
+  } catch (err) {
+    console.error('adminWalletManualDebit:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 /**
  * PATCH /admin/orders/:orderId/partial-refund
  * Initiate a partial refund via Razorpay to source (card/UPI/net-banking).
@@ -5317,6 +5444,7 @@ module.exports = {
   generateProcurementInvoice,
   // Wallet
   getWallet, requestWalletRefund, adminGetRefundRequests, adminUpdateRefundRequest,
+  adminGetAllWallets, adminGetWalletTransactions, adminWalletManualCredit, adminWalletManualDebit,
   adminGetSellers, adminCreateSeller, adminApproveSeller, adminToggleSeller, adminEditSellerContact,
   adminGetCategories, adminCreateCategory, adminEditCategory, adminApproveCategory, adminAnalytics,
   // Admin — seller admins (SuperAdmin only)

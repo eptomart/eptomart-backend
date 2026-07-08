@@ -1342,7 +1342,7 @@ const adminDashboard = async (req, res) => {
 
 /** GET /api/koyambedu/admin/orders */
 const adminGetOrders = async (req, res) => {
-  const { status, page = 1, limit = 20, deliveryType, search, deliveryDate, deliverySlot, sellerAdmin, itemStatus } = req.query;
+  const { status, page = 1, limit = 20, deliveryType, search, deliveryDate, deliverySlot, sellerAdmin, itemStatus, customerSearch } = req.query;
   const filter = {};
   if (status) filter.orderStatus = status;
   if (deliveryType) filter.deliveryType = deliveryType;
@@ -1352,6 +1352,11 @@ const adminGetOrders = async (req, res) => {
   if (deliveryDate) {
     const d = new Date(deliveryDate);
     filter.deliveryDate = { $gte: d, $lt: new Date(d.getTime() + 86400000) };
+  }
+  if (customerSearch) {
+    const regex = { $regex: customerSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+    const matchingBuyers = await User.find({ $or: [{ name: regex }, { phone: regex }] }).select('_id').lean();
+    filter.buyer = { $in: matchingBuyers.map(u => u._id) };
   }
   if (sellerAdmin) {
     // Get all sellers under this SA
@@ -1402,6 +1407,21 @@ const adminGetOrders = async (req, res) => {
   });
 
   res.json({ success: true, orders: shaped, total, page: Number(page), pages: Math.ceil(total / limit) });
+};
+
+/** GET /api/koyambedu/admin/orders/:orderId/wallet-history */
+const adminGetOrderWalletHistory = async (req, res) => {
+  const order = await KoyambeduOrder.findById(req.params.orderId).select('buyer orderId').lean();
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  const wallet = await KoyambeduWallet.findOne({ user: order.buyer }).lean();
+  if (!wallet) return res.json({ success: true, transactions: [] });
+
+  const txns = (wallet.transactions || [])
+    .filter(t => t.orderRef && t.orderRef.toString() === order._id.toString())
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  res.json({ success: true, transactions: txns });
 };
 
 /** PATCH /api/koyambedu/admin/orders/:orderId/status */
@@ -1735,7 +1755,7 @@ const sellerAdminGetOrders = async (req, res) => {
 
   // Build filter
   const filter = { 'items.seller': { $in: sellerIds } };
-  const { orderDate, deliveryDate, deliverySlot, status } = req.query;
+  const { orderDate, deliveryDate, deliverySlot, status, customerSearch } = req.query;
   if (status) filter.orderStatus = { $in: String(status).split(',') };
   if (orderDate) {
     const d = new Date(orderDate);
@@ -1746,6 +1766,11 @@ const sellerAdminGetOrders = async (req, res) => {
     filter.deliveryDate = { $gte: d, $lt: new Date(d.getTime() + 86400000) };
   }
   if (deliverySlot) filter.deliverySlot = deliverySlot;
+  if (customerSearch) {
+    const regex = { $regex: customerSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+    const matchingBuyers = await User.find({ $or: [{ name: regex }, { phone: regex }] }).select('_id').lean();
+    filter.buyer = { $in: matchingBuyers.map(u => u._id) };
+  }
 
   const orders = await KoyambeduOrder.find(filter)
     .populate('items.product', 'name images unit')
@@ -5285,7 +5310,7 @@ module.exports = {
   toggleProductAvailability, deleteSellerProduct,
   getSellerOrders, confirmStock, requestPriceRevision, createSellerCategory,
   // Admin — sellers
-  adminDashboard, adminGetOrders, adminUpdateOrderStatus, adminEditOrderItemQty, adminDeclineOrderItem,
+  adminDashboard, adminGetOrders, adminGetOrderWalletHistory, adminUpdateOrderStatus, adminEditOrderItemQty, adminDeclineOrderItem,
   // Settings / last update time
   getLastProductUpdateTime,
   // Procurement invoice

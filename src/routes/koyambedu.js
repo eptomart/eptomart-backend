@@ -150,8 +150,9 @@ router.post ('/seller-admin/orders/:orderId/confirm-all',                  prote
 // ADMIN — admin or superAdmin
 // ══════════════════════════════════════════════
 router.get  ('/admin/dashboard',                  protectAdmin, ctrl.adminDashboard);
-router.get  ('/admin/orders',                     protectAdmin, ctrl.adminGetOrders);
-router.get  ('/admin/orders/pending-approval',    protectSuperAdmin, ctrl.adminGetPendingApprovalOrders);
+router.get  ('/admin/orders',                               protectAdmin,      ctrl.adminGetOrders);
+router.get  ('/admin/orders/pending-approval',              protectSuperAdmin, ctrl.adminGetPendingApprovalOrders);
+router.get  ('/admin/orders/:orderId/wallet-history',       protectSuperAdmin, ctrl.adminGetOrderWalletHistory);
 router.patch('/admin/orders/:orderId/close',      protectSuperAdmin, ctrl.adminCloseOrder);
 
 // Hero video upload (Koyambedu home banner) — Super Admin only

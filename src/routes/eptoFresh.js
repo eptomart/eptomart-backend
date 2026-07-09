@@ -56,6 +56,7 @@ router.get('/places/details',      ctrl.placesDetails);
 
 // PUBLIC / CUSTOMER BROWSE
 // ══════════════════════════════════════════════════════════
+router.get('/products/homepage',            ctrl.getHomepageProducts);
 router.get('/sellers',                      optionalAuth, ctrl.getNearbySellers);
 router.get('/sellers/:sellerId',            optionalAuth, ctrl.getSellerProfile);
 router.get('/sellers/:sellerId/products',   optionalAuth, ctrl.getSellerProducts);

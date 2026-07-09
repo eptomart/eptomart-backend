@@ -956,3 +956,18 @@ exports.autoCancelExpired = async () => {
 
   if (expired.length > 0) console.log(`[Uzhavar] Auto-cancelled ${expired.length} expired orders`);
 };
+
+// ── Homepage product spotlight ────────────────────────────────
+exports.getHomepageProducts = async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 8, 20);
+    const products = await FarmerProduct.find({ isActive: true })
+      .populate('farmer', 'name farmName')
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    res.json({ success: true, products });
+  } catch (err) {
+    res.json({ success: true, products: [] });
+  }
+};

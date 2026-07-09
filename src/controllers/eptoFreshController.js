@@ -717,3 +717,18 @@ exports.placesDetails = async (req, res) => {
     res.json({ result: null });
   }
 };
+
+// ── Homepage product spotlight ────────────────────────────────
+exports.getHomepageProducts = async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 8, 20);
+    const products = await EptoFreshProduct.find({ isAvailable: true, status: 'approved' })
+      .populate('seller', 'businessName')
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    res.json({ success: true, products });
+  } catch (err) {
+    res.json({ success: true, products: [] });
+  }
+};

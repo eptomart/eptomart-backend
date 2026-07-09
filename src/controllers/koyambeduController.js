@@ -217,6 +217,41 @@ const getFeaturedProducts = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/koyambedu/products/homepage?limit=10
+ * Curated list for Eptomart home page spotlight section.
+ * Priority: best-sellers → recently price-updated → newest.
+ * Never crashes — always returns a (possibly empty) array.
+ */
+const getHomepageProducts = async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 10, 20);
+    const base = {
+      isActive: true,
+      isAvailable: true,
+      $or: [{ approvalStatus: 'approved' }, { approvalStatus: { $exists: false } }],
+    };
+
+    const products = await KoyambeduProduct.find(base)
+      .populate('category', 'name icon')
+      .populate('seller', 'businessName stallNumber rating')
+      .sort({ totalOrders: -1, priceUpdatedAt: -1, createdAt: -1 })
+      .limit(limit)
+      .lean();
+
+    const enriched = products.map(p => {
+      const lowestUnitPrice = p.gradesEnabled && p.grades?.length > 0
+        ? getLowestUnitPriceAcrossGrades(p.grades)
+        : getLowestUnitPrice(p.variants || []);
+      return { ...p, lowestUnitPrice };
+    });
+
+    res.json({ success: true, products: enriched });
+  } catch (err) {
+    res.json({ success: true, products: [] });
+  }
+};
+
 /** GET /api/koyambedu/products/:productId */
 const getProductDetail = async (req, res) => {
   const product = await KoyambeduProduct.findOne({ _id: req.params.productId, isActive: true })
@@ -5582,7 +5617,7 @@ const adminApplyPriceRevision = async (req, res) => {
 
 module.exports = {
   // Public
-  getCategories, getProducts, getFeaturedProducts, getProductDetail, getDeliverySlots,
+  getCategories, getProducts, getFeaturedProducts, getHomepageProducts, getProductDetail, getDeliverySlots,
   checkDeliveryAvailability,
   // Cart
   getCart, updateCart, clearCart,

@@ -48,6 +48,7 @@ router.put('/admin/dev-settings/payment-test-mode/disable', protectSuperAdmin, d
 router.get ('/categories',             ctrl.getCategories);
 router.get ('/products',               ctrl.getProducts);
 router.get ('/products/featured',      ctrl.getFeaturedProducts);
+router.get ('/products/homepage',      ctrl.getHomepageProducts);
 router.get ('/products/:productId',             ctrl.getProductDetail);
 router.get ('/products/:productId/price-history', ctrl.getProductPriceHistory);
 router.get ('/slots',                  ctrl.getDeliverySlots);

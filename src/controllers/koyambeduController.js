@@ -5615,9 +5615,53 @@ const adminApplyPriceRevision = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/koyambedu/products/by-category?limit=8
+ * Returns active products grouped by category — for the home page market layout.
+ */
+const getProductsByCategory = async (req, res) => {
+  try {
+    const perCat = Math.min(Number(req.query.limit) || 8, 20);
+    const base = {
+      isActive: true, isAvailable: true,
+      $or: [{ approvalStatus: 'approved' }, { approvalStatus: { $exists: false } }],
+    };
+
+    const products = await KoyambeduProduct.find(base)
+      .populate('category', 'name nameTamil icon slug sortOrder')
+      .populate('seller', 'businessName')
+      .sort({ totalOrders: -1, priceUpdatedAt: -1, createdAt: -1 })
+      .lean();
+
+    const enriched = products.map(p => ({
+      ...p,
+      lowestUnitPrice: p.gradesEnabled && p.grades?.length > 0
+        ? getLowestUnitPriceAcrossGrades(p.grades)
+        : getLowestUnitPrice(p.variants || []),
+    }));
+
+    // Group by category, cap at perCat each
+    const map = new Map();
+    for (const p of enriched) {
+      if (!p.category) continue;
+      const id = String(p.category._id);
+      if (!map.has(id)) map.set(id, { category: p.category, products: [] });
+      if (map.get(id).products.length < perCat) map.get(id).products.push(p);
+    }
+
+    const sections = [...map.values()]
+      .filter(s => s.products.length > 0)
+      .sort((a, b) => (a.category.sortOrder ?? 99) - (b.category.sortOrder ?? 99));
+
+    res.json({ success: true, sections });
+  } catch (err) {
+    res.json({ success: true, sections: [] });
+  }
+};
+
 module.exports = {
   // Public
-  getCategories, getProducts, getFeaturedProducts, getHomepageProducts, getProductDetail, getDeliverySlots,
+  getCategories, getProducts, getFeaturedProducts, getHomepageProducts, getProductsByCategory, getProductDetail, getDeliverySlots,
   checkDeliveryAvailability,
   // Cart
   getCart, updateCart, clearCart,

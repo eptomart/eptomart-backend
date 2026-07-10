@@ -24,9 +24,19 @@ const BUSINESS = {
   website: 'www.eptomart.com',
 };
 
+// GST exemption note — printed on every Koyambedu Daily invoice type.
+// Legal basis: fresh produce is exempt under Chapter 7 & 8,
+// Notification No. 2/2017-Central Tax (Rate), Indian GST law.
+const GST_EXEMPTION_NOTE =
+  'GST Exemption: This bill is exempt from Goods & Services Tax (GST). ' +
+  'Fresh vegetables, fruits, flowers, and produce are exempt from GST as per ' +
+  'Chapter 7 & 8, Notification No. 2/2017-Central Tax (Rate) of the Indian GST law. ' +
+  'No GST is charged or collected on this transaction.';
+
 const PROFORMA_DISCLAIMER =
   "This is a Proforma Invoice generated from the customer's order request. " +
-  'Final Tax Invoice will be generated after successful delivery.';
+  'Final Tax Invoice will be generated after successful delivery. ' +
+  GST_EXEMPTION_NOTE;
 
 // Canonical statuses at/after Super Admin approval
 // ('closed' comes after delivery — documents must stay available)
@@ -190,6 +200,7 @@ function renderOrderDocument(type, dto, stream) {
           ? 'The declined amount is deducted from your Cash-on-Delivery payable.'
           : 'The declined amount is refunded to your wallet / original payment method.'));
     }
+    y = noteBlock(doc, y, GST_EXEMPTION_NOTE);
   }
 
   if (type === 'tax') {
@@ -208,8 +219,8 @@ function renderOrderDocument(type, dto, stream) {
       y = totalsBlock(doc, y, taxTotals(dto), color, 'Grand Total');
     }
     y = noteBlock(doc, y,
-      `Payment Method: ${String(dto.paymentMethod || '-').toUpperCase()} · Payment Status: ${dto.paymentStatus || '-'}.` +
-      (dto.paymentSummary?.gst > 0 ? '' : ' GST: 0% (exempt category).'));
+      `Payment Method: ${String(dto.paymentMethod || '-').toUpperCase()} · Payment Status: ${dto.paymentStatus || '-'}.`);
+    y = noteBlock(doc, y, GST_EXEMPTION_NOTE);
   }
 
   // ── Footer ──────────────────────────────────

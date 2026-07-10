@@ -93,7 +93,11 @@ function calculateOrderTotals(order, opts = {}) {
   const platformFee        = Number(pricing.platformFee || 15);
   const packingLogisticsFee = Number(pricing.packingLogisticsFee || 0);
   const deliveryCharge     = Number(pricing.deliveryCharge || 0);
-  const gst                = 0; // Fresh produce: 0% GST under Indian GST law
+  const gst                = 0; // Fresh produce: 0% GST under Indian GST law (Chapter 7 & 8)
+  // Platform fee is tax-inclusive at 18% (SAC 9985 — marketplace services).
+  // GSTIN: 33IFLPS7086Q1Z6. Extract the GST portion for disclosure on invoices.
+  // The total charged does NOT change — GST is already within the platform fee.
+  const platformFeeGst     = round(platformFee * 18 / 118); // CGST 9% + SGST 9%
   const couponDiscount     = Number(pricing.discount || 0);
 
   // ── 5. Final payable ─────────────────────────
@@ -109,6 +113,7 @@ function calculateOrderTotals(order, opts = {}) {
     declinedRefundAmount: round(declinedRefundAmount),
     confirmedItemsTotal:  round(confirmedItemsTotal),
     platformFee:          round(platformFee),
+    platformFeeGst,       // GST portion within platform fee (tax-inclusive, for invoice disclosure)
     packingLogisticsFee:  round(packingLogisticsFee),
     deliveryCharge:       round(deliveryCharge),
     gst:                  0,
@@ -173,9 +178,10 @@ function buildPaymentSummary(verticalKey, order) {
       s.originalOrderValue = calc.originalOrderValue;
       s.refundAmount       = calc.declinedRefundAmount;
       s.platformFee        = calc.platformFee;
+      s.platformFeeGst     = calc.platformFeeGst; // GST portion within platform fee (tax-inclusive)
       s.packingFee         = calc.packingLogisticsFee;
       s.deliveryCharge     = calc.deliveryCharge;
-      s.gst                = calc.gst;
+      s.gst                = calc.gst; // produce GST = 0
       s.couponDiscount     = calc.couponDiscount;
       s.walletAdjustment   = calc.walletAdjustment;
       s.finalPaidAmount    = calc.finalPayableAmount;

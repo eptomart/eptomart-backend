@@ -22,6 +22,7 @@ const BUSINESS = {
   phone:   '+91 6369 129 995',
   email:   'support@eptomart.com',
   website: 'www.eptomart.com',
+  gstin:   '33IFLPS7086Q1Z6',
 };
 
 // GST exemption note — printed on every Koyambedu Daily invoice type.
@@ -173,6 +174,7 @@ function renderOrderDocument(type, dto, stream) {
     BUSINESS.address,
     BUSINESS.phone,
     BUSINESS.email,
+    `GSTIN: ${BUSINESS.gstin}`,
   ], 305, y + 14, 240, 'right');
 
   y = Math.max(yLeft, yRight) + 14;
@@ -342,10 +344,10 @@ function proformaTotals(dto) {
   const s = dto.paymentSummary || {};
   return [
     ['Order Value', s.originalOrderValue],
-    ['Platform Fee', s.platformFee],
+    ['Platform Fee (incl. GST)', s.platformFee],
+    ['  GST @18% on Platform Fee (SAC 9985)', s.platformFeeGst],
     ['Packing & Logistics', s.packingFee],
     ['Delivery Charge (est.)', s.deliveryCharge],
-    ['GST (est.)', s.gst],
     ['Coupon Discount', s.couponDiscount, true],
     ['Wallet Credit Applied', s.walletAdjustment, true],
   ];
@@ -360,10 +362,10 @@ function confirmationTotals(dto) {
     ['Original Order Value', s.originalOrderValue],
     ['Refund (declined items)', s.refundAmount, true],
     ['Confirmed Items Total', confirmedTotal],
-    ['Platform Fee', s.platformFee],
+    ['Platform Fee (incl. GST)', s.platformFee],
+    ['  GST @18% on Platform Fee (SAC 9985)', s.platformFeeGst],
     ['Packing & Logistics', s.packingFee],
     ['Delivery Charge', s.deliveryCharge],
-    ['GST', s.gst],
     ['Coupon Discount', s.couponDiscount, true],
     ['Wallet Adjustment', s.walletAdjustment, true],
   ];
@@ -375,10 +377,10 @@ function taxTotals(dto) {
     .reduce((t, it) => t + (it.lineTotal || 0), 0);
   return [
     ['Items Total', deliveredTotal],
-    ['Platform Fee', s.platformFee],
+    ['Platform Fee (incl. GST)', s.platformFee],
+    ['  GST @18% on Platform Fee (SAC 9985)', s.platformFeeGst],
     ['Packing & Logistics', s.packingFee],
     ['Delivery Charge', s.deliveryCharge],
-    ['GST', s.gst],
     ['Coupon Discount', s.couponDiscount, true],
     ['Wallet Adjustment', s.walletAdjustment, true],
   ];

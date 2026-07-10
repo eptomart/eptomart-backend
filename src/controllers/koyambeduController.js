@@ -2130,12 +2130,14 @@ const adminUpdateProduct = async (req, res) => {
 
   const allowed = [
     'name','nameTamil','unit','description','badges',
-    'categoryId','stockQty','isAvailable','isSameDay','isNextDay',
+    'stockQty','isAvailable','isSameDay','isNextDay',
     'sameDayCutoff','weightKg','images',
   ];
   for (const k of allowed) {
     if (req.body[k] !== undefined) product[k] = req.body[k];
   }
+  // category field is named 'category' in the model but 'categoryId' from the frontend
+  if (req.body.categoryId !== undefined) product.category = req.body.categoryId;
 
   // ── Charge percents (used by both variant + grade paths) ──────────────
   const _procRaw = req.body.procurementChargePercent ?? product.procurementChargePercent;
@@ -2279,10 +2281,12 @@ const adminApproveProductEdit = async (req, res) => {
   const edit = product.pendingEdit;
 
   // Apply plain catalog fields
-  const directFields = ['name', 'nameTamil', 'unit', 'description', 'badges', 'categoryId', 'weightKg', 'images'];
+  const directFields = ['name', 'nameTamil', 'unit', 'description', 'badges', 'weightKg', 'images'];
   for (const k of directFields) {
     if (edit[k] !== undefined) product[k] = edit[k];
   }
+  // categoryId from frontend maps to 'category' in the model
+  if (edit.categoryId !== undefined) product.category = edit.categoryId;
 
   // Resolve charge percents (used by both paths)
   const _procRaw2 = edit.procurementChargePercent ?? product.procurementChargePercent;

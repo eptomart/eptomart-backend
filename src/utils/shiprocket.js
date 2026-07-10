@@ -55,7 +55,7 @@ const getOrCreatePickupLocation = async (seller) => {
     const payload = {
       pickup_location: locationName,
       name:            seller.businessName || locationName,
-      email:           seller.contact?.email || process.env.CONTACT_EMAIL || 'eptosicare@gmail.com',
+      email:           seller.contact?.email || process.env.CONTACT_EMAIL || 'support@eptomart.com',
       phone:           seller.contact?.phone || '',
       address:         seller.address.street || seller.address.city,
       address_2:       '',

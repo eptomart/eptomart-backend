@@ -49,7 +49,7 @@ const contactUs = async (req, res) => {
   console.log(`[Contact] New enquiry #${enquiry._id} from ${name} (${email || phone || 'no contact'}): "${subject || 'General'}"`);
 
   // Email admin (non-blocking)
-  const adminEmail = process.env.ADMIN_EMAIL || process.env.CONTACT_EMAIL || business.email || 'eptosicare@gmail.com';
+  const adminEmail = process.env.ADMIN_EMAIL || process.env.CONTACT_EMAIL || business.email || 'support@eptomart.com';
   sendEmail({
     to:      adminEmail,
     subject: `📬 New Contact Enquiry — ${subject || 'General'} from ${name}`,
@@ -173,7 +173,7 @@ const productInquiry = async (req, res) => {
     userAgent: req.headers['user-agent'] || '',
   });
 
-  const adminEmail = process.env.ADMIN_EMAIL || process.env.CONTACT_EMAIL || business.email || 'eptosicare@gmail.com';
+  const adminEmail = process.env.ADMIN_EMAIL || process.env.CONTACT_EMAIL || business.email || 'support@eptomart.com';
 
   // Notify SuperAdmin
   sendEmail({

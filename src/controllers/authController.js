@@ -177,7 +177,7 @@ const verifyOtp = async (req, res) => {
       return res.status(403).json({
         success: false,
         blocked: true,
-        message: 'Your account has been deactivated. Please contact the SuperAdmin at eptosicare@gmail.com to restore access.',
+        message: 'Your account has been deactivated. Please contact the SuperAdmin at support@eptomart.com to restore access.',
       });
     }
     if (!user.isVerified) { user.isVerified = true; await user.save(); }
@@ -391,7 +391,7 @@ const verifyFirebasePhone = async (req, res) => {
       return res.status(403).json({
         success: false,
         blocked: true,
-        message: 'Your account has been deactivated. Please contact the SuperAdmin at eptosicare@gmail.com to restore access.',
+        message: 'Your account has been deactivated. Please contact the SuperAdmin at support@eptomart.com to restore access.',
       });
     }
     if (!user.isVerified) {

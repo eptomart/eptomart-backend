@@ -144,11 +144,11 @@ const getProducts = async (req, res) => {
     }
 
     const sortMap = {
-      price_asc:  { currentPrice: 1 },
-      price_desc: { currentPrice: -1 },
-      fresh:      { freshArrivalDate: -1 },
-      popular:    { totalOrders: -1 },
-      default:    { freshArrivalDate: -1, totalOrders: -1 },
+      price_asc:  { currentPrice: 1,         _id: 1 },
+      price_desc: { currentPrice: -1,         _id: 1 },
+      fresh:      { freshArrivalDate: -1,     _id: 1 },
+      popular:    { totalOrders: -1,          _id: 1 },
+      default:    { freshArrivalDate: -1, totalOrders: -1, _id: 1 },
     };
 
     const skip = (Number(page) - 1) * Number(limit);

@@ -315,15 +315,17 @@ function declinedTable(doc, y, items = []) {
 function totalsBlock(doc, y, rows, color, totalLabel, totalOverride) {
   y = ensureSpace(doc, y, rows.length * 14 + 40);
   const clean = rows.filter(r => r && r[1] != null && r[1] !== 0);
-  clean.forEach(([label, val, negative]) => {
-    doc.fontSize(9).font('Helvetica').fillColor('#374151')
+  // Row tuple: [label, value, negative?, disclosureOnly?]
+  // disclosureOnly = true → show in gray but EXCLUDE from total sum (e.g. tax-inclusive GST breakout)
+  clean.forEach(([label, val, negative, disclosureOnly]) => {
+    doc.fontSize(9).font('Helvetica').fillColor(disclosureOnly ? '#9ca3af' : '#374151')
       .text(label, 310, y, { width: 135 })
       .text(`${negative ? '- ' : ''}${money(Math.abs(val))}`, 450, y, { width: 90, align: 'right' });
     y += 14;
   });
   const total = totalOverride != null
     ? totalOverride
-    : clean.reduce((s, [, v, neg]) => s + (neg ? -v : v), 0);
+    : clean.filter(([,,,disc]) => !disc).reduce((s, [, v, neg]) => s + (neg ? -v : v), 0);
   y += 4;
   doc.moveTo(310, y).lineTo(540, y).strokeColor('#e5e7eb').lineWidth(0.5).stroke();
   y += 6;
@@ -347,7 +349,7 @@ function proformaTotals(dto) {
   return [
     ['Order Value', s.originalOrderValue],
     ['Platform Fee (incl. GST)', s.platformFee],
-    ['  GST @18% (Platform Fee)', s.platformFeeGst],
+    ['  GST @18% (Platform Fee)', s.platformFeeGst, false, true], // disclosure only — already inside platform fee
     ['Packing & Logistics', s.packingFee],
     ['Delivery Charge (est.)', s.deliveryCharge],
     ['Coupon Discount', s.couponDiscount, true],
@@ -365,7 +367,7 @@ function confirmationTotals(dto) {
     ['Refund (declined items)', s.refundAmount, true],
     ['Confirmed Items Total', confirmedTotal],
     ['Platform Fee (incl. GST)', s.platformFee],
-    ['  GST @18% (Platform Fee)', s.platformFeeGst],
+    ['  GST @18% (Platform Fee)', s.platformFeeGst, false, true], // disclosure only — already inside platform fee
     ['Packing & Logistics', s.packingFee],
     ['Delivery Charge', s.deliveryCharge],
     ['Coupon Discount', s.couponDiscount, true],
@@ -380,7 +382,7 @@ function taxTotals(dto) {
   return [
     ['Items Total', deliveredTotal],
     ['Platform Fee (incl. GST)', s.platformFee],
-    ['  GST @18% (Platform Fee)', s.platformFeeGst],
+    ['  GST @18% (Platform Fee)', s.platformFeeGst, false, true], // disclosure only — already inside platform fee
     ['Packing & Logistics', s.packingFee],
     ['Delivery Charge', s.deliveryCharge],
     ['Coupon Discount', s.couponDiscount, true],

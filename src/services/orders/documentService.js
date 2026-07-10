@@ -258,21 +258,22 @@ function itemsTable(doc, y, title, items = [], color) {
   doc.fontSize(8).font('Helvetica-Bold').fillColor('#ffffff');
   doc.text('Item', 55, y + 5, { width: 235 });
   doc.text('Qty', 300, y + 5);
-  doc.text('Unit Price', 370, y + 5);
-  doc.text('Amount', 470, y + 5);
+  doc.text('Unit Price', 365, y + 5, { width: 80, align: 'right' });
+  doc.text('Amount', 450, y + 5, { width: 90, align: 'right' });
   y += 18;
 
   items.forEach((it, idx) => {
     y = ensureSpace(doc, y, 20);
     doc.rect(50, y, 495, 16).fill(idx % 2 === 0 ? '#f9fafb' : '#ffffff');
     doc.fontSize(8).font('Helvetica').fillColor('#111827');
-    // Build display name: Product (Grade) · Variant  e.g. "Tomato (Premium) · 100–199 kg"
-    const gradePart   = it.gradeName ? ` (${it.gradeName})` : '';
+    // Build display name: avoid duplicating grade if it is already inside it.name
+    const gradeAlreadyInName = it.gradeName && it.name.includes(it.gradeName);
+    const gradePart   = it.gradeName && !gradeAlreadyInName ? ` (${it.gradeName})` : '';
     const variantPart = it.variantLabel ? ` · ${it.variantLabel}` : '';
     doc.text(`${it.name}${gradePart}${variantPart}`, 55, y + 4, { width: 235, ellipsis: true });
     doc.text(`${it.quantity}${it.unit ? ` ${it.unit}` : ''}`, 300, y + 4);
-    doc.text(money(it.unitPrice), 370, y + 4);
-    doc.text(money(it.lineTotal), 470, y + 4);
+    doc.text(money(it.unitPrice), 365, y + 4, { width: 80, align: 'right' });
+    doc.text(money(it.lineTotal), 450, y + 4, { width: 90, align: 'right' });
     y += 16;
   });
   if (!items.length) {
@@ -299,7 +300,8 @@ function declinedTable(doc, y, items = []) {
     y = ensureSpace(doc, y, 20);
     doc.rect(50, y, 495, 16).fill(idx % 2 === 0 ? '#fffbeb' : '#ffffff');
     doc.fontSize(8).font('Helvetica').fillColor('#111827');
-    const decGradePart = it.gradeName ? ` (${it.gradeName})` : '';
+    const decGradeAlreadyInName = it.gradeName && it.name.includes(it.gradeName);
+    const decGradePart = it.gradeName && !decGradeAlreadyInName ? ` (${it.gradeName})` : '';
     doc.text(`${it.name}${decGradePart}`, 55, y + 4, { width: 175, ellipsis: true });
     doc.text(`${it.declinedQty}${it.unit ? ` ${it.unit}` : ''}`, 240, y + 4);
     doc.text(money(it.unitPrice), 320, y + 4);
@@ -315,19 +317,19 @@ function totalsBlock(doc, y, rows, color, totalLabel, totalOverride) {
   const clean = rows.filter(r => r && r[1] != null && r[1] !== 0);
   clean.forEach(([label, val, negative]) => {
     doc.fontSize(9).font('Helvetica').fillColor('#374151')
-      .text(label, 330, y, { width: 120 })
-      .text(`${negative ? '- ' : ''}${money(Math.abs(val))}`, 455, y, { width: 90, align: 'right' });
+      .text(label, 310, y, { width: 135 })
+      .text(`${negative ? '- ' : ''}${money(Math.abs(val))}`, 450, y, { width: 90, align: 'right' });
     y += 14;
   });
   const total = totalOverride != null
     ? totalOverride
     : clean.reduce((s, [, v, neg]) => s + (neg ? -v : v), 0);
   y += 4;
-  doc.moveTo(330, y).lineTo(545, y).strokeColor('#e5e7eb').lineWidth(0.5).stroke();
+  doc.moveTo(310, y).lineTo(540, y).strokeColor('#e5e7eb').lineWidth(0.5).stroke();
   y += 6;
   doc.fontSize(11).font('Helvetica-Bold').fillColor(color)
-    .text(totalLabel, 330, y, { width: 120 })
-    .text(money(total), 435, y, { width: 110, align: 'right' });
+    .text(totalLabel, 310, y, { width: 135 })
+    .text(money(total), 450, y, { width: 90, align: 'right' });
   return y + 26;
 }
 
@@ -345,7 +347,7 @@ function proformaTotals(dto) {
   return [
     ['Order Value', s.originalOrderValue],
     ['Platform Fee (incl. GST)', s.platformFee],
-    ['  GST @18% on Platform Fee (SAC 9985)', s.platformFeeGst],
+    ['  GST @18% (Platform Fee)', s.platformFeeGst],
     ['Packing & Logistics', s.packingFee],
     ['Delivery Charge (est.)', s.deliveryCharge],
     ['Coupon Discount', s.couponDiscount, true],
@@ -363,7 +365,7 @@ function confirmationTotals(dto) {
     ['Refund (declined items)', s.refundAmount, true],
     ['Confirmed Items Total', confirmedTotal],
     ['Platform Fee (incl. GST)', s.platformFee],
-    ['  GST @18% on Platform Fee (SAC 9985)', s.platformFeeGst],
+    ['  GST @18% (Platform Fee)', s.platformFeeGst],
     ['Packing & Logistics', s.packingFee],
     ['Delivery Charge', s.deliveryCharge],
     ['Coupon Discount', s.couponDiscount, true],
@@ -378,7 +380,7 @@ function taxTotals(dto) {
   return [
     ['Items Total', deliveredTotal],
     ['Platform Fee (incl. GST)', s.platformFee],
-    ['  GST @18% on Platform Fee (SAC 9985)', s.platformFeeGst],
+    ['  GST @18% (Platform Fee)', s.platformFeeGst],
     ['Packing & Logistics', s.packingFee],
     ['Delivery Charge', s.deliveryCharge],
     ['Coupon Discount', s.couponDiscount, true],

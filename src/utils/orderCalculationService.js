@@ -25,7 +25,15 @@
 function calculateOrderTotals(order, opts = {}) {
   const items   = order.items || [];
   const pricing = order.pricing || {};
-  const walletAdj = Number(opts.walletAdjustment ?? order.calculatedPricing?.walletAdjustment ?? order.pricing?.walletAdjustment ?? 0);
+  // Priority: explicit opts > pricing.walletAdjustment (set in placeOrder, canonical) >
+  // calculatedPricing.walletAdjustment (cached — may be 0 due to Mongoose default on new docs).
+  // NOTE: Do NOT swap back to reading calculatedPricing first. Mongoose initialises
+  // calculatedPricing.walletAdjustment = 0 before applyCalculation runs in placeOrder, so
+  // using ?? would stop at 0 and never reach the correct pricing.walletAdjustment value.
+  const walletAdj = Number(
+    opts.walletAdjustment != null ? opts.walletAdjustment
+    : (order.pricing?.walletAdjustment ?? order.calculatedPricing?.walletAdjustment ?? 0)
+  );
 
   // ── 1. Original order value ──────────────────
   // Use itemsOrdered if available (new orders), else sum items using orderedQty/orderedPrice

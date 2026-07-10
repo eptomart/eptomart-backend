@@ -133,7 +133,9 @@ const getProducts = async (req, res) => {
       // Only show approved products; legacy products (no field) are treated as approved
       $or: [{ approvalStatus: 'approved' }, { approvalStatus: { $exists: false } }],
     };
-    if (category) filter.category = category;
+    // Guard: only set category filter when value is a valid ObjectId.
+    // Passing a slug string would cause a Mongoose CastError (500).
+    if (category && /^[a-fA-F0-9]{24}$/.test(category)) filter.category = category;
     if (deliveryType === 'today')    filter.isSameDay = true;
     if (deliveryType === 'tomorrow') filter.isNextDay = true;
     if (search) {

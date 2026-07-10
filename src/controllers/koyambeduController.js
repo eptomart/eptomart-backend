@@ -521,10 +521,16 @@ const placeOrder = async (req, res) => {
     const sellerPayout = lineTotal * (1 - commission);
     subtotal += lineTotal;
     deliveryTypes.add(ci.deliveryType);
+    // Embed grade in name so every downstream surface (order detail, SA panel,
+    // invoices, reports) shows the grade even without checking gradeKey separately.
+    const itemDisplayName = (p.gradesEnabled && ci.gradeName)
+      ? `${p.name} (${ci.gradeName})`
+      : p.name;
+
     orderItems.push({
       product:      p._id,
       seller:       sl._id,
-      name:         p.name,
+      name:         itemDisplayName,
       unit:         p.unit,
       quantity:     ci.quantity,
       deliveryType: ci.deliveryType,
@@ -3404,7 +3410,12 @@ const slotWiseReport = async (req, res) => {
       grouped[key].push({
         orderId:    order.orderId,
         buyerName:  order.buyer?.name || order.shippingAddress?.fullName,
-        items:      order.items.map(i => `${i.name}${i.gradeKey ? ` - ${i.gradeName || i.gradeKey}` : ''} x${i.quantity}${i.unit}`).join(', '),
+        items:      order.items.map(i => {
+          // grade is already embedded in i.name for new orders; fall back to gradeKey for old
+          const gl = i.gradeName || i.gradeKey;
+          const nm = gl && !i.name.includes(gl) ? `${i.name} (${gl})` : i.name;
+          return `${nm} x${i.quantity}${i.unit}`;
+        }).join(', '),
         amount:     order.pricing?.total,
         slot:       order.deliverySlot,
       });
@@ -4410,7 +4421,7 @@ const getOrderInvoice = async (req, res) => {
       doc.fontSize(8).font('Helvetica').fillColor('#374151')
         .text(String(idx + 1), C.sno, rowY+5, { width: CW.sno, align: 'center' });
       doc.font('Helvetica-Bold').fillColor('#dc2626')
-        .text(item.name + (item.gradeKey ? ` (${item.gradeName || item.gradeKey})` : ''), C.desc, rowY+5, { width: CW.desc });
+        .text((() => { const gl = item.gradeName || item.gradeKey; return (gl && !item.name.includes(gl)) ? `${item.name} (${gl})` : item.name; })(), C.desc, rowY+5, { width: CW.desc });
       doc.font('Helvetica').fillColor('#374151')
         .text(String(decQty), C.qty, rowY+5, { width: CW.qty, align: 'right' })
         .text(item.unit || '', C.unit, rowY+5, { width: CW.unit, align: 'center' })

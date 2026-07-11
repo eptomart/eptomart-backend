@@ -71,6 +71,7 @@ router.get('/sitemap/main.xml', async (req, res) => {
     const staticPages = [
       urlEntry(`${BASE}/`,               { priority: '1.0', freq: 'daily' }),
       urlEntry(`${BASE}/shop`,            { priority: '0.9', freq: 'daily' }),
+      urlEntry(`${BASE}/wholesale-chennai`, { priority: '0.9', freq: 'weekly' }),
       urlEntry(`${BASE}/categories`,      { priority: '0.8', freq: 'weekly' }),
       urlEntry(`${BASE}/about`,           { priority: '0.5', freq: 'monthly' }),
       urlEntry(`${BASE}/contact`,         { priority: '0.5', freq: 'monthly' }),

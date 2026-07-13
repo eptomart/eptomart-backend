@@ -340,6 +340,11 @@ const getCart = async (req, res) => {
 const updateCart = async (req, res) => {
   const { productId, quantity, deliveryType = 'tomorrow', gradeKey = null } = req.body;
 
+  // Guard: reject before MongoDB even attempts an ObjectId cast
+  if (!productId || String(productId) === 'null' || String(productId) === 'undefined') {
+    return res.status(400).json({ success: false, message: 'Invalid product ID' });
+  }
+
   const product = await KoyambeduProduct.findOne({ _id: productId, isActive: true, isAvailable: true })
     .populate('seller', '_id status isActive');
   if (!product) return res.status(404).json({ success: false, message: 'Product not found or unavailable' });
@@ -412,9 +417,22 @@ const updateCart = async (req, res) => {
 
   await cart.save();
 
-  // Populate product so frontend stepper gets full product data (images, qtyStep, etc.)
-  await cart.populate('items.product', 'name unit images qtyStep minQty maxQty currentPrice variants gradesEnabled grades isActive isAvailable');
-  res.json({ success: true, cart });
+  // Populate product (+ seller) so frontend stepper gets full product data (images, qtyStep, etc.)
+  // Also populate seller so we can apply the same active/approved filter as getCart —
+  // this prevents previously-filtered items from reappearing after every quantity update.
+  await cart.populate({
+    path: 'items.product',
+    select: 'name unit images qtyStep minQty maxQty currentPrice variants gradesEnabled grades isActive isAvailable',
+    populate: { path: 'seller', select: 'isActive status' },
+  });
+
+  const cartObj = cart.toObject();
+  cartObj.items = cartObj.items.filter(it =>
+    it.product?.isActive && it.product?.isAvailable &&
+    it.product?.seller?.isActive && it.product?.seller?.status === 'approved'
+  );
+
+  res.json({ success: true, cart: cartObj });
 };
 
 /** DELETE /api/koyambedu/cart/clear */

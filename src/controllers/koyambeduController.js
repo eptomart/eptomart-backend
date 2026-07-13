@@ -320,20 +320,31 @@ const getDeliverySlots = async (req, res) => {
 
 /** GET /api/koyambedu/cart */
 const getCart = async (req, res) => {
-  let cart = await KoyambeduCart.findOne({ user: req.user._id })
+  // Do NOT use .lean() — we need a Mongoose document so we can save if items need pruning
+  const cart = await KoyambeduCart.findOne({ user: req.user._id })
     .populate({
       path: 'items.product',
       select: 'name nameTamil currentPrice unit minQty maxQty qtyStep isAvailable isActive isSameDay isNextDay images weightKg variants',
       populate: { path: 'seller', select: 'businessName isActive status' },
-    }).lean();
-  if (!cart) cart = { items: [] };
-  if (cart.items) {
-    cart.items = cart.items.filter(it =>
-      it.product?.isActive && it.product?.isAvailable &&
-      it.product?.seller?.isActive && it.product?.seller?.status === 'approved'
-    );
+    });
+
+  if (!cart) {
+    return res.json({ success: true, cart: { items: [] } });
   }
-  res.json({ success: true, cart });
+
+  const isActive = (it) =>
+    it.product?.isActive && it.product?.isAvailable &&
+    it.product?.seller?.isActive && it.product?.seller?.status === 'approved';
+
+  // If any inactive/unavailable items are present, remove them from the DB now
+  // so that placeOrder never encounters them and throws a false "unavailable" error
+  const hadInactive = cart.items.some(it => !isActive(it));
+  if (hadInactive) {
+    cart.items = cart.items.filter(isActive);
+    await cart.save();
+  }
+
+  res.json({ success: true, cart: cart.toObject() });
 };
 
 /** POST /api/koyambedu/cart — add or update item */

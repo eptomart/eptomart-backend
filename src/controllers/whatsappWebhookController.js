@@ -23,8 +23,9 @@ const { sendMetaWhatsApp }   = require('../utils/sendWhatsApp');
 
 // ── GET /api/webhooks/whatsapp — Meta verification challenge ──────────────────
 exports.verifyWebhook = (req, res) => {
-  // Express/qs may parse 'hub.mode' as nested obj (req.query.hub.mode)
-  // or as a flat key (req.query['hub.mode']) — handle both
+  console.log('[WhatsApp Webhook] RAW QUERY:', JSON.stringify(req.query));
+  console.log('[WhatsApp Webhook] RAW URL:', req.url);
+
   const hub       = req.query.hub || {};
   const mode      = req.query['hub.mode']          || hub.mode;
   const token     = req.query['hub.verify_token']  || hub.verify_token;

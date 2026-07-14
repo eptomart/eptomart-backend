@@ -287,4 +287,13 @@ router.patch('/admin/schedule/:id/status',                        protectSuperAd
 router.patch('/admin/schedule/:id/slots/:slotKey/status',         protectSuperAdmin, schedCtrl.toggleSlotStatus);
 router.patch('/admin/schedule/:id/slots/:slotKey/capacity',       protectSuperAdmin, schedCtrl.updateSlotCapacity);
 
+// ══════════════════════════════════════════════
+// WHATSAPP INBOX — Super Admin only
+// ══════════════════════════════════════════════
+const waCtrl = require('../controllers/whatsappWebhookController');
+router.get   ('/admin/whatsapp/messages',           protectSuperAdmin, waCtrl.listMessages);
+router.patch ('/admin/whatsapp/messages/:id/read',  protectSuperAdmin, waCtrl.markRead);
+router.post  ('/admin/whatsapp/messages/:id/reply', protectSuperAdmin, waCtrl.replyToMessage);
+router.patch ('/admin/whatsapp/messages/read-all',  protectSuperAdmin, waCtrl.markAllRead);
+
 module.exports = router;

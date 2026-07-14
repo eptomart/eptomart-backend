@@ -23,23 +23,19 @@ const { sendMetaWhatsApp }   = require('../utils/sendWhatsApp');
 
 // ── GET /api/webhooks/whatsapp — Meta verification challenge ──────────────────
 exports.verifyWebhook = (req, res) => {
-  const mode      = req.query['hub.mode'];
-  const token     = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
+  // Express/qs may parse 'hub.mode' as nested obj (req.query.hub.mode)
+  // or as a flat key (req.query['hub.mode']) — handle both
+  const hub       = req.query.hub || {};
+  const mode      = req.query['hub.mode']          || hub.mode;
+  const token     = req.query['hub.verify_token']  || hub.verify_token;
+  const challenge = req.query['hub.challenge']     || hub.challenge;
   const envToken  = process.env.META_WHATSAPP_WEBHOOK_VERIFY_TOKEN;
-
-  console.log('[WhatsApp Webhook] Verify attempt:', {
-    mode,
-    receivedToken: token,
-    envToken:      envToken || '(NOT SET)',
-    match:         token === envToken,
-  });
 
   if (mode === 'subscribe' && token === envToken) {
     console.log('[WhatsApp Webhook] Verification successful');
     return res.status(200).send(challenge);
   }
-  console.warn('[WhatsApp Webhook] Verification failed — token mismatch or wrong mode');
+  console.warn('[WhatsApp Webhook] Verification failed', { mode, token, envToken: envToken || '(NOT SET)' });
   return res.status(403).json({ error: 'Forbidden' });
 };
 

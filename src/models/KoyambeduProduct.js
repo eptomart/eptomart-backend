@@ -156,5 +156,12 @@ koyambeduProductSchema.index({ seller: 1, isActive: 1 });
 koyambeduProductSchema.index({ category: 1, isActive: 1, isAvailable: 1 });
 koyambeduProductSchema.index({ name: 'text', nameTamil: 'text', tags: 'text' });
 koyambeduProductSchema.index({ currentPrice: 1 });
+// Case-insensitive unique product name across the entire Koyambedu Daily catalog.
+// IMPORTANT: Run a deduplication script before enabling this index in production
+// if existing duplicate names are present. Controller checks also enforce this.
+koyambeduProductSchema.index(
+  { name: 1 },
+  { unique: true, collation: { locale: 'en', strength: 2 }, name: 'unique_koyambedu_product_name' }
+);
 
 module.exports = mongoose.model('KoyambeduProduct', koyambeduProductSchema);

@@ -1932,6 +1932,22 @@ const calcVariantFinalPrice = (basePrice, procPct, platPct, logPct) => {
   return Math.round(Number(basePrice) * (1 + total / 100)); // always whole number
 };
 
+// ── Shared name-uniqueness guard ──────────────────────────────────────────────
+// Throws a 400 error if any other product already has the same name (case-insensitive).
+// Pass excludeId to allow a product to keep its own name during an update.
+const _checkNameUnique = async (name, excludeId = null) => {
+  const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const query = { name: new RegExp(`^${escaped}$`, 'i') };
+  if (excludeId) query._id = { $ne: excludeId };
+  const existing = await KoyambeduProduct.findOne(query).select('_id name').lean();
+  if (existing) {
+    throw Object.assign(
+      new Error(`A product named "${name.trim()}" already exists. Please use a different name.`),
+      { statusCode: 400 }
+    );
+  }
+};
+
 // ── Shared product-creation helper ──────────────────────────────────────────
 const _createProductForSeller = async (seller, body, opts = {}) => {
   const {
@@ -1956,6 +1972,9 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
 
   const category = await KoyambeduCategory.findOne({ _id: categoryId, isActive: true });
   if (!category) throw Object.assign(new Error('Invalid or inactive category'), { statusCode: 400 });
+
+  // Enforce unique product name across the whole Koyambedu Daily catalog
+  await _checkNameUnique(name);
 
   const procPct = procurementChargePercent != null ? Number(procurementChargePercent) : 0;
   const platPct = Number(platformChargePercent)  || 10;
@@ -2165,6 +2184,13 @@ const adminUpdateProduct = async (req, res) => {
   const product = await KoyambeduProduct.findById(req.params.productId);
   if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
+  // Check name uniqueness before applying the update (exclude this product itself)
+  if (req.body.name !== undefined && req.body.name.trim().toLowerCase() !== product.name.trim().toLowerCase()) {
+    const escaped = req.body.name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const dup = await KoyambeduProduct.findOne({ _id: { $ne: product._id }, name: new RegExp(`^${escaped}$`, 'i') }).select('_id').lean();
+    if (dup) return res.status(400).json({ success: false, message: `A product named "${req.body.name.trim()}" already exists. Please use a different name.` });
+  }
+
   const allowed = [
     'name','nameTamil','unit','description','badges',
     'stockQty','isAvailable','isSameDay','isNextDay',
@@ -2317,6 +2343,13 @@ const adminApproveProductEdit = async (req, res) => {
 
   const edit = product.pendingEdit;
 
+  // Check name uniqueness before applying (exclude this product itself)
+  if (edit.name !== undefined && edit.name.trim().toLowerCase() !== product.name.trim().toLowerCase()) {
+    const escaped = edit.name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const dup = await KoyambeduProduct.findOne({ _id: { $ne: product._id }, name: new RegExp(`^${escaped}$`, 'i') }).select('_id').lean();
+    if (dup) return res.status(400).json({ success: false, message: `Cannot approve: a product named "${edit.name.trim()}" already exists. Reject this edit and ask the SA to use a different name.` });
+  }
+
   // Apply plain catalog fields
   const directFields = ['name', 'nameTamil', 'unit', 'description', 'badges', 'weightKg', 'images'];
   for (const k of directFields) {
@@ -2420,6 +2453,14 @@ const sellerAdminUpdateProduct = async (req, res) => {
   }
 
   // ── 2. Queue catalog fields for superadmin approval ───────────────────────
+  // Name uniqueness: if SA is trying to change the name, check it now so the
+  // admin doesn't approve an edit that would later fail.
+  if (req.body.name !== undefined && req.body.name.trim().toLowerCase() !== product.name.trim().toLowerCase()) {
+    const escaped = req.body.name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const dup = await KoyambeduProduct.findOne({ _id: { $ne: product._id }, name: new RegExp(`^${escaped}$`, 'i') }).select('_id').lean();
+    if (dup) return res.status(400).json({ success: false, message: `A product named "${req.body.name.trim()}" already exists. Please use a different name.` });
+  }
+
   const catalogKeys = [
     'name', 'nameTamil', 'unit', 'description', 'badges',
     'categoryId', 'weightKg', 'images',

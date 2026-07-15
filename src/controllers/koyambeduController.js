@@ -3264,6 +3264,8 @@ const bulkUpdateDailyPrice = async (req, res) => {
           grade.lowestUnitPrice = getLowestUnitPrice(updatedVariants);
           product.currentPrice   = getLowestUnitPriceAcrossGrades(product.grades) || 0;
           product.priceUpdatedAt = new Date();
+          // Price applied to this grade → re-enable it (clears yesterday's "not available" deactivation)
+          grade.isActive = true;
         } else {
           const prevHighestVariant = getHighestVariant(product.variants || []);
           prevPrice = prevHighestVariant?.finalPrice || product.currentPrice;
@@ -3281,6 +3283,10 @@ const bulkUpdateDailyPrice = async (req, res) => {
           product.finalPrice     = highestUpdated?.finalPrice || 0;
           product.currentPrice   = getLowestUnitPrice(updatedVariants) || highestUpdated?.finalPrice || 0;
           product.priceUpdatedAt = new Date();
+          // Price applied to whole product → re-enable all grades too
+          if (product.gradesEnabled && product.grades?.length) {
+            product.grades.forEach(g => { if (g.gradeKey !== 'base') g.isActive = true; });
+          }
         }
 
         // Applying a price means the product is available today — auto-reactivate

@@ -140,7 +140,14 @@ const getProducts = async (req, res) => {
     if (deliveryType === 'tomorrow') filter.isNextDay = true;
     if (search) {
       const re = new RegExp(search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      filter.$or = [{ name: re }, { nameTamil: re }, { description: re }];
+      // Search should show all active products regardless of today's delivery slot.
+      // Use $and so the approval $or isn't overwritten by the name-search $or.
+      delete filter.isAvailable;
+      filter.$and = [
+        { $or: [{ approvalStatus: 'approved' }, { approvalStatus: { $exists: false } }] },
+        { $or: [{ name: re }, { nameTamil: re }, { description: re }] },
+      ];
+      delete filter.$or;
     }
 
     const sortMap = {

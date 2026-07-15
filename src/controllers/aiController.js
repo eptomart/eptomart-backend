@@ -1,10 +1,11 @@
 // ============================================
 // AI CONTROLLER — Claude-powered features
 // ============================================
-const { callClaude } = require('../utils/claudeApi');
-const Product  = require('../models/Product');
-const Order    = require('../models/Order');
-const Category = require('../models/Category');
+const { callClaude }     = require('../utils/claudeApi');
+const Product            = require('../models/Product');
+const KoyambeduProduct   = require('../models/KoyambeduProduct');
+const Order              = require('../models/Order');
+const Category           = require('../models/Category');
 
 // ── In-memory rate limit: max 30 AI calls/IP/hour (free-tier safe) ──
 const _ipHits = new Map();
@@ -119,6 +120,13 @@ const chat = async (req, res) => {
       rice:       ['rice','basmati','sona masoori','brown rice','red rice','parboiled'],
       flour:      ['flour','atta','wheat','maida','besan','ragi','jowar','bajra','millet'],
       spice:      ['spice','masala','pepper','turmeric','cumin','coriander','chilli','cardamom','clove','cinnamon'],
+      // Koyambedu Daily / fresh produce triggers
+      vegetable:  ['tomato','onion','potato','capsicum','carrot','cucumber','brinjal','cabbage','cauliflower','spinach','beans','drumstick','bitter gourd','ridge gourd','ladies finger','cluster beans'],
+      vegetables: ['tomato','onion','potato','capsicum','carrot','cucumber','brinjal','cabbage','cauliflower','spinach','beans'],
+      produce:    ['tomato','onion','potato','capsicum','carrot','brinjal','cucumber','cabbage'],
+      koyambedu:  ['tomato','onion','potato','capsicum','carrot','brinjal','cucumber','cabbage','cauliflower','spinach','beans','drumstick'],
+      sabzi:      ['tomato','onion','potato','capsicum','carrot','brinjal','cucumber','beans'],
+      greens:     ['spinach','curry leaf','coriander','mint','fenugreek','amaranth','drumstick'],
     };
 
     const msgLower = lastUserMsg.toLowerCase();
@@ -137,6 +145,7 @@ const chat = async (req, res) => {
     const keywords = [...expandedSet];
 
     let products = [];
+    let kbdProducts = [];
     if (keywords.length > 0) {
       const orClauses = keywords.flatMap(kw => [
         { name:        { $regex: kw, $options: 'i' } },
@@ -145,22 +154,55 @@ const chat = async (req, res) => {
       ]);
       if (categoryHint) orClauses.push({ category: { $regex: categoryHint, $options: 'i' } });
 
-      products = await Product.find({
-        approvalStatus: 'approved',
-        isActive: true,
-        $or: orClauses,
-      })
-        .limit(6)
-        .select('name discountPrice price category description stock')
-        .lean();
+      // For Koyambedu, also try de-pluralized stems so "tomatoes" matches "Tomato"
+      const depluralise = w => {
+        if (w.length > 4 && w.endsWith('oes')) return w.slice(0, -2); // tomatoes → tomato
+        if (w.length > 4 && w.endsWith('es'))  return w.slice(0, -2); // ladies → ladi (ok, imperfect)
+        if (w.length > 3 && w.endsWith('s'))   return w.slice(0, -1); // tomatos → tomato
+        return w;
+      };
+      const kbdKeywords = [...new Set([...keywords, ...keywords.map(depluralise)])];
+
+      const kbdOrClauses = kbdKeywords.flatMap(kw => [
+        { name:      { $regex: kw, $options: 'i' } },
+        { nameTamil: { $regex: kw, $options: 'i' } },
+        { tags:      { $regex: kw, $options: 'i' } },
+      ]);
+
+      [products, kbdProducts] = await Promise.all([
+        Product.find({ approvalStatus: 'approved', isActive: true, $or: orClauses })
+          .limit(6)
+          .select('name discountPrice price category description stock')
+          .lean(),
+        KoyambeduProduct.find({ isActive: true, $or: kbdOrClauses })
+          .limit(6)
+          .select('name nameTamil currentPrice lowestUnitPrice category isAvailable')
+          .populate('category', 'name')
+          .lean(),
+      ]);
     }
 
-    if (products.length) {
-      productContext = '\n\nMatching products currently on Eptomart:\n' +
-        products.map(p =>
-          `• ${p.name} — ₹${p.discountPrice || p.price}${p.stock === 0 ? ' (Out of stock)' : ''} [${p.category}]`
-        ).join('\n') +
-        '\n\nOnly recommend products listed above. Do not suggest anything else.';
+    const hasEpt = products.length > 0;
+    const hasKbd = kbdProducts.length > 0;
+
+    if (hasEpt || hasKbd) {
+      productContext = '\n\nMatching products across Eptomart:\n';
+      if (hasKbd) {
+        productContext += '\n[Koyambedu Daily — fresh produce, wholesale vegetables]\n' +
+          kbdProducts.map(p => {
+            const price = p.lowestUnitPrice || p.currentPrice;
+            const avail = p.isAvailable === false ? ' (Not available today)' : '';
+            const cat   = p.category?.name || 'Koyambedu Daily';
+            return `• ${p.name}${p.nameTamil ? ` (${p.nameTamil})` : ''} — ₹${price}${avail} [${cat}]`;
+          }).join('\n');
+      }
+      if (hasEpt) {
+        productContext += '\n\n[Eptomart — grocery, packaged goods, household]\n' +
+          products.map(p =>
+            `• ${p.name} — ₹${p.discountPrice || p.price}${p.stock === 0 ? ' (Out of stock)' : ''} [${p.category}]`
+          ).join('\n');
+      }
+      productContext += '\n\nOnly recommend products listed above. Do not suggest anything else. When recommending Koyambedu Daily products, mention it\'s available via Koyambedu Daily section.';
     } else {
       productContext = '\n\nNo matching products found in the catalog right now. Tell the customer honestly and briefly that we don\'t carry that specific item yet, and invite them to check back or explore related categories. Do NOT make up product names or pretend products exist.';
     }

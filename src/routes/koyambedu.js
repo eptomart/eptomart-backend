@@ -200,6 +200,7 @@ router.post ('/admin/products/:productId/approve-edit',      protectSuperAdmin, 
 router.post ('/admin/products/:productId/reject-edit',       protectSuperAdmin, ctrl.adminRejectProductEdit);
 router.put   ('/admin/products/:productId',                  protectAdmin,      ctrl.adminUpdateProduct);
 router.patch ('/admin/products/:productId/toggle',           protectAdmin,      ctrl.adminToggleProduct);
+router.post  ('/admin/products/bulk-availability',           protectAdmin,      ctrl.adminBulkSetAvailability);
 router.delete('/admin/products/:productId',                  protectSuperAdmin, ctrl.adminDeleteProduct);
 router.post  ('/admin/sellers/:sellerId/products',           protectAdmin,      ctrl.adminCreateProduct);
 

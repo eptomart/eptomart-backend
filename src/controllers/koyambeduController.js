@@ -2274,6 +2274,30 @@ const adminToggleProduct = async (req, res) => {
   res.json({ success: true, isAvailable: product.isAvailable });
 };
 
+/**
+ * POST /api/koyambedu/admin/products/bulk-availability
+ * Body: { productIds: [ObjectId], available: boolean }
+ * Sets isAvailable for multiple products at once (used by WhatsApp "Not Available" detection).
+ */
+const adminBulkSetAvailability = async (req, res) => {
+  try {
+    const { productIds, available } = req.body;
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'productIds array required' });
+    }
+    if (typeof available !== 'boolean') {
+      return res.status(400).json({ success: false, message: 'available (boolean) required' });
+    }
+    const result = await KoyambeduProduct.updateMany(
+      { _id: { $in: productIds } },
+      { $set: { isAvailable: available } }
+    );
+    res.json({ success: true, updated: result.modifiedCount, isAvailable: available });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 /** POST /api/koyambedu/admin/sellers/:sellerId/products — admin adds product for any seller */
 const adminCreateProduct = async (req, res) => {
   const seller = await KoyambeduSeller.findById(req.params.sellerId);
@@ -5794,7 +5818,7 @@ module.exports = {
   // Shared order data
   getOrderTimeline, getOrderCalculation,
   // Admin product management
-  adminGetAllProducts, adminUpdateProduct, adminToggleProduct, adminCreateProduct, adminDeleteProduct,
+  adminGetAllProducts, adminUpdateProduct, adminToggleProduct, adminBulkSetAvailability, adminCreateProduct, adminDeleteProduct,
   // Product approval workflow
   adminGetPendingProducts, adminApproveProduct, adminRejectProduct,
   adminApproveProductEdit, adminRejectProductEdit,

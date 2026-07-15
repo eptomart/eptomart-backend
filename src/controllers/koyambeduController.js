@@ -2281,23 +2281,43 @@ const adminToggleProduct = async (req, res) => {
 
 /**
  * POST /api/koyambedu/admin/products/bulk-availability
- * Body: { productIds: [ObjectId], available: boolean }
- * Sets isAvailable for multiple products at once (used by WhatsApp "Not Available" detection).
+ * Body: { updates: [{ productId, gradeKey? }], available: boolean }
+ *
+ * - If gradeKey is provided → set grades[gradeKey].isActive only (grade-level).
+ * - If no gradeKey → set product.isAvailable (whole-product level).
+ * Used by WhatsApp "Not Available Today" detection.
  */
 const adminBulkSetAvailability = async (req, res) => {
   try {
-    const { productIds, available } = req.body;
-    if (!Array.isArray(productIds) || productIds.length === 0) {
-      return res.status(400).json({ success: false, message: 'productIds array required' });
+    const { updates, available } = req.body;
+    if (!Array.isArray(updates) || updates.length === 0) {
+      return res.status(400).json({ success: false, message: 'updates array required' });
     }
     if (typeof available !== 'boolean') {
       return res.status(400).json({ success: false, message: 'available (boolean) required' });
     }
-    const result = await KoyambeduProduct.updateMany(
-      { _id: { $in: productIds } },
-      { $set: { isAvailable: available } }
-    );
-    res.json({ success: true, updated: result.modifiedCount, isAvailable: available });
+
+    let count = 0;
+    for (const u of updates) {
+      try {
+        if (u.gradeKey) {
+          // Grade-level: set isActive on the matching grade subdocument
+          const r = await KoyambeduProduct.updateOne(
+            { _id: u.productId, 'grades.gradeKey': u.gradeKey },
+            { $set: { 'grades.$.isActive': available } }
+          );
+          if (r.modifiedCount) count++;
+        } else {
+          // Product-level: set isAvailable on the whole product
+          const r = await KoyambeduProduct.updateOne(
+            { _id: u.productId },
+            { $set: { isAvailable: available } }
+          );
+          if (r.modifiedCount) count++;
+        }
+      } catch (_) {}
+    }
+    res.json({ success: true, updated: count, available });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

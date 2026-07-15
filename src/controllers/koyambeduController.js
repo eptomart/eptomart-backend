@@ -126,10 +126,16 @@ const getCategories = async (req, res) => {
 /** GET /api/koyambedu/products?category=&search=&deliveryType=&page= */
 const getProducts = async (req, res) => {
   try {
-    const { category, search, deliveryType, page = 1, limit = 20, sort = 'default' } = req.query;
+    const { category, search, deliveryType, context, page = 1, limit = 20, sort = 'default' } = req.query;
+
+    // context=navbar: Navbar/homepage search — find any active product regardless of today's slot,
+    //                 so the search bar is never empty outside business hours.
+    // All other contexts (shop listing, category browse): respect isAvailable.
+    const filterAvailability = context !== 'navbar';
 
     const filter = {
-      isActive: true, isAvailable: true,
+      isActive: true,
+      ...(filterAvailability ? { isAvailable: true } : {}),
       // Only show approved products; legacy products (no field) are treated as approved
       $or: [{ approvalStatus: 'approved' }, { approvalStatus: { $exists: false } }],
     };
@@ -140,9 +146,7 @@ const getProducts = async (req, res) => {
     if (deliveryType === 'tomorrow') filter.isNextDay = true;
     if (search) {
       const re = new RegExp(search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      // Search should show all active products regardless of today's delivery slot.
       // Use $and so the approval $or isn't overwritten by the name-search $or.
-      delete filter.isAvailable;
       filter.$and = [
         { $or: [{ approvalStatus: 'approved' }, { approvalStatus: { $exists: false } }] },
         { $or: [{ name: re }, { nameTamil: re }, { description: re }] },

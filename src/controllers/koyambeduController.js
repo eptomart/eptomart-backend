@@ -187,6 +187,7 @@ const getFeaturedProducts = async (req, res) => {
   try {
     const base = {
       isActive: true,
+      isAvailable: true,   // hide products marked unavailable today
       $or: [{ approvalStatus: 'approved' }, { approvalStatus: { $exists: false } }],
     };
 
@@ -3258,6 +3259,8 @@ const bulkUpdateDailyPrice = async (req, res) => {
           product.priceUpdatedAt = new Date();
         }
 
+        // Applying a price means the product is available today — auto-reactivate
+        product.isAvailable = true;
         await product.save();
 
         setImmediate(async () => {

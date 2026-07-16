@@ -26,8 +26,8 @@ const koyambeduProductSchema = new Schema({
 
   // ── Charge percentages (product-level, apply to all variants) ──────────────
   procurementChargePercent: { type: Number, default: 0 },   // % of basePrice (admin/SA set per product)
-  platformChargePercent:    { type: Number, default: 10 },  // % of basePrice
-  logisticsChargePercent:   { type: Number, default: 10 },  // % of basePrice
+  platformChargePercent:    { type: Number, default: 0 },   // % of basePrice (set per product, no automatic default)
+  logisticsChargePercent:   { type: Number, default: 0 },   // % of basePrice (set per product, no automatic default)
 
   // ── Variant Pricing (up to 4 tiers) ────────────────────────────────────────
   // finalPrice = basePrice × (1 + (procurement + platform + logistics) / 100)

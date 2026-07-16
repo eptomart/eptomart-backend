@@ -596,7 +596,7 @@ const placeOrder = async (req, res) => {
 
   // ── 7b. Delivery charge (distance-based: ₹249 per 8 km radius) ──
   const deliveryCharge = Math.ceil(distanceKm / 4) * 125;
-  const platformFee    = 15;
+  const platformFee    = 75; // ₹75 incl. 18% GST (SAC 9985 — marketplace services)
   const deliveryType   = deliveryTypes.size > 1 ? 'mixed' : [...deliveryTypes][0];
 
   // ── 7b. Coupon discount (applied on subtotal, shipping excluded) ──
@@ -1363,7 +1363,7 @@ const requestPriceRevision = async (req, res) => {
     requestedAt:  new Date(),
     requestedBy:  seller._id,
     revisedItems: revisedItemDetails,
-    revisedTotal: newTotal + order.pricing.deliveryCharge + (order.pricing.platformFee || order.pricing.serviceFee || 15),
+    revisedTotal: newTotal + order.pricing.deliveryCharge + (order.pricing.platformFee || order.pricing.serviceFee || 75),
     buyerResponse:'pending',
   };
   order.orderStatus = 'price_revision_pending';
@@ -1989,8 +1989,8 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
   await _checkNameUnique(name);
 
   const procPct = procurementChargePercent != null ? Number(procurementChargePercent) : 0;
-  const platPct = Number(platformChargePercent)  || 10;
-  const logPct  = Number(logisticsChargePercent) || 10;
+  const platPct = platformChargePercent  != null ? Number(platformChargePercent)  : 0;
+  const logPct  = logisticsChargePercent != null ? Number(logisticsChargePercent) : 0;
 
   // ── Grade mode ────────────────────────────────────────────────────────────
   if (gradesEnabled && grades && Array.isArray(grades) && grades.length > 0) {
@@ -2217,8 +2217,10 @@ const adminUpdateProduct = async (req, res) => {
   // ── Charge percents (used by both variant + grade paths) ──────────────
   const _procRaw = req.body.procurementChargePercent ?? product.procurementChargePercent;
   const procPct = _procRaw != null ? Number(_procRaw) : 0;
-  const platPct = Number(req.body.platformChargePercent  ?? product.platformChargePercent)  || 10;
-  const logPct  = Number(req.body.logisticsChargePercent ?? product.logisticsChargePercent) || 10;
+  const _platRaw = req.body.platformChargePercent  ?? product.platformChargePercent;
+  const platPct  = _platRaw != null ? Number(_platRaw) : 0;
+  const _logRaw  = req.body.logisticsChargePercent ?? product.logisticsChargePercent;
+  const logPct   = _logRaw  != null ? Number(_logRaw)  : 0;
 
   // ── Grade system ───────────────────────────────────────────────────────
   if (req.body.gradesEnabled !== undefined) product.gradesEnabled = !!req.body.gradesEnabled;
@@ -2416,9 +2418,11 @@ const adminApproveProductEdit = async (req, res) => {
 
   // Resolve charge percents (used by both paths)
   const _procRaw2 = edit.procurementChargePercent ?? product.procurementChargePercent;
-  const procPct = _procRaw2 != null ? Number(_procRaw2) : 0;
-  const platPct = Number(edit.platformChargePercent  ?? product.platformChargePercent)  || 10;
-  const logPct  = Number(edit.logisticsChargePercent ?? product.logisticsChargePercent) || 10;
+  const procPct   = _procRaw2 != null ? Number(_procRaw2) : 0;
+  const _platRaw2 = edit.platformChargePercent  ?? product.platformChargePercent;
+  const platPct   = _platRaw2 != null ? Number(_platRaw2)  : 0;
+  const _logRaw2  = edit.logisticsChargePercent ?? product.logisticsChargePercent;
+  const logPct    = _logRaw2  != null ? Number(_logRaw2)   : 0;
 
   // Apply grade system fields
   if (edit.gradesEnabled !== undefined) product.gradesEnabled = !!edit.gradesEnabled;

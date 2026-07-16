@@ -14,7 +14,7 @@ const koyambeduProductSchema = new Schema({
   description:{ type: String, trim: true },
 
   // Unit configuration
-  unit:       { type: String, enum: ['kg','g','piece','bunch','dozen','litre','pack','leaf'], default: 'kg' },
+  unit:       { type: String, enum: ['kg','g','piece','bunch','dozen','litre','pack','leaf','box','bag','crate'], default: 'kg' },
 
   // Quantity constraints (buyer-facing)
   minQty:     { type: Number, default: 0.5 },

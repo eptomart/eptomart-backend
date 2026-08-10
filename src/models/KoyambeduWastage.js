@@ -13,7 +13,7 @@ const koyambeduWastageSchema = new Schema({
 
   product:     { type: Schema.Types.ObjectId, ref: 'KoyambeduProduct', required: true },
   productName: { type: String, required: true, trim: true },
-  category:    { type: String, enum: ['fruit', 'vegetable', 'other'], default: 'vegetable' },
+  category:    { type: String, default: '' }, // snapshot of the real KoyambeduCategory name, auto-populated
   unit:        { type: String, default: 'kg' },
 
   quantity:    { type: Number, required: true, min: 0 },

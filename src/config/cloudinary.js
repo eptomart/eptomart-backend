@@ -109,6 +109,21 @@ const deleteImage = async (publicId, resourceType = 'image') => {
   }
 };
 
+// Koyambedu Inventory — purchase bill/receipt storage (optional attachment;
+// image or PDF). Separate folder from product images and Shiprocket bills.
+const koyambeduPurchaseBillStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'eptomart/koyambedu/purchase-bills',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'pdf'],
+    resource_type: 'auto',
+  },
+});
+const uploadKoyambeduBill = multer({
+  storage: koyambeduPurchaseBillStorage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+});
+
 // Koyambedu Fresh produce image storage
 const koyambeduStorage = new CloudinaryStorage({
   cloudinary,
@@ -144,4 +159,4 @@ const uploadHeroVideo = multer({
   },
 });
 
-module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, uploadBill, uploadKoyambedu, uploadHeroVideo, deleteImage };
+module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, uploadBill, uploadKoyambedu, uploadKoyambeduBill, uploadHeroVideo, deleteImage };

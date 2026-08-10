@@ -5,10 +5,12 @@
 // stock-validation logic. Safe to deploy independently of existing flows.
 // ============================================
 const mongoose = require('mongoose');
-const KoyambeduPurchase = require('../models/KoyambeduPurchase');
-const KoyambeduWastage  = require('../models/KoyambeduWastage');
-const KoyambeduProduct  = require('../models/KoyambeduProduct');
-const KoyambeduOrder    = require('../models/KoyambeduOrder');
+const KoyambeduPurchase      = require('../models/KoyambeduPurchase');
+const KoyambeduWastage       = require('../models/KoyambeduWastage');
+const KoyambeduProduct       = require('../models/KoyambeduProduct');
+const KoyambeduOrder         = require('../models/KoyambeduOrder');
+const KoyambeduMaterialUsage = require('../models/KoyambeduMaterialUsage');
+const { deleteImage } = require('../config/cloudinary');
 
 const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
 
@@ -44,21 +46,37 @@ async function avgCostPerUnit(productId, asOfDate) {
 // ══════════════════════════════════════════════
 async function createPurchase(req, res) {
   try {
-    const { purchaseDate, product, seller, sellerName, quantity, costPricePerUnit,
-            transportCharge, loadingCharge, notes, category } = req.body;
-    if (!product) return res.status(400).json({ success: false, message: 'Product is required' });
+    const { purchaseDate, itemType, product, itemName, seller, sellerName, quantity, costPricePerUnit,
+            transportCharge, loadingCharge, notes } = req.body;
     if (!(Number(quantity) > 0)) return res.status(400).json({ success: false, message: 'Quantity must be greater than 0' });
     if (!(Number(costPricePerUnit) >= 0)) return res.status(400).json({ success: false, message: 'Cost price is required' });
 
-    const prod = await KoyambeduProduct.findById(product).select('name unit category').lean();
-    if (!prod) return res.status(404).json({ success: false, message: 'Product not found' });
+    const type = ['produce', 'packing_material', 'other'].includes(itemType) ? itemType : 'produce';
+    let resolvedName, resolvedCategory, resolvedUnit = 'kg';
+
+    if (type === 'produce') {
+      // Item name & category are auto-populated from the live, active Koyambedu
+      // Daily catalog — admin only picks the product, nothing is typed by hand.
+      if (!product) return res.status(400).json({ success: false, message: 'Select a product' });
+      const prod = await KoyambeduProduct.findById(product).select('name unit category').populate('category', 'name').lean();
+      if (!prod) return res.status(404).json({ success: false, message: 'Product not found' });
+      resolvedName = prod.name;
+      resolvedCategory = prod.category?.name || 'Uncategorized';
+      resolvedUnit = prod.unit || 'kg';
+    } else {
+      if (!itemName || !itemName.trim()) return res.status(400).json({ success: false, message: 'Enter an item name' });
+      resolvedName = itemName.trim();
+      resolvedCategory = type === 'packing_material' ? 'Packing Material' : 'Other';
+      resolvedUnit = (req.body.unit || 'pcs').trim();
+    }
 
     const purchase = await KoyambeduPurchase.create({
       purchaseDate: purchaseDate ? new Date(purchaseDate) : new Date(),
-      product,
-      productName: prod.name,
-      unit: prod.unit || 'kg',
-      category: category || 'vegetable',
+      itemType: type,
+      product: type === 'produce' ? product : null,
+      itemName: resolvedName,
+      category: resolvedCategory,
+      unit: resolvedUnit,
       seller: seller || null,
       sellerName: sellerName || '',
       quantity: Number(quantity),
@@ -75,14 +93,38 @@ async function createPurchase(req, res) {
   }
 }
 
+// POST /inventory/purchases/:id/bill — optional bill/receipt attachment.
+// Uses multer(uploadKoyambeduBill).single('bill') as route middleware, so the
+// uploaded file is already on Cloudinary by the time this handler runs.
+async function uploadPurchaseBill(req, res) {
+  try {
+    const purchase = await KoyambeduPurchase.findById(req.params.id);
+    if (!purchase) return res.status(404).json({ success: false, message: 'Purchase entry not found' });
+    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
+
+    // Replace any previously attached bill.
+    if (purchase.billPublicId) {
+      await deleteImage(purchase.billPublicId, 'auto').catch(() => {});
+    }
+    purchase.billUrl = req.file.path || req.file.secure_url || '';
+    purchase.billPublicId = req.file.filename || req.file.public_id || '';
+    await purchase.save();
+    res.json({ success: true, purchase });
+  } catch (err) {
+    console.error('uploadPurchaseBill:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+}
+
 async function listPurchases(req, res) {
   try {
-    const { from, to, product, seller, category, page = 1, limit = 50 } = req.query;
+    const { from, to, product, seller, category, itemType, page = 1, limit = 50 } = req.query;
     const { start, end } = dayRange(from, to);
     const filter = { purchaseDate: { $gte: start, $lte: end } };
     if (product)  filter.product  = product;
     if (seller)   filter.seller   = seller;
     if (category) filter.category = category;
+    if (itemType) filter.itemType = itemType;
 
     const skip = (Number(page) - 1) * Number(limit);
     const [purchases, total, totals] = await Promise.all([
@@ -146,11 +188,13 @@ async function deletePurchase(req, res) {
 // ══════════════════════════════════════════════
 async function createWastage(req, res) {
   try {
-    const { wastageDate, product, quantity, reason, notes, category } = req.body;
+    const { wastageDate, product, quantity, reason, notes } = req.body;
     if (!product) return res.status(400).json({ success: false, message: 'Product is required' });
     if (!(Number(quantity) > 0)) return res.status(400).json({ success: false, message: 'Quantity must be greater than 0' });
 
-    const prod = await KoyambeduProduct.findById(product).select('name unit category').lean();
+    // Item name & category auto-populated from the live, active product — same
+    // catalog-driven approach as Purchases, nothing typed by hand.
+    const prod = await KoyambeduProduct.findById(product).select('name unit category').populate('category', 'name').lean();
     if (!prod) return res.status(404).json({ success: false, message: 'Product not found' });
 
     const wDate = wastageDate ? new Date(wastageDate) : new Date();
@@ -161,7 +205,7 @@ async function createWastage(req, res) {
       product,
       productName: prod.name,
       unit: prod.unit || 'kg',
-      category: category || 'vegetable',
+      category: prod.category?.name || 'Uncategorized',
       quantity: Number(quantity),
       reason: reason || 'spoilage',
       notes: notes || '',
@@ -227,11 +271,12 @@ async function deleteWastage(req, res) {
 // ══════════════════════════════════════════════
 async function getInventoryBalance(req, res) {
   try {
-    const { category } = req.query;
-    const productFilter = { isActive: true };
-    if (category) productFilter.category = category;
+    const { categoryId } = req.query;
+    const productFilter = { isActive: { $ne: false } };
+    if (categoryId) productFilter.category = categoryId;
 
-    const products = await KoyambeduProduct.find(productFilter).select('name unit category stockQty').lean();
+    const products = await KoyambeduProduct.find(productFilter).select('name unit category stockQty')
+      .populate('category', 'name').lean();
     const productIds = products.map(p => p._id);
 
     const [purchased, wasted, sold] = await Promise.all([
@@ -264,7 +309,7 @@ async function getInventoryBalance(req, res) {
         productId: p._id,
         name: p.name,
         unit: p.unit,
-        category: p.category,
+        category: p.category?.name || '',
         purchasedQty: r2(purchasedQty),
         wastedQty: r2(wastedQty),
         soldQty: r2(soldQty),
@@ -276,6 +321,115 @@ async function getInventoryBalance(req, res) {
     res.json({ success: true, rows });
   } catch (err) {
     console.error('getInventoryBalance:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+}
+
+// ══════════════════════════════════════════════
+// MATERIAL USAGE — packing materials (or other non-produce purchases) linked
+// to the specific customer order they were consumed for.
+// ══════════════════════════════════════════════
+
+// GET /inventory/orders/lookup?orderId=EPT-KBD-... — small helper so the
+// admin can find the right order to attach a material-usage entry to.
+async function lookupOrder(req, res) {
+  try {
+    const { orderId } = req.query;
+    if (!orderId || !orderId.trim()) return res.json({ success: true, orders: [] });
+    const orders = await KoyambeduOrder.find({ orderId: { $regex: orderId.trim(), $options: 'i' } })
+      .select('orderId buyer deliveryDate orderStatus').populate('buyer', 'name phone')
+      .sort({ createdAt: -1 }).limit(10).lean();
+    res.json({ success: true, orders });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+}
+
+// List packing_material/other purchase batches — used to populate the "which
+// material" dropdown when logging usage against an order.
+async function listMaterialPurchases(req, res) {
+  try {
+    const purchases = await KoyambeduPurchase.find({ itemType: { $in: ['packing_material', 'other'] } })
+      .sort({ purchaseDate: -1 }).limit(200).select('itemName unit quantity costPricePerUnit purchaseDate').lean();
+    res.json({ success: true, purchases });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+}
+
+async function createMaterialUsage(req, res) {
+  try {
+    const { orderId, purchase, materialName, unit, quantity, costPerUnit, usageDate, notes } = req.body;
+    if (!orderId) return res.status(400).json({ success: false, message: 'Order is required' });
+    if (!(Number(quantity) > 0)) return res.status(400).json({ success: false, message: 'Quantity must be greater than 0' });
+
+    const order = await KoyambeduOrder.findById(orderId).select('orderId').lean();
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    let resolvedName = materialName, resolvedUnit = unit || 'pcs', resolvedCost = Number(costPerUnit) || 0;
+    if (purchase) {
+      const p = await KoyambeduPurchase.findById(purchase).select('itemName unit costPricePerUnit').lean();
+      if (p) {
+        resolvedName = resolvedName || p.itemName;
+        resolvedUnit = unit || p.unit;
+        resolvedCost = costPerUnit !== undefined && costPerUnit !== '' ? Number(costPerUnit) : p.costPricePerUnit;
+      }
+    }
+    if (!resolvedName || !resolvedName.trim()) return res.status(400).json({ success: false, message: 'Material name is required' });
+
+    const usage = await KoyambeduMaterialUsage.create({
+      order: order._id,
+      orderIdLabel: order.orderId,
+      purchase: purchase || null,
+      materialName: resolvedName.trim(),
+      unit: resolvedUnit,
+      quantity: Number(quantity),
+      costPerUnit: resolvedCost,
+      usageDate: usageDate ? new Date(usageDate) : new Date(),
+      notes: notes || '',
+      enteredBy: req.user._id,
+    });
+    res.json({ success: true, usage });
+  } catch (err) {
+    console.error('createMaterialUsage:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+}
+
+async function listMaterialUsage(req, res) {
+  try {
+    const { from, to, orderId, page = 1, limit = 50 } = req.query;
+    const filter = {};
+    if (from || to) { const { start, end } = dayRange(from, to); filter.usageDate = { $gte: start, $lte: end }; }
+    if (orderId) filter.orderIdLabel = { $regex: orderId, $options: 'i' };
+
+    const skip = (Number(page) - 1) * Number(limit);
+    const [usage, total, totals] = await Promise.all([
+      KoyambeduMaterialUsage.find(filter).sort({ usageDate: -1, createdAt: -1 }).skip(skip).limit(Number(limit))
+        .populate('enteredBy', 'name').lean(),
+      KoyambeduMaterialUsage.countDocuments(filter),
+      KoyambeduMaterialUsage.aggregate([
+        { $match: filter },
+        { $group: { _id: null, totalQty: { $sum: '$quantity' }, totalCost: { $sum: '$totalCost' } } },
+      ]),
+    ]);
+    res.json({
+      success: true, usage, total, page: Number(page), totalPages: Math.ceil(total / Number(limit)) || 1,
+      summary: totals[0] || { totalQty: 0, totalCost: 0 },
+    });
+  } catch (err) {
+    console.error('listMaterialUsage:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+}
+
+async function deleteMaterialUsage(req, res) {
+  try {
+    const usage = await KoyambeduMaterialUsage.findByIdAndDelete(req.params.id);
+    if (!usage) return res.status(404).json({ success: false, message: 'Usage entry not found' });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('deleteMaterialUsage:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 }
@@ -313,10 +467,23 @@ async function getProfitReport(req, res) {
     const costMap = {};
     await Promise.all(productIds.map(async id => { costMap[id] = await avgCostPerUnit(id, end); }));
 
+    // Order-linked packing-material usage cost, grouped per order — folded
+    // into that order's (customer's) overhead alongside the flat transport/
+    // packing charges from adminCosts.
+    const orderIds = orders.map(o => o._id);
+    const materialUsageByOrder = {};
+    if (orderIds.length) {
+      const usageRows = await KoyambeduMaterialUsage.aggregate([
+        { $match: { order: { $in: orderIds } } },
+        { $group: { _id: '$order', cost: { $sum: '$totalCost' } } },
+      ]);
+      usageRows.forEach(u => { materialUsageByOrder[String(u._id)] = u.cost || 0; });
+    }
+
     const itemAgg = {};   // productId -> { name, qty, revenue, cogs }
     const custAgg = {};   // buyerId -> { name, phone, revenue, cogs, overhead, orders }
 
-    let totalRevenue = 0, totalCogs = 0, totalOverhead = 0;
+    let totalRevenue = 0, totalCogs = 0, totalOverhead = 0, totalMaterialUsage = 0;
 
     for (const order of orders) {
       const buyerId = order.buyer?._id ? String(order.buyer._id) : 'unknown';
@@ -328,9 +495,11 @@ async function getProfitReport(req, res) {
 
       const transport = Number(order.adminCosts?.transportCharge) || 0;
       const packing   = Number(order.adminCosts?.packingCharge) || 0;
-      const overhead  = transport + packing;
+      const materialUsage = materialUsageByOrder[String(order._id)] || 0;
+      const overhead  = transport + packing + materialUsage;
       custAgg[buyerId].overhead += overhead;
       totalOverhead += overhead;
+      totalMaterialUsage += materialUsage;
 
       for (const it of (order.items || [])) {
         if (it.itemStatus === 'declined') continue;
@@ -398,6 +567,7 @@ async function getProfitReport(req, res) {
         totalCogs: r2(totalCogs),
         totalWastageCost: r2(totalWastageCost),
         totalOverhead: r2(totalOverhead),
+        totalMaterialUsage: r2(totalMaterialUsage),
         grossProfit: r2(totalRevenue - totalCogs),
         netProfit,
         orderCount: orders.length,
@@ -416,7 +586,12 @@ async function getProfitReport(req, res) {
 // ══════════════════════════════════════════════
 async function listProductsLite(req, res) {
   try {
-    const products = await KoyambeduProduct.find({ isActive: true }).select('name unit').sort({ name: 1 }).lean();
+    // Match the same defensive pattern used elsewhere in this codebase (see
+    // koyambeduController.js product-listing queries): some legacy product
+    // docs never had `isActive` explicitly written, so a strict `{isActive:
+    // true}` match silently excludes them. Treat "missing" the same as
+    // "true" — only an explicit `false` should hide an item here.
+    const products = await KoyambeduProduct.find({ isActive: { $ne: false } }).select('name unit').sort({ name: 1 }).lean();
     res.json({ success: true, products });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -426,7 +601,7 @@ async function listProductsLite(req, res) {
 async function listSellersLite(req, res) {
   try {
     const KoyambeduSeller = require('../models/KoyambeduSeller');
-    const sellers = await KoyambeduSeller.find({ isActive: true }).select('businessName stallNumber').sort({ businessName: 1 }).lean();
+    const sellers = await KoyambeduSeller.find({ isActive: { $ne: false } }).select('businessName stallNumber').sort({ businessName: 1 }).lean();
     res.json({ success: true, sellers });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -434,8 +609,10 @@ async function listSellersLite(req, res) {
 }
 
 module.exports = {
-  createPurchase, listPurchases, updatePurchase, deletePurchase,
+  createPurchase, uploadPurchaseBill, listPurchases, updatePurchase, deletePurchase,
   createWastage, listWastage, deleteWastage,
   getInventoryBalance, getProfitReport,
   listProductsLite, listSellersLite,
+  lookupOrder, listMaterialPurchases,
+  createMaterialUsage, listMaterialUsage, deleteMaterialUsage,
 };

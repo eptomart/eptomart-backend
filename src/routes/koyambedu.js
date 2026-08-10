@@ -10,6 +10,10 @@ const devCtrl   = require('../controllers/koyambeduDevSettingsController');
 const { protect, optionalAuth } = require('../middleware/auth');
 const { uploadKoyambedu } = require('../config/cloudinary');
 const { protectAdmin, protectSuperAdmin } = require('../middleware/adminAuth');
+// Inventory / Purchase / Wastage / Profit dashboard — self-contained router,
+// mounted here so it rides on the existing /api/koyambedu base path without
+// any server.js changes. See routes/koyambeduInventory.js.
+const koyambeduInventoryRoutes = require('./koyambeduInventory');
 
 // ── Seller guard middleware ──────────────────
 const protectSeller = [protect, async (req, res, next) => {
@@ -29,6 +33,11 @@ const protectSellerAdmin = [protect, async (req, res, next) => {
   req.kbdSellerAdmin = sa;
   next();
 }];
+
+// ══════════════════════════════════════════════
+// INVENTORY / PURCHASE / WASTAGE / PROFIT DASHBOARD — Super Admin only
+// ══════════════════════════════════════════════
+router.use('/inventory', koyambeduInventoryRoutes);
 
 // ══════════════════════════════════════════════
 // DEV SETTINGS — public read, superAdmin write

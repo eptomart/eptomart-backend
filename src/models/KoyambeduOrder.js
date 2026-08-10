@@ -348,6 +348,11 @@ const koyambeduOrderSchema = new Schema({
   adminCosts: {
     actualDeliveryCost: { type: Number, default: 0 },
     miscExpenses:       { type: Number, default: 0 },
+    // Added for the Inventory / Purchase / Profit dashboard — per-order
+    // transportation & packing charges, used to compute customer-wise profit.
+    // Purely additive fields; existing two fields above are untouched.
+    transportCharge:    { type: Number, default: 0 },
+    packingCharge:       { type: Number, default: 0 },
     costNote:           String,
     updatedAt:          Date,
     updatedBy:          { type: Schema.Types.ObjectId, ref: 'User' },

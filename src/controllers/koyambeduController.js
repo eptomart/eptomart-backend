@@ -5900,12 +5900,14 @@ module.exports = {
 // ══════════════════════════════════════════════════════════════════
 async function adminUpdateOrderCosts(req, res) {
   try {
-    const { actualDeliveryCost, miscExpenses, costNote } = req.body;
+    const { actualDeliveryCost, miscExpenses, transportCharge, packingCharge, costNote } = req.body;
     const order = await KoyambeduOrder.findById(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     order.adminCosts = {
       actualDeliveryCost: Number(actualDeliveryCost) || 0,
       miscExpenses:       Number(miscExpenses)       || 0,
+      transportCharge:    Number(transportCharge)    || 0,
+      packingCharge:      Number(packingCharge)      || 0,
       costNote:           costNote || '',
       updatedAt:          new Date(),
       updatedBy:          req.user._id,

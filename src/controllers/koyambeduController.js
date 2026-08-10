@@ -4400,7 +4400,12 @@ const sellerAdminUpdateOrderStatus = async (req, res) => {
 /** GET /api/koyambedu/orders/:orderId/invoice — generate PDF invoice for buyer */
 const getOrderInvoice = async (req, res) => {
   const PDFDocument = require('pdfkit');
-  const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id })
+  // Super Admin (via /admin/orders/:orderId/invoice) may view/download any customer's
+  // invoice from the Order Summary page — the customer-facing route below still only
+  // ever queries by buyer, so normal customer access is completely unchanged.
+  const isAdminAccess = req.koyambeduAdminInvoiceAccess === true;
+  const findQuery = isAdminAccess ? { _id: req.params.orderId } : { _id: req.params.orderId, buyer: req.user._id };
+  const order = await KoyambeduOrder.findOne(findQuery)
     .populate('buyer', 'name email phone')
     .lean();
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });

@@ -80,6 +80,12 @@ router.get   ('/my-orders/:orderId',        protect, ctrl.getMyOrder);
 router.post  ('/orders/:orderId/approve-revision', protect, ctrl.approveRevision);
 router.post  ('/orders/:orderId/cancel',    protect, ctrl.cancelOrder);
 router.get   ('/orders/:orderId/invoice',   protect, ctrl.getOrderInvoice);
+// Super Admin — view/download any customer's invoice from the Order Summary page.
+// Reuses the exact same PDF generator as the customer route above; only the
+// buyer-ownership filter is skipped (flagged via req.koyambeduAdminInvoiceAccess).
+router.get   ('/admin/orders/:orderId/invoice', protectSuperAdmin,
+  (req, res, next) => { req.koyambeduAdminInvoiceAccess = true; next(); },
+  ctrl.getOrderInvoice);
 router.post  ('/orders/:orderId/delivery-ack', protect, ctrl.submitDeliveryAck);
 router.post  ('/orders/:orderId/delivery-ack/close', protect, ctrl.confirmResolutionAndClose);
 router.get   ('/orders/:orderId/timeline',  protect, ctrl.getOrderTimeline);

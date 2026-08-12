@@ -33,6 +33,20 @@ const koyambeduSettingsSchema = new mongoose.Schema({
     auditLog:     { type: [devAuditLogSchema], default: [] },
   },
 
+  // ── Same-Day Delivery (Koyambedu Daily) ─────────────────────────────
+  // Super Admin controlled global gate, checked in addition to (never in
+  // place of) the existing per-date/per-slot KoyambeduDeliverySchedule
+  // controls. `cutoffTime` replaces what was previously a hardcoded "9 AM"
+  // in the checkout frontend. `enabled=false` fully turns off same-day
+  // ordering platform-wide regardless of product flags or open slots.
+  sameDayDelivery: {
+    enabled:      { type: Boolean, default: true },
+    cutoffTime:   { type: String, default: '09:00' }, // "HH:mm", 24-hour, IST
+    updatedBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    updatedByName:{ type: String },
+    updatedAt:    { type: Date },
+  },
+
 }, { timestamps: true });
 
 /** Upsert the global lastProductUpdateTime */
@@ -81,6 +95,16 @@ koyambeduSettingsSchema.statics.checkPaymentTestMode = async function() {
   }
 
   return { enabled: true, expiresAt: ptm.expiresAt };
+};
+
+/** Get the current same-day delivery gate ({ enabled, cutoffTime }), with safe defaults if unset. */
+koyambeduSettingsSchema.statics.getSameDayDelivery = async function() {
+  const doc = await this.findOne({ key: 'global' }).select('sameDayDelivery').lean();
+  const sd = doc?.sameDayDelivery || {};
+  return {
+    enabled: sd.enabled !== undefined ? sd.enabled : true,
+    cutoffTime: sd.cutoffTime || '09:00',
+  };
 };
 
 module.exports = mongoose.model('KoyambeduSettings', koyambeduSettingsSchema);

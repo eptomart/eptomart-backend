@@ -51,6 +51,14 @@ router.put('/admin/dev-settings/payment-test-mode/enable',  protectSuperAdmin, d
 // SuperAdmin: disable
 router.put('/admin/dev-settings/payment-test-mode/disable', protectSuperAdmin, devCtrl.disablePaymentTestMode);
 
+// Same-day delivery cutoff time + on/off gate
+// Public: checkout page reads this instead of a hardcoded "9 AM"
+router.get('/dev-settings/same-day-delivery',               devCtrl.getSameDayDeliveryPublic);
+// SuperAdmin: full status
+router.get('/admin/dev-settings/same-day-delivery',         protectSuperAdmin, devCtrl.getSameDayDeliveryAdmin);
+// SuperAdmin: update — body: { enabled?: boolean, cutoffTime?: "HH:mm" }
+router.put('/admin/dev-settings/same-day-delivery',         protectSuperAdmin, devCtrl.updateSameDayDelivery);
+
 // ══════════════════════════════════════════════
 // PUBLIC — no auth required
 // ══════════════════════════════════════════════
@@ -192,6 +200,8 @@ router.patch('/admin/orders/:orderId/items/:itemIndex/decline',       protectAdm
 // Wallet refund request management (SuperAdmin)
 router.get  ('/admin/refund-requests',                                protectAdmin, ctrl.adminGetRefundRequests);
 router.patch('/admin/refund-requests/:walletId/:requestId',           protectAdmin, ctrl.adminUpdateRefundRequest);
+// Users Cart — view in-progress (not-yet-ordered) customer carts (SuperAdmin)
+router.get  ('/admin/carts',                                          protectSuperAdmin, ctrl.adminGetUserCarts);
 // All-customer wallet management (SuperAdmin)
 router.get  ('/admin/wallets',                                        protectSuperAdmin, ctrl.adminGetAllWallets);
 router.get  ('/admin/wallets/:walletId/transactions',                 protectSuperAdmin, ctrl.adminGetWalletTransactions);

@@ -161,9 +161,95 @@ const disablePaymentTestMode = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════════════════════════
+// SAME-DAY DELIVERY — global cutoff time + on/off gate
+// Super Admin controlled. This is checked IN ADDITION TO (never instead of)
+// the existing per-date/per-slot KoyambeduDeliverySchedule controls — those
+// keep working exactly as before. This just replaces what used to be a
+// hardcoded "9 AM" in the checkout frontend with an admin-editable value,
+// and adds a single platform-wide same-day on/off switch.
+//
+// Endpoints:
+//   GET /koyambedu/dev-settings/same-day-delivery        — public status (checkout reads this)
+//   GET /koyambedu/admin/dev-settings/same-day-delivery   — full status (SA only)
+//   PUT /koyambedu/admin/dev-settings/same-day-delivery   — update (SA only), body: { enabled?, cutoffTime? }
+// ══════════════════════════════════════════════════════════════════
+
+/**
+ * GET /koyambedu/dev-settings/same-day-delivery
+ * Returns { enabled: bool, cutoffTime: "HH:mm" }. No auth required — the
+ * checkout page needs this before the customer logs in / picks a slot.
+ */
+const getSameDayDeliveryPublic = async (req, res) => {
+  try {
+    const sd = await KoyambeduSettings.getSameDayDelivery();
+    res.json({ success: true, ...sd });
+  } catch (err) {
+    console.error('[DevSettings] getSameDayDeliveryPublic error:', err.message);
+    // Fail safe — keep existing behaviour (same-day on, 9 AM cutoff) on error
+    res.json({ success: true, enabled: true, cutoffTime: '09:00' });
+  }
+};
+
+/**
+ * GET /koyambedu/admin/dev-settings/same-day-delivery
+ * SuperAdmin only — includes who last changed it.
+ */
+const getSameDayDeliveryAdmin = async (req, res) => {
+  try {
+    const doc = await KoyambeduSettings.findOne({ key: 'global' });
+    const sd  = doc?.sameDayDelivery || {};
+    res.json({
+      success: true,
+      enabled: sd.enabled !== undefined ? sd.enabled : true,
+      cutoffTime: sd.cutoffTime || '09:00',
+      updatedByName: sd.updatedByName || null,
+      updatedAt: sd.updatedAt || null,
+    });
+  } catch (err) {
+    console.error('[DevSettings] getSameDayDeliveryAdmin error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch same-day delivery settings' });
+  }
+};
+
+/**
+ * PUT /koyambedu/admin/dev-settings/same-day-delivery
+ * Body: { enabled?: boolean, cutoffTime?: "HH:mm" }. SuperAdmin only.
+ */
+const updateSameDayDelivery = async (req, res) => {
+  try {
+    const { enabled, cutoffTime } = req.body;
+    const update = {
+      'sameDayDelivery.updatedBy': req.user._id,
+      'sameDayDelivery.updatedByName': req.user.name || req.user.email,
+      'sameDayDelivery.updatedAt': new Date(),
+    };
+    if (enabled !== undefined) update['sameDayDelivery.enabled'] = !!enabled;
+    if (cutoffTime !== undefined) {
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(cutoffTime)) {
+        return res.status(400).json({ success: false, message: 'cutoffTime must be in HH:mm 24-hour format' });
+      }
+      update['sameDayDelivery.cutoffTime'] = cutoffTime;
+    }
+
+    const doc = await KoyambeduSettings.findOneAndUpdate(
+      { key: 'global' }, update, { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    console.log(`[DevSettings] Same-day delivery updated by ${req.user.email}:`, doc.sameDayDelivery);
+    res.json({ success: true, ...(await KoyambeduSettings.getSameDayDelivery()) });
+  } catch (err) {
+    console.error('[DevSettings] updateSameDayDelivery error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to update same-day delivery settings' });
+  }
+};
+
 module.exports = {
   getPaymentTestModePublic,
   getPaymentTestModeAdmin,
   enablePaymentTestMode,
   disablePaymentTestMode,
+  getSameDayDeliveryPublic,
+  getSameDayDeliveryAdmin,
+  updateSameDayDelivery,
 };

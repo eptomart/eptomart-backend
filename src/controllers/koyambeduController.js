@@ -51,6 +51,33 @@ const itemWeightKg = (item) => {
   return wpu * (item.quantity || 0);
 };
 
+/**
+ * Live unit price for a product at a given quantity/grade, using the SAME
+ * variant-tier matching logic as `updateCart` — kept as a single shared
+ * helper so `getCart` (display refresh) and `placeOrder` (final gate) can
+ * never compute two different prices for the same product/qty/grade combo.
+ * Returns { unitPrice, minQty } — minQty is always `product.minQty`, the
+ * same buyer-facing floor shown on the shop/detail page (deliberately NOT
+ * derived from variant `fromQty`, which is a pricing-tier boundary, not a
+ * minimum-order-quantity field).
+ */
+const getLiveUnitPriceAndMinQty = (product, quantity, gradeKey) => {
+  let activeVariants = product.variants || [];
+  if (product.gradesEnabled && product.grades?.length > 0) {
+    const grade = product.grades.find(g => g.gradeKey === (gradeKey || 'premium') && g.isActive);
+    if (grade) activeVariants = grade.variants || [];
+  }
+  let unitPrice = product.currentPrice || 0;
+  if (activeVariants.length > 0) {
+    const matchingVariant = activeVariants.find(v => {
+      if (!v.toQty) return quantity >= v.fromQty;
+      return quantity >= v.fromQty && quantity <= v.toQty;
+    });
+    if (matchingVariant?.finalPrice) unitPrice = matchingVariant.finalPrice;
+  }
+  return { unitPrice, minQty: product.minQty || 0 };
+};
+
 /** Delivery charge based on total weight */
 const calcDeliveryCharge = (totalKg) => {
   if (totalKg < MIN_WEIGHT_KG)  return { blocked: true,  reason: 'below_min', charge: 0 };
@@ -336,12 +363,12 @@ const getCart = async (req, res) => {
   const cart = await KoyambeduCart.findOne({ user: req.user._id })
     .populate({
       path: 'items.product',
-      select: 'name nameTamil currentPrice unit minQty maxQty qtyStep isAvailable isActive isSameDay isNextDay images weightKg variants',
+      select: 'name nameTamil currentPrice unit minQty maxQty qtyStep isAvailable isActive isSameDay isNextDay images weightKg variants gradesEnabled grades',
       populate: { path: 'seller', select: 'businessName isActive status' },
     });
 
   if (!cart) {
-    return res.json({ success: true, cart: { items: [] } });
+    return res.json({ success: true, cart: { items: [] }, minQtyIssues: [] });
   }
 
   const isActive = (it) =>
@@ -353,10 +380,31 @@ const getCart = async (req, res) => {
   const hadInactive = cart.items.some(it => !isActive(it));
   if (hadInactive) {
     cart.items = cart.items.filter(isActive);
-    await cart.save();
   }
 
-  res.json({ success: true, cart: cart.toObject() });
+  // Always refresh price + collect minQty issues against the LIVE product —
+  // a cart is frequently viewed minutes/hours/days after items were added, and
+  // daily price updates or admin edits to minQty must never be silently ignored.
+  const minQtyIssues = [];
+  let pricesChanged = hadInactive;
+  for (const it of cart.items) {
+    const p = it.product;
+    if (!p) continue;
+    const { unitPrice, minQty } = getLiveUnitPriceAndMinQty(p, it.quantity, it.gradeKey);
+    if (unitPrice && unitPrice !== it.unitPrice) {
+      it.unitPrice = unitPrice;
+      pricesChanged = true;
+    }
+    if (minQty > 0 && it.quantity < minQty) {
+      minQtyIssues.push({
+        productId: p._id, name: p.name, gradeName: it.gradeName || null,
+        quantity: it.quantity, minQty, unit: p.unit,
+      });
+    }
+  }
+  if (pricesChanged) await cart.save();
+
+  res.json({ success: true, cart: cart.toObject(), minQtyIssues });
 };
 
 /** POST /api/koyambedu/cart — add or update item */
@@ -546,9 +594,16 @@ const placeOrder = async (req, res) => {
   }
 
   // ── 6. Build order items ──────────────────────────────────
+  // Price + minimum-quantity are ALWAYS recomputed from the live product
+  // here — never trust what was snapshotted into the cart at add-to-cart
+  // time, since either can have changed since then (daily price updates,
+  // admin editing minQty, etc.). Any item now below its current minQty
+  // blocks the whole order with a structured list the frontend can use to
+  // highlight exactly which items need fixing before payment.
   let subtotal = 0;
-  const orderItems   = [];
-  const deliveryTypes = new Set();
+  const orderItems     = [];
+  const deliveryTypes  = new Set();
+  const minQtyViolations = [];
 
   for (const ci of cart.items) {
     const p  = ci.product;
@@ -556,9 +611,14 @@ const placeOrder = async (req, res) => {
     if (!p?.isActive || !p?.isAvailable || sl?.status !== 'approved' || !sl?.isActive) {
       return res.status(400).json({ success: false, message: `"${p?.name || 'A product'}" is currently unavailable` });
     }
-    // Use cart's unitPrice (set at add-to-cart time for variant products);
-    // fall back to product's currentPrice for non-variant products
-    const unitPrice    = ci.unitPrice || p.currentPrice || 0;
+    const { unitPrice, minQty } = getLiveUnitPriceAndMinQty(p, ci.quantity, ci.gradeKey);
+    if (minQty > 0 && ci.quantity < minQty) {
+      minQtyViolations.push({
+        productId: p._id, name: p.name, gradeName: ci.gradeName || null,
+        quantity: ci.quantity, minQty, unit: p.unit,
+      });
+      continue; // skip pricing this item — request will be rejected below
+    }
     const lineTotal    = unitPrice * ci.quantity;
     const commission   = (sl.commissionRate || 8) / 100;
     const sellerPayout = lineTotal * (1 - commission);
@@ -583,6 +643,35 @@ const placeOrder = async (req, res) => {
       gradeKey:     ci.gradeKey  || null,
       gradeName:    ci.gradeName || null,
     });
+  }
+
+  if (minQtyViolations.length > 0) {
+    return res.status(400).json({
+      success: false,
+      message: `Minimum quantity not met for ${minQtyViolations.length} item${minQtyViolations.length > 1 ? 's' : ''}. Please update your cart before proceeding.`,
+      minQtyViolations,
+    });
+  }
+
+  // ── 6b. Same-day delivery global gate (Super Admin controlled) ──────
+  // Checked IN ADDITION TO the per-slot schedule validation in step 1c above
+  // (that one only knows about individual slot start times; this is a single
+  // platform-wide on/off switch + cutoff time, replacing what used to be a
+  // hardcoded 9 AM check that lived only in the checkout frontend).
+  if (deliveryTypes.has('today')) {
+    const KoyambeduSettings = require('../models/KoyambeduSettings');
+    const sameDay = await KoyambeduSettings.getSameDayDelivery();
+    if (!sameDay.enabled) {
+      return res.status(400).json({ success: false, message: 'Same-day delivery is currently unavailable. Please choose tomorrow\'s delivery instead.' });
+    }
+    if (todayISO === String(deliveryDate).slice(0, 10)) {
+      const [cutH, cutM] = sameDay.cutoffTime.split(':').map(Number);
+      const cutoffMinutes = cutH * 60 + cutM;
+      const nowMinutes = nowIST.getUTCHours() * 60 + nowIST.getUTCMinutes();
+      if (nowMinutes >= cutoffMinutes) {
+        return res.status(400).json({ success: false, message: `Same-day ordering closes at ${sameDay.cutoffTime}. Please choose tomorrow's delivery instead.` });
+      }
+    }
   }
 
   // ── 7. Minimum order check ────────────────────────────────────
@@ -5819,12 +5908,72 @@ const getProductsByCategory = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════
+// SUPER ADMIN — "Users Cart" tab
+// GET /koyambedu/admin/carts
+// Lists every customer's IN-PROGRESS cart (items added, order not yet
+// placed) so the superadmin can see what's sitting in carts and follow up.
+// Read-only — does not touch cart/order data or business logic.
+// ══════════════════════════════════════════════
+const adminGetUserCarts = async (req, res) => {
+  try {
+    const { search } = req.query;
+
+    const carts = await KoyambeduCart.find({ 'items.0': { $exists: true } })
+      .populate('user', 'name email phone')
+      .populate('items.product', 'name unit')
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    let result = carts
+      .filter(c => c.user) // skip carts whose user was deleted
+      .map(c => {
+        const items = (c.items || []).filter(it => (it.quantity || 0) > 0);
+        const cartValue = items.reduce((s, it) => s + (it.unitPrice || 0) * (it.quantity || 0), 0);
+        return {
+          _id:          c._id,
+          customerName: c.user?.name || 'Unknown',
+          phone:        c.user?.phone || '—',
+          email:        c.user?.email || '—',
+          itemCount:    items.length,
+          cartValue:    Math.round(cartValue * 100) / 100,
+          updatedAt:    c.updatedAt,
+          items: items.map(it => ({
+            name:         it.product?.name || it.name,
+            gradeName:    it.gradeName || null,
+            quantity:     it.quantity,
+            unit:         it.product?.unit || it.unit,
+            unitPrice:    it.unitPrice,
+            deliveryType: it.deliveryType,
+          })),
+        };
+      })
+      .filter(c => c.itemCount > 0);
+
+    if (search) {
+      const q = String(search).toLowerCase();
+      result = result.filter(c =>
+        c.customerName.toLowerCase().includes(q) ||
+        c.phone.toLowerCase().includes(q) ||
+        c.email.toLowerCase().includes(q)
+      );
+    }
+
+    res.json({ success: true, carts: result, count: result.length });
+  } catch (err) {
+    console.error('[adminGetUserCarts] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch user carts' });
+  }
+};
+
 module.exports = {
   // Public
   getCategories, getProducts, getFeaturedProducts, getHomepageProducts, getProductsByCategory, getProductDetail, getDeliverySlots,
   checkDeliveryAvailability,
   // Cart
   getCart, updateCart, clearCart,
+  // Super Admin — Users Cart tab
+  adminGetUserCarts,
   // Buyer orders
   placeOrder, createRazorpayOrder, verifyPayment, testPayment,
   getMyOrders, getMyOrder, cancelPendingOrder, approveRevision, cancelOrder, getOrderInvoice,
@@ -6039,7 +6188,7 @@ async function adminProductConsolidationReport(req, res) {
     const productMap = {}; // productName+unit → { name, unit, totalQty, totalValue, sellerPayout }
     for (const order of orders) {
       for (const item of order.items || []) {
-        if (item.status === 'declined') continue;
+        if (item.itemStatus === 'declined') continue;
         // If SA filter, skip items not belonging to this SA
         if (saSellerIds) {
           const sid = item.seller?._id?.toString() || item.seller?.toString();
@@ -6110,7 +6259,7 @@ async function adminCashflowReport(req, res) {
       totalMisc += order.adminCosts?.miscExpenses || 0;
 
       for (const item of order.items || []) {
-        if (item.status === 'declined') continue;
+        if (item.itemStatus === 'declined') continue;
         const saId = item.seller?.createdBySellerAdmin?.toString();
         if (!saId) continue;
         if (!saBuckets[saId]) saBuckets[saId] = { sa: saMap[saId] || { _id: saId, name: 'Unknown SA' }, procurementCost: 0, saCommission: 0, eptomartCommission: 0, orderCount: new Set() };

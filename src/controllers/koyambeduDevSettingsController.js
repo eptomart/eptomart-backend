@@ -11,6 +11,7 @@
 //   PUT  /koyambedu/admin/dev-settings/payment-test-mode/disable — disable (SA only)
 // ============================================
 const KoyambeduSettings = require('../models/KoyambeduSettings');
+const EptoFreshCoupon   = require('../models/EptoFreshCoupon');
 
 // Valid expiry options in minutes (null = no expiry)
 const EXPIRY_OPTIONS = {
@@ -244,6 +245,146 @@ const updateSameDayDelivery = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════════════════════════
+// LOW WEIGHT ORDER PROMO — surfaces an existing coupon on checkout
+// when the cart's gross weight is under an admin-set threshold.
+// The coupon itself (discount type/value, validity, usage limits) is
+// created and managed via the universal Coupons admin page — this
+// setting only decides WHICH coupon code to surface and AT WHAT weight.
+//
+// Endpoints:
+//   GET /koyambedu/dev-settings/low-weight-promo        — public (checkout reads this)
+//   GET /koyambedu/admin/dev-settings/low-weight-promo   — full status (SA only)
+//   PUT /koyambedu/admin/dev-settings/low-weight-promo   — update (SA only)
+// ══════════════════════════════════════════════════════════════════
+
+/**
+ * GET /koyambedu/dev-settings/low-weight-promo
+ * Returns { enabled, thresholdKg, couponCode, discountType, discountValue,
+ *           maxDiscount, description }. Looks up the coupon fresh on every
+ * call so an expired/deleted/deactivated coupon never gets advertised —
+ * fails safe to enabled:false instead.
+ */
+const getLowWeightPromoPublic = async (req, res) => {
+  try {
+    const lw = await KoyambeduSettings.getLowWeightPromo();
+    if (!lw.enabled || !lw.couponCode) {
+      return res.json({ success: true, enabled: false });
+    }
+    const coupon = await EptoFreshCoupon.findOne({
+      code:          lw.couponCode.toUpperCase().trim(),
+      isActive:      true,
+      requestStatus: { $in: ['admin_created', 'approved'] },
+      validFrom:     { $lte: new Date() },
+      validTo:       { $gte: new Date() },
+    }).lean();
+    // Coupon was disabled/expired/deleted since being configured — don't advertise a dead code
+    if (!coupon || coupon.usedCount >= coupon.maxUsage) {
+      return res.json({ success: true, enabled: false });
+    }
+    res.json({
+      success: true,
+      enabled: true,
+      thresholdKg:   lw.thresholdKg,
+      couponCode:    coupon.code,
+      discountType:  coupon.discountType,
+      discountValue: coupon.discountValue,
+      maxDiscount:   coupon.maxDiscount || null,
+      description:   coupon.description || '',
+    });
+  } catch (err) {
+    console.error('[DevSettings] getLowWeightPromoPublic error:', err.message);
+    // Fail safe — don't show the popup if something's wrong
+    res.json({ success: true, enabled: false });
+  }
+};
+
+/**
+ * GET /koyambedu/admin/dev-settings/low-weight-promo
+ * SuperAdmin only — includes who last changed it + whether the configured
+ * coupon currently resolves to something valid.
+ */
+const getLowWeightPromoAdmin = async (req, res) => {
+  try {
+    const doc = await KoyambeduSettings.findOne({ key: 'global' });
+    const lw  = doc?.lowWeightPromo || {};
+    let couponStatus = null;
+    if (lw.couponCode) {
+      const coupon = await EptoFreshCoupon.findOne({ code: lw.couponCode.toUpperCase().trim() }).lean();
+      couponStatus = coupon
+        ? {
+            found: true,
+            isActive: coupon.isActive,
+            discountType: coupon.discountType,
+            discountValue: coupon.discountValue,
+            validTo: coupon.validTo,
+            usedCount: coupon.usedCount,
+            maxUsage: coupon.maxUsage,
+            platformRestriction: coupon.platformRestriction,
+          }
+        : { found: false };
+    }
+    res.json({
+      success: true,
+      enabled:       lw.enabled || false,
+      couponCode:    lw.couponCode || null,
+      thresholdKg:   lw.thresholdKg || 12,
+      updatedByName: lw.updatedByName || null,
+      updatedAt:     lw.updatedAt || null,
+      couponStatus,
+    });
+  } catch (err) {
+    console.error('[DevSettings] getLowWeightPromoAdmin error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch low-weight promo settings' });
+  }
+};
+
+/**
+ * PUT /koyambedu/admin/dev-settings/low-weight-promo
+ * Body: { enabled?: boolean, couponCode?: string, thresholdKg?: number }
+ * SuperAdmin only. Validates couponCode against an existing coupon that's
+ * usable on Koyambedu (platformRestriction 'all' or 'koyambedu') before saving.
+ */
+const updateLowWeightPromo = async (req, res) => {
+  try {
+    const { enabled, couponCode, thresholdKg } = req.body;
+    const update = {
+      'lowWeightPromo.updatedBy':     req.user._id,
+      'lowWeightPromo.updatedByName': req.user.name || req.user.email,
+      'lowWeightPromo.updatedAt':     new Date(),
+    };
+    if (enabled !== undefined) update['lowWeightPromo.enabled'] = !!enabled;
+    if (couponCode !== undefined) {
+      const code = String(couponCode).toUpperCase().trim();
+      if (code) {
+        const coupon = await EptoFreshCoupon.findOne({ code }).lean();
+        if (!coupon) {
+          return res.status(400).json({ success: false, message: `Coupon "${code}" not found. Create it first in Admin → Coupons.` });
+        }
+        if (coupon.platformRestriction && !['all', 'koyambedu'].includes(coupon.platformRestriction)) {
+          return res.status(400).json({ success: false, message: `Coupon "${code}" is not valid for Koyambedu Daily. Set its platform to "All" or "Koyambedu Daily" in Admin → Coupons.` });
+        }
+      }
+      update['lowWeightPromo.couponCode'] = code || null;
+    }
+    if (thresholdKg !== undefined) {
+      const t = Number(thresholdKg);
+      if (!(t > 0)) return res.status(400).json({ success: false, message: 'thresholdKg must be a positive number' });
+      update['lowWeightPromo.thresholdKg'] = t;
+    }
+
+    const doc = await KoyambeduSettings.findOneAndUpdate(
+      { key: 'global' }, update, { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    console.log(`[DevSettings] Low-weight promo updated by ${req.user.email}:`, doc.lowWeightPromo);
+    res.json({ success: true, ...(await KoyambeduSettings.getLowWeightPromo()) });
+  } catch (err) {
+    console.error('[DevSettings] updateLowWeightPromo error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to update low-weight promo settings' });
+  }
+};
+
 module.exports = {
   getPaymentTestModePublic,
   getPaymentTestModeAdmin,
@@ -252,4 +393,7 @@ module.exports = {
   getSameDayDeliveryPublic,
   getSameDayDeliveryAdmin,
   updateSameDayDelivery,
+  getLowWeightPromoPublic,
+  getLowWeightPromoAdmin,
+  updateLowWeightPromo,
 };

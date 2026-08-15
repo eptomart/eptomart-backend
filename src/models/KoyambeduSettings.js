@@ -47,6 +47,23 @@ const koyambeduSettingsSchema = new mongoose.Schema({
     updatedAt:    { type: Date },
   },
 
+  // ── Low Weight Order Promo (Koyambedu Daily) ─────────────────────────
+  // Super Admin controlled. Surfaces an EXISTING coupon (created/managed via
+  // the universal Coupons admin page — discount type/value live there, not
+  // here) as a suggested promo popup on the checkout payment step when the
+  // cart's total gross weight is below thresholdKg. This setting only picks
+  // WHICH coupon code to surface and AT WHAT weight threshold — it never
+  // auto-applies anything; the customer must tap "Apply" themselves via the
+  // existing coupon-apply flow, same as manually typing a code.
+  lowWeightPromo: {
+    enabled:      { type: Boolean, default: false },
+    couponCode:   { type: String, default: null },
+    thresholdKg:  { type: Number, default: 12 },
+    updatedBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    updatedByName:{ type: String },
+    updatedAt:    { type: Date },
+  },
+
 }, { timestamps: true });
 
 /** Upsert the global lastProductUpdateTime */
@@ -104,6 +121,17 @@ koyambeduSettingsSchema.statics.getSameDayDelivery = async function() {
   return {
     enabled: sd.enabled !== undefined ? sd.enabled : true,
     cutoffTime: sd.cutoffTime || '09:00',
+  };
+};
+
+/** Get the current low-weight promo gate ({ enabled, couponCode, thresholdKg }), with safe defaults if unset. */
+koyambeduSettingsSchema.statics.getLowWeightPromo = async function() {
+  const doc = await this.findOne({ key: 'global' }).select('lowWeightPromo').lean();
+  const lw = doc?.lowWeightPromo || {};
+  return {
+    enabled:     lw.enabled || false,
+    couponCode:  lw.couponCode || null,
+    thresholdKg: lw.thresholdKg || 12,
   };
 };
 

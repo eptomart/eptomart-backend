@@ -59,6 +59,14 @@ router.get('/admin/dev-settings/same-day-delivery',         protectSuperAdmin, d
 // SuperAdmin: update — body: { enabled?: boolean, cutoffTime?: "HH:mm" }
 router.put('/admin/dev-settings/same-day-delivery',         protectSuperAdmin, devCtrl.updateSameDayDelivery);
 
+// Low weight order promo — surfaces an existing coupon on checkout below a weight threshold
+// Public: checkout page reads this to decide whether to show the promo popup
+router.get('/dev-settings/low-weight-promo',                 devCtrl.getLowWeightPromoPublic);
+// SuperAdmin: full status
+router.get('/admin/dev-settings/low-weight-promo',           protectSuperAdmin, devCtrl.getLowWeightPromoAdmin);
+// SuperAdmin: update — body: { enabled?: boolean, couponCode?: string, thresholdKg?: number }
+router.put('/admin/dev-settings/low-weight-promo',           protectSuperAdmin, devCtrl.updateLowWeightPromo);
+
 // ══════════════════════════════════════════════
 // PUBLIC — no auth required
 // ══════════════════════════════════════════════

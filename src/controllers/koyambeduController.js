@@ -1495,7 +1495,11 @@ const adminDashboard = async (req, res) => {
     todayOrders, pendingDispatch, delivered, revenue,
     pendingRevisions, sellers, pendingCategories,
   ] = await Promise.all([
-    KoyambeduOrder.countDocuments({ createdAt: { $gte: today } }),
+    // Only count orders whose payment actually completed — a Razorpay order
+    // gets created (and this doc saved) the moment checkout starts, before
+    // payment succeeds, so counting all of them here previously included
+    // abandoned/failed payment attempts alongside real orders.
+    KoyambeduOrder.countDocuments({ createdAt: { $gte: today }, paymentStatus: 'paid' }),
     KoyambeduOrder.countDocuments({ orderStatus: { $in: ['confirmed','packing'] } }),
     KoyambeduOrder.countDocuments({ orderStatus: 'delivered', deliveredAt: { $gte: today } }),
     KoyambeduOrder.aggregate([
@@ -1546,12 +1550,14 @@ const adminGetOrders = async (req, res) => {
     KoyambeduOrder.find(filter)
       .populate('buyer', 'name email phone')
       .populate('items.seller', 'businessName stallNumber contact')
+      .populate('items.product', 'weightKg unit')
       .sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
     KoyambeduOrder.countDocuments(filter),
   ]);
   // Decline details become visible to Super Admin only after the Seller
   // Admin SUBMITS the review. Before that, in-progress edits are masked.
   const shaped = orders.map(o => {
+    const weightSummary = summarizeOrderWeight(o.items);
     const submitted = !['placed', 'pending_confirmation'].includes(o.orderStatus);
     if (!submitted) {
       return {
@@ -1562,11 +1568,13 @@ const adminGetOrders = async (req, res) => {
           : o.calculatedPricing,
         saReview: o.saReview ? { ...o.saReview, pendingRefundAmount: 0 } : o.saReview,
         reviewSummary: null,
+        weightSummary,
       };
     }
     const declined = (o.items || []).filter(it => ['declined', 'partial'].includes(it.itemStatus));
     return {
       ...o,
+      weightSummary,
       reviewSummary: declined.length ? {
         pendingRefundAmount: o.saReview?.pendingRefundAmount || o.calculatedPricing?.declinedRefundAmount || 0,
         declinedItems: declined.map(it => ({
@@ -3065,6 +3073,35 @@ const calcFinalPrice = ({ basePrice, platformFeePercent = 10, logisticsPercent =
 // Seller-Admin's own procurement/slot-wise reports or the live dashboard,
 // which intentionally show a broader set of orders for operational visibility.
 const CONFIRMED_REPORT_STATUSES = ['confirmed', 'packing', 'dispatched', 'delivered', 'reported', 'closed'];
+
+// ── Per-order gross weight / unit-count summary ─────────────────────
+// Used to show admins, at a glance, how much to physically carry for an
+// order: total gross weight in kg (quantity × product.weightKg, which is
+// "kg per 1 unit" regardless of what that unit is), PLUS a separate count
+// per non-weight unit (boxes, bunches, pieces, etc.) since a box count
+// matters for packing even though its weight is already folded into the
+// gross-weight total. Purely a read-side computation — requires
+// items.product to be populated with `weightKg` and does not change any
+// order/pricing data.
+const summarizeOrderWeight = (items) => {
+  let grossWeightKg = 0;
+  const unitCounts = {}; // e.g. { box: 3, bunch: 2, piece: 12 }
+  for (const it of items || []) {
+    if (it.itemStatus === 'declined') continue;
+    const qty = it.quantity || it.confirmedQty || it.orderedQty || 0;
+    if (!qty) continue;
+    const weightPerUnit = it.product?.weightKg ?? 1;
+    grossWeightKg += qty * weightPerUnit;
+    const unit = it.unit || it.product?.unit || 'unit';
+    if (unit !== 'kg' && unit !== 'g') {
+      unitCounts[unit] = (unitCounts[unit] || 0) + qty;
+    }
+  }
+  return {
+    grossWeightKg: Math.round(grossWeightKg * 100) / 100,
+    unitCounts,
+  };
+};
 
 // procurement cycle date: orders before midnight belong to "today", after midnight → "tomorrow"
 const getProcurementCycle = (ts = new Date()) => {

@@ -6031,7 +6031,11 @@ const adminProcurementReport = async (req, res) => {
     const orders = await KoyambeduOrder.find({
       cutoffCycle: cycle,
       orderStatus: { $in: CONFIRMED_REPORT_STATUSES },
-    }).populate('items.product', 'name unit').lean();
+    }).populate({
+      path: 'items.product',
+      select: 'name unit category',
+      populate: { path: 'category', select: 'name icon' },
+    }).lean();
 
     const summary = {};
     for (const order of orders) {
@@ -6046,22 +6050,37 @@ const adminProcurementReport = async (req, res) => {
         if (!summary[productKey]) {
           summary[productKey] = {
             productKey,
-            productName: item.name,
-            gradeKey:    item.gradeKey || null,
-            gradeName:   item.gradeName || null,
-            unit:        item.unit || item.unitLabel || 'kg',
-            totalQty:    0,
-            totalValue:  0,
-            orderCount:  0,
+            productName:  item.name,
+            gradeKey:     item.gradeKey || null,
+            gradeName:    item.gradeName || null,
+            unit:         item.unit || item.unitLabel || 'kg',
+            category:     item.product?.category?.name || 'Other',
+            categoryIcon: item.product?.category?.icon || '🌿',
+            totalQty:     0,
+            totalValue:   0,
+            orderCount:   0,
+            orderMap:     {}, // orderId (human-readable) -> quantity — per-order breakdown
           };
         }
         summary[productKey].totalQty   += item.quantity || 0;
         summary[productKey].totalValue += (item.finalPrice || item.orderedPrice || 0) * (item.quantity || 0);
         summary[productKey].orderCount += 1;
+        summary[productKey].orderMap[order.orderId] = (summary[productKey].orderMap[order.orderId] || 0) + (item.quantity || 0);
       }
     }
 
-    const rows = Object.values(summary).sort((a, b) => a.productName.localeCompare(b.productName));
+    const rows = Object.values(summary)
+      .map(r => {
+        const { orderMap, ...rest } = r;
+        return {
+          ...rest,
+          // Per-order breakdown, e.g. Radish 10kg = Order A 3kg + Order B 4kg + Order C 3kg
+          orders: Object.entries(orderMap)
+            .map(([orderId, quantity]) => ({ orderId, quantity }))
+            .sort((a, b) => a.orderId.localeCompare(b.orderId)),
+        };
+      })
+      .sort((a, b) => a.productName.localeCompare(b.productName));
 
     // Merge in saved checklist state for this cycle
     const keys = rows.map(r => r.productKey);

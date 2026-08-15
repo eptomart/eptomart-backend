@@ -213,6 +213,7 @@ router.get  ('/admin/carts',                                          protectSup
 // Procurement Report — confirmed orders only, with purchased/comment checklist (SuperAdmin)
 router.get  ('/admin/reports/procurement-confirmed',                  protectAdmin,      ctrl.adminProcurementReport);
 router.patch('/admin/reports/procurement-confirmed/item',             protectAdmin,      ctrl.adminUpdateProcurementItem);
+router.post ('/admin/reports/procurement-confirmed/share',            protectAdmin,      ctrl.adminShareProcurement);
 // All-customer wallet management (SuperAdmin)
 router.get  ('/admin/wallets',                                        protectSuperAdmin, ctrl.adminGetAllWallets);
 router.get  ('/admin/wallets/:walletId/transactions',                 protectSuperAdmin, ctrl.adminGetWalletTransactions);

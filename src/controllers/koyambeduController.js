@@ -20,6 +20,7 @@ const KoyambeduWallet       = require('../models/KoyambeduWallet');
 const KoyambeduSettings     = require('../models/KoyambeduSettings');
 const KoyambeduDeliverySlot = require('../models/KoyambeduDeliverySlot');
 const KoyambeduProcurementChecklist = require('../models/KoyambeduProcurementChecklist');
+const KoyambeduProcurementShare     = require('../models/KoyambeduProcurementShare');
 const User                  = require('../models/User');
 const EptoFreshCoupon       = require('../models/EptoFreshCoupon');
 const Razorpay              = require('razorpay');
@@ -6079,8 +6080,13 @@ const adminProcurementReport = async (req, res) => {
         comment:         c?.comment || '',
         commentByName:   c?.commentByName || null,
         commentAt:       c?.commentAt || null,
+        packingNote:       c?.packingNote || '',
+        packingNoteByName: c?.packingNoteByName || null,
+        packingNoteAt:     c?.packingNoteAt || null,
       };
     });
+
+    const shareLog = await KoyambeduProcurementShare.findOne({ cycle }).lean();
 
     res.json({
       success: true,
@@ -6089,6 +6095,13 @@ const adminProcurementReport = async (req, res) => {
       purchasedCount: products.filter(p => p.purchased).length,
       totalCount: products.length,
       products,
+      shareStatus: shareLog ? {
+        shared:        true,
+        shareCount:    shareLog.shareCount,
+        lastSharedAt:  shareLog.lastSharedAt,
+        lastSharedByName: shareLog.lastSharedByName,
+        lastSharedVia: shareLog.lastSharedVia,
+      } : { shared: false },
     });
   } catch (err) {
     console.error('[adminProcurementReport] error:', err.message);
@@ -6097,12 +6110,12 @@ const adminProcurementReport = async (req, res) => {
 };
 
 // PATCH /koyambedu/admin/reports/procurement-confirmed/item
-// Body: { cycle, productKey, productName?, gradeKey?, gradeName?, purchased?, comment? }
-// Upserts the checklist entry for one product line. `purchased` and `comment`
-// are independent — sending only one leaves the other untouched.
+// Body: { cycle, productKey, productName?, gradeKey?, gradeName?, purchased?, comment?, packingNote? }
+// Upserts the checklist entry for one product line. `purchased`, `comment`,
+// and `packingNote` are independent — sending only one leaves the others untouched.
 const adminUpdateProcurementItem = async (req, res) => {
   try {
-    const { cycle, productKey, productName, gradeKey, gradeName, purchased, comment } = req.body;
+    const { cycle, productKey, productName, gradeKey, gradeName, purchased, comment, packingNote } = req.body;
     if (!cycle || !productKey) {
       return res.status(400).json({ success: false, message: 'cycle and productKey are required' });
     }
@@ -6124,6 +6137,12 @@ const adminUpdateProcurementItem = async (req, res) => {
       update.commentByName = req.user.name || req.user.email;
       update.commentAt     = new Date();
     }
+    if (packingNote !== undefined) {
+      update.packingNote       = String(packingNote).slice(0, 500);
+      update.packingNoteBy     = req.user._id;
+      update.packingNoteByName = req.user.name || req.user.email;
+      update.packingNoteAt     = new Date();
+    }
 
     const doc = await KoyambeduProcurementChecklist.findOneAndUpdate(
       { cycle, productKey },
@@ -6138,6 +6157,41 @@ const adminUpdateProcurementItem = async (req, res) => {
   }
 };
 
+// POST /koyambedu/admin/reports/procurement-confirmed/share
+// Body: { cycle, via? } — marks the supplier-facing list for this cycle as
+// shared (increments a counter, records who/when/how). Does not block or
+// gate anything — purely so the admin sees "already shared" if they come
+// back to this date later. Does not touch order/pricing/customer data.
+const adminShareProcurement = async (req, res) => {
+  try {
+    const { cycle, via } = req.body;
+    if (!cycle) return res.status(400).json({ success: false, message: 'cycle is required' });
+
+    const doc = await KoyambeduProcurementShare.findOneAndUpdate(
+      { cycle },
+      {
+        $inc: { shareCount: 1 },
+        lastSharedAt:     new Date(),
+        lastSharedBy:     req.user._id,
+        lastSharedByName: req.user.name || req.user.email,
+        lastSharedVia:    via || 'copy',
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    res.json({ success: true, shareStatus: {
+      shared: true,
+      shareCount: doc.shareCount,
+      lastSharedAt: doc.lastSharedAt,
+      lastSharedByName: doc.lastSharedByName,
+      lastSharedVia: doc.lastSharedVia,
+    }});
+  } catch (err) {
+    console.error('[adminShareProcurement] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to record share' });
+  }
+};
+
 module.exports = {
   // Public
   getCategories, getProducts, getFeaturedProducts, getHomepageProducts, getProductsByCategory, getProductDetail, getDeliverySlots,
@@ -6147,7 +6201,7 @@ module.exports = {
   // Super Admin — Users Cart tab
   adminGetUserCarts,
   // Super Admin — Procurement Report (confirmed orders)
-  adminProcurementReport, adminUpdateProcurementItem,
+  adminProcurementReport, adminUpdateProcurementItem, adminShareProcurement,
   // Buyer orders
   placeOrder, createRazorpayOrder, verifyPayment, testPayment,
   getMyOrders, getMyOrder, cancelPendingOrder, approveRevision, cancelOrder, getOrderInvoice,

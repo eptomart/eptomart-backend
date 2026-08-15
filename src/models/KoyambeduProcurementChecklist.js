@@ -30,6 +30,14 @@ const koyambeduProcurementChecklistSchema = new Schema({
   commentBy:      { type: Schema.Types.ObjectId, ref: 'User' },
   commentByName:  { type: String },
   commentAt:      { type: Date },
+
+  // Packing instruction shown to the SUPPLIER on the "Share with Supplier"
+  // view (e.g. "2 packs of 25kg"). Kept separate from `comment`, which is
+  // an internal-only ops note never shown outside the admin checklist.
+  packingNote:       { type: String, default: '' },
+  packingNoteBy:     { type: Schema.Types.ObjectId, ref: 'User' },
+  packingNoteByName: { type: String },
+  packingNoteAt:     { type: Date },
 }, { timestamps: true });
 
 koyambeduProcurementChecklistSchema.index({ cycle: 1, productKey: 1 }, { unique: true });

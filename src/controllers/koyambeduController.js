@@ -6298,15 +6298,17 @@ async function adminOrderReport(req, res) {
 async function adminProductConsolidationReport(req, res) {
   try {
     const { deliveryDate, slot, sellerAdmin } = req.query;
-    if (!deliveryDate || !slot) return res.status(400).json({ success: false, message: 'deliveryDate and slot required' });
+    if (!deliveryDate) return res.status(400).json({ success: false, message: 'deliveryDate required' });
 
     const start = new Date(deliveryDate); start.setHours(0, 0, 0, 0);
     const end   = new Date(deliveryDate); end.setHours(23, 59, 59, 999);
     const filter = {
       deliveryDate: { $gte: start, $lte: end },
-      deliverySlot: slot,
       orderStatus:  { $in: CONFIRMED_REPORT_STATUSES },
     };
+    // slot is optional — omitting it (the "All slots" option) aggregates
+    // across every slot for the selected date, same as the other reports.
+    if (slot) filter.deliverySlot = slot;
 
     let saSellerIds = null;
     let saInfo = null;
@@ -6345,7 +6347,7 @@ async function adminProductConsolidationReport(req, res) {
       success: true,
       sellerAdmin:  saInfo || 'All Seller Admins',
       deliveryDate,
-      slot,
+      slot: slot || 'All slots',
       orderCount:   orders.length,
       products,
     });

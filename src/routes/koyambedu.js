@@ -202,6 +202,9 @@ router.get  ('/admin/refund-requests',                                protectAdm
 router.patch('/admin/refund-requests/:walletId/:requestId',           protectAdmin, ctrl.adminUpdateRefundRequest);
 // Users Cart — view in-progress (not-yet-ordered) customer carts (SuperAdmin)
 router.get  ('/admin/carts',                                          protectSuperAdmin, ctrl.adminGetUserCarts);
+// Procurement Report — confirmed orders only, with purchased/comment checklist (SuperAdmin)
+router.get  ('/admin/reports/procurement-confirmed',                  protectAdmin,      ctrl.adminProcurementReport);
+router.patch('/admin/reports/procurement-confirmed/item',             protectAdmin,      ctrl.adminUpdateProcurementItem);
 // All-customer wallet management (SuperAdmin)
 router.get  ('/admin/wallets',                                        protectSuperAdmin, ctrl.adminGetAllWallets);
 router.get  ('/admin/wallets/:walletId/transactions',                 protectSuperAdmin, ctrl.adminGetWalletTransactions);

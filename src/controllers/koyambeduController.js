@@ -19,6 +19,7 @@ const KoyambeduOrder        = require('../models/KoyambeduOrder');
 const KoyambeduWallet       = require('../models/KoyambeduWallet');
 const KoyambeduSettings     = require('../models/KoyambeduSettings');
 const KoyambeduDeliverySlot = require('../models/KoyambeduDeliverySlot');
+const KoyambeduProcurementChecklist = require('../models/KoyambeduProcurementChecklist');
 const User                  = require('../models/User');
 const EptoFreshCoupon       = require('../models/EptoFreshCoupon');
 const Razorpay              = require('razorpay');
@@ -3054,6 +3055,17 @@ const calcFinalPrice = ({ basePrice, platformFeePercent = 10, logisticsPercent =
   return Math.round((basePrice + pf + lf + sm) * 100) / 100;
 };
 
+// Order statuses that count as "confirmed" for SuperAdmin-facing reports
+// (Order Report, Product Consolidation, Cash Flow, Area Wise, Procurement).
+// An order is confirmed once SuperAdmin has approved it and it starts moving
+// through fulfilment — pre-confirmation states (still awaiting SA/SuperAdmin
+// review) and cancelled/refunded orders are excluded so procurement and
+// financial numbers aren't inflated by orders that may still change or never
+// go out. Scoped to these report endpoints only — does NOT affect the
+// Seller-Admin's own procurement/slot-wise reports or the live dashboard,
+// which intentionally show a broader set of orders for operational visibility.
+const CONFIRMED_REPORT_STATUSES = ['confirmed', 'packing', 'dispatched', 'delivered', 'reported', 'closed'];
+
 // procurement cycle date: orders before midnight belong to "today", after midnight → "tomorrow"
 const getProcurementCycle = (ts = new Date()) => {
   // Use IST (UTC+5:30)
@@ -3668,7 +3680,7 @@ const destinationReport = async (req, res) => {
     const orders = await KoyambeduOrder.find({
       cutoffCycle:   cycle,
       paymentStatus: 'paid',
-      orderStatus:   { $nin: ['cancelled'] },
+      orderStatus:   { $in: CONFIRMED_REPORT_STATUSES },
     })
       .populate('buyer', 'name phone')
       .populate('items.product', 'name')
@@ -5966,6 +5978,129 @@ const adminGetUserCarts = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════
+// SUPER ADMIN — Procurement Report (confirmed orders only)
+// GET /koyambedu/admin/reports/procurement-confirmed?date=2026-06-22&gradeKey=
+// Aggregates products/quantities needed from CONFIRMED_REPORT_STATUSES orders
+// for the given cutoffCycle date, merged with any saved purchase-checklist
+// state (purchased flag + comment) for that same date/product.
+// ══════════════════════════════════════════════
+const adminProcurementReport = async (req, res) => {
+  try {
+    const { date, gradeKey } = req.query;
+    const cycle = date || getProcurementCycle();
+
+    const orders = await KoyambeduOrder.find({
+      cutoffCycle: cycle,
+      orderStatus: { $in: CONFIRMED_REPORT_STATUSES },
+    }).populate('items.product', 'name unit').lean();
+
+    const summary = {};
+    for (const order of orders) {
+      for (const item of order.items || []) {
+        if (item.itemStatus === 'declined') continue;
+        if (gradeKey && gradeKey !== 'all' && item.gradeKey !== gradeKey) continue;
+
+        const productKey = item.gradeKey
+          ? `${item.product?._id?.toString() || item.name}__${item.gradeKey}`
+          : (item.product?._id?.toString() || item.name);
+
+        if (!summary[productKey]) {
+          summary[productKey] = {
+            productKey,
+            productName: item.name,
+            gradeKey:    item.gradeKey || null,
+            gradeName:   item.gradeName || null,
+            unit:        item.unit || item.unitLabel || 'kg',
+            totalQty:    0,
+            totalValue:  0,
+            orderCount:  0,
+          };
+        }
+        summary[productKey].totalQty   += item.quantity || 0;
+        summary[productKey].totalValue += (item.finalPrice || item.orderedPrice || 0) * (item.quantity || 0);
+        summary[productKey].orderCount += 1;
+      }
+    }
+
+    const rows = Object.values(summary).sort((a, b) => a.productName.localeCompare(b.productName));
+
+    // Merge in saved checklist state for this cycle
+    const keys = rows.map(r => r.productKey);
+    const checklist = keys.length
+      ? await KoyambeduProcurementChecklist.find({ cycle, productKey: { $in: keys } }).lean()
+      : [];
+    const checklistMap = Object.fromEntries(checklist.map(c => [c.productKey, c]));
+
+    const products = rows.map(r => {
+      const c = checklistMap[r.productKey];
+      return {
+        ...r,
+        purchased:       c?.purchased || false,
+        purchasedByName: c?.purchasedByName || null,
+        purchasedAt:     c?.purchasedAt || null,
+        comment:         c?.comment || '',
+        commentByName:   c?.commentByName || null,
+        commentAt:       c?.commentAt || null,
+      };
+    });
+
+    res.json({
+      success: true,
+      cycle,
+      orderCount: orders.length,
+      purchasedCount: products.filter(p => p.purchased).length,
+      totalCount: products.length,
+      products,
+    });
+  } catch (err) {
+    console.error('[adminProcurementReport] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch procurement report' });
+  }
+};
+
+// PATCH /koyambedu/admin/reports/procurement-confirmed/item
+// Body: { cycle, productKey, productName?, gradeKey?, gradeName?, purchased?, comment? }
+// Upserts the checklist entry for one product line. `purchased` and `comment`
+// are independent — sending only one leaves the other untouched.
+const adminUpdateProcurementItem = async (req, res) => {
+  try {
+    const { cycle, productKey, productName, gradeKey, gradeName, purchased, comment } = req.body;
+    if (!cycle || !productKey) {
+      return res.status(400).json({ success: false, message: 'cycle and productKey are required' });
+    }
+
+    const update = { cycle, productKey };
+    if (productName !== undefined) update.productName = productName;
+    if (gradeKey !== undefined)    update.gradeKey    = gradeKey || null;
+    if (gradeName !== undefined)   update.gradeName   = gradeName || null;
+
+    if (purchased !== undefined) {
+      update.purchased       = !!purchased;
+      update.purchasedBy     = req.user._id;
+      update.purchasedByName = req.user.name || req.user.email;
+      update.purchasedAt     = new Date();
+    }
+    if (comment !== undefined) {
+      update.comment       = String(comment).slice(0, 1000);
+      update.commentBy     = req.user._id;
+      update.commentByName = req.user.name || req.user.email;
+      update.commentAt     = new Date();
+    }
+
+    const doc = await KoyambeduProcurementChecklist.findOneAndUpdate(
+      { cycle, productKey },
+      update,
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    res.json({ success: true, item: doc });
+  } catch (err) {
+    console.error('[adminUpdateProcurementItem] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to update procurement item' });
+  }
+};
+
 module.exports = {
   // Public
   getCategories, getProducts, getFeaturedProducts, getHomepageProducts, getProductsByCategory, getProductDetail, getDeliverySlots,
@@ -5974,6 +6109,8 @@ module.exports = {
   getCart, updateCart, clearCart,
   // Super Admin — Users Cart tab
   adminGetUserCarts,
+  // Super Admin — Procurement Report (confirmed orders)
+  adminProcurementReport, adminUpdateProcurementItem,
   // Buyer orders
   placeOrder, createRazorpayOrder, verifyPayment, testPayment,
   getMyOrders, getMyOrder, cancelPendingOrder, approveRevision, cancelOrder, getOrderInvoice,
@@ -6085,7 +6222,7 @@ async function adminOrderReport(req, res) {
     const end   = new Date(deliveryDate); end.setHours(23, 59, 59, 999);
     const filter = {
       deliveryDate: { $gte: start, $lte: end },
-      orderStatus:  { $nin: ['cancelled', 'refund_initiated'] },
+      orderStatus:  { $in: CONFIRMED_REPORT_STATUSES },
     };
     if (slot) filter.deliverySlot = slot;
 
@@ -6168,7 +6305,7 @@ async function adminProductConsolidationReport(req, res) {
     const filter = {
       deliveryDate: { $gte: start, $lte: end },
       deliverySlot: slot,
-      orderStatus:  { $nin: ['cancelled', 'refund_initiated'] },
+      orderStatus:  { $in: CONFIRMED_REPORT_STATUSES },
     };
 
     let saSellerIds = null;
@@ -6235,7 +6372,7 @@ async function adminCashflowReport(req, res) {
     const end   = new Date(deliveryDate); end.setHours(23, 59, 59, 999);
     const filter = {
       deliveryDate: { $gte: start, $lte: end },
-      orderStatus:  { $nin: ['cancelled', 'refund_initiated'] },
+      orderStatus:  { $in: CONFIRMED_REPORT_STATUSES },
     };
     if (slot) filter.deliverySlot = slot;
 

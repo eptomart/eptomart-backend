@@ -87,6 +87,26 @@ const calcDeliveryCharge = (totalKg) => {
   return                               { blocked: false,  reason: null,        charge: 149 };
 };
 
+/**
+ * Distance + weight based delivery charge.
+ * - Light orders (gross weight < 15 kg): flat-fee slabs by distance —
+ *   0–10km ₹149, 10–20km ₹249, 20–30km ₹349.
+ * - Anything 15 kg or heavier, OR beyond 30 km regardless of weight,
+ *   falls back to the standard ₹125-per-4km slab.
+ * `grossWeightKg` may be null/undefined (e.g. weight unknown at call time) —
+ * treated the same as "15kg or heavier" so it safely defaults to the
+ * standard distance slab.
+ */
+const computeDeliveryCharge = (distanceKm, grossWeightKg) => {
+  const isLight = grossWeightKg != null && grossWeightKg < 15;
+  if (isLight && distanceKm <= 30) {
+    if (distanceKm <= 10) return 149;
+    if (distanceKm <= 20) return 249;
+    return 349; // 20–30 km
+  }
+  return Math.ceil(distanceKm / 4) * 125;
+};
+
 const getRazorpay = () => {
   if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return null;
   return new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
@@ -318,9 +338,18 @@ const checkDeliveryAvailability = async (req, res) => {
 
   const distanceKm = haversineKm(Number(lat), Number(lng), KOYAMBEDU_LAT, KOYAMBEDU_LNG);
 
-  // Distance-based delivery charge: ₹125 per 4 km radius
+  // Weight-aware distance-based delivery charge (see computeDeliveryCharge):
+  // light carts (<15kg gross) get flat slabs up to 30km, otherwise/beyond
+  // that it's the standard ₹125-per-4km rate.
+  let grossWeightKg = null;
+  if (req.user?._id) {
+    const cart = await KoyambeduCart.findOne({ user: req.user._id }).populate('items.product', 'weightKg unit');
+    if (cart?.items?.length) {
+      grossWeightKg = cart.items.reduce((s, ci) => s + itemWeightKg(ci), 0);
+    }
+  }
   const kmRounded    = Math.round(distanceKm * 10) / 10;
-  const deliveryCharge = Math.ceil(distanceKm / 4) * 125;
+  const deliveryCharge = computeDeliveryCharge(distanceKm, grossWeightKg);
 
   res.json({
     success:       true,
@@ -685,8 +714,8 @@ const placeOrder = async (req, res) => {
     });
   }
 
-  // ── 7b. Delivery charge (distance-based: ₹125 per 4 km radius) ──
-  const deliveryCharge = Math.ceil(distanceKm / 4) * 125;
+  // ── 7b. Delivery charge — weight-aware distance slabs (see computeDeliveryCharge) ──
+  const deliveryCharge = computeDeliveryCharge(distanceKm, totalWeightKg);
   const platformFee    = 75; // ₹75 incl. 18% GST (SAC 9985 — marketplace services)
   const deliveryType   = deliveryTypes.size > 1 ? 'mixed' : [...deliveryTypes][0];
 

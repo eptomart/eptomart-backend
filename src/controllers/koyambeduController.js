@@ -882,7 +882,11 @@ const placeOrder = async (req, res) => {
 
   if (!isRazorpay) {
     // ── COD / wallet_full: clear cart, increment coupon, deduct wallet, notify sellers ──
-    await KoyambeduCart.findOneAndUpdate({ user: req.user._id }, { items: [] });
+    try {
+      await KoyambeduCart.findOneAndUpdate({ user: req.user._id }, { items: [] });
+    } catch (e) {
+      console.error('[KBD] Cart-clear failed after COD/wallet order', order.orderId, ':', e.message);
+    }
 
     if (appliedCoupon) {
       await EptoFreshCoupon.findByIdAndUpdate(appliedCoupon._id, { $inc: { usedCount: 1 } });
@@ -949,7 +953,14 @@ const verifyPayment = async (req, res) => {
   // Razorpay may fire the success callback more than once (user refreshes, webhook
   // retry, etc.). If the order is already marked paid we skip all side-effects and
   // return success so the frontend can safely proceed to the confirmation page.
+  // We still make a best-effort cart-clear attempt here (idempotent — clearing an
+  // already-empty cart is a no-op): if the FIRST verify-payment call marked the
+  // order paid but then failed/timed out before it could clear the cart, this is
+  // the only chance a retry gets to actually finish the job — the block below
+  // would otherwise never run again for this order.
   if (order.paymentStatus === 'paid') {
+    KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [] })
+      .catch(e => console.error('[KBD] Retry cart-clear failed for', order.orderId, ':', e.message));
     return res.json({ success: true, message: 'Payment already confirmed', orderId: order.orderId });
   }
 
@@ -987,8 +998,16 @@ const verifyPayment = async (req, res) => {
 
   await order.save();
 
-  // Clear the customer's cart (preserved during payment_pending state)
-  await KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [] });
+  // Clear the customer's cart (preserved during payment_pending state).
+  // Wrapped so a transient DB hiccup here can never turn into a 500 that makes
+  // the frontend think payment verification itself failed — the payment is
+  // already captured and the order is already marked paid by this point; a
+  // failed clear just means the (idempotent) retry above gets another shot.
+  try {
+    await KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [] });
+  } catch (e) {
+    console.error('[KBD] Cart-clear failed after payment for', order.orderId, ':', e.message);
+  }
 
   // Increment coupon usage now that payment is confirmed
   if (order.pricing?.couponCode) {
@@ -1050,8 +1069,11 @@ const testPayment = async (req, res) => {
   const order = await KoyambeduOrder.findOne({ _id: orderId, buyer: req.user._id });
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
-  // Idempotency guard — same as verifyPayment
+  // Idempotency guard — same as verifyPayment. Also retries the cart clear
+  // (idempotent) in case it failed on a previous call for this order.
   if (order.paymentStatus === 'paid') {
+    KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [] })
+      .catch(e => console.error('[KBD][TEST] Retry cart-clear failed for', order.orderId, ':', e.message));
     return res.json({ success: true, message: '[TEST] Payment already confirmed', orderId: order.orderId });
   }
 
@@ -1079,7 +1101,11 @@ const testPayment = async (req, res) => {
   await order.save();
 
   // Clear cart and increment coupon (same as verifyPayment)
-  await KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [] });
+  try {
+    await KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [] });
+  } catch (e) {
+    console.error('[KBD][TEST] Cart-clear failed after payment for', order.orderId, ':', e.message);
+  }
   if (order.pricing?.couponCode) {
     await EptoFreshCoupon.findOneAndUpdate(
       { code: order.pricing.couponCode },

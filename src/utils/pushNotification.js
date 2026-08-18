@@ -88,6 +88,28 @@ const notifyAll = async (payload) => {
   return { sent: results.filter(r => r.success).length, total: results.length };
 };
 
+/**
+ * Send notification to active subscribers belonging to a specific set of
+ * user IDs (targeted/segmented broadcast — e.g. "Koyambedu Daily customers
+ * in a given area", as opposed to notifyAll's site-wide blast).
+ * Sent in chunks so a very large audience doesn't open thousands of
+ * concurrent HTTPS requests at once.
+ */
+const notifyAudience = async (userIds, payload, { chunkSize = 200 } = {}) => {
+  if (!userIds || !userIds.length) return { sent: 0, total: 0 };
+  const subscriptions = await PushSubscription.find({
+    user: { $in: userIds },
+    isActive: true,
+  });
+  let sent = 0;
+  for (let i = 0; i < subscriptions.length; i += chunkSize) {
+    const batch = subscriptions.slice(i, i + chunkSize);
+    const results = await Promise.all(batch.map(sub => sendPush(sub, payload)));
+    sent += results.filter(r => r.success).length;
+  }
+  return { sent, total: subscriptions.length };
+};
+
 // ─── Pre-built Notification Templates ────────
 
 const notifications = {
@@ -133,4 +155,4 @@ const notifications = {
   }),
 };
 
-module.exports = { sendPush, notifyUser, notifyAll, notifications };
+module.exports = { sendPush, notifyUser, notifyAll, notifyAudience, notifications };

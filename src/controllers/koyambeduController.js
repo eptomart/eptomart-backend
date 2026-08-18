@@ -21,6 +21,8 @@ const KoyambeduSettings     = require('../models/KoyambeduSettings');
 const KoyambeduDeliverySlot = require('../models/KoyambeduDeliverySlot');
 const KoyambeduProcurementChecklist = require('../models/KoyambeduProcurementChecklist');
 const KoyambeduProcurementShare     = require('../models/KoyambeduProcurementShare');
+const KoyambeduOfferBroadcast       = require('../models/KoyambeduOfferBroadcast');
+const { notifyAudience, notifyAll } = require('../utils/pushNotification');
 const User                  = require('../models/User');
 const EptoFreshCoupon       = require('../models/EptoFreshCoupon');
 const Razorpay              = require('razorpay');
@@ -6266,6 +6268,158 @@ const adminShareProcurement = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════
+// SUPER ADMIN — Koyambedu Daily Offer Push Notifications
+// Lets Super Admin compose a promo/offer and push it as a mobile web-push
+// notification (Android + iOS PWA installs) to a targeted audience —
+// mirroring the segmented-offer pattern used by Zomato/Swiggy — instead of
+// only the existing site-wide "broadcast to everyone" admin tool.
+// Purely additive: reuses the existing PushSubscription/web-push pipeline
+// (utils/pushNotification.js) — does not touch it beyond adding
+// `notifyAudience`, and does not change the existing /admin/notifications
+// site-wide broadcast route at all.
+// ══════════════════════════════════════════════
+
+/**
+ * Resolve the list of buyer user IDs matching a segment + optional area filter.
+ * Returns `null` for 'all_subscribers', which signals "use notifyAll (every
+ * push subscriber site-wide)" rather than a Koyambedu-order-derived list.
+ */
+const resolveKoyambeduAudienceIds = async (segment, areaFilter) => {
+  if (segment === 'all_subscribers') return null;
+
+  const match = {};
+  const area = (areaFilter || '').trim();
+  if (area) {
+    match.$or = [
+      { 'buyerLocation.areaName': { $regex: area, $options: 'i' } },
+      { 'buyerLocation.city':     { $regex: area, $options: 'i' } },
+      { 'buyerLocation.pincode':  area },
+      { 'shippingAddress.pincode': area },
+    ];
+  }
+
+  if (segment === 'active') {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    return KoyambeduOrder.distinct('buyer', { ...match, orderTimestamp: { $gte: cutoff } });
+  }
+
+  if (segment === 'lapsed') {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const [allBuyers, recentBuyers] = await Promise.all([
+      KoyambeduOrder.distinct('buyer', match),
+      KoyambeduOrder.distinct('buyer', { ...match, orderTimestamp: { $gte: cutoff } }),
+    ]);
+    const recentSet = new Set(recentBuyers.map(String));
+    return allBuyers.filter(id => !recentSet.has(String(id)));
+  }
+
+  // default: 'all_koyambedu' — anyone who has ever ordered (matching area filter, if given)
+  return KoyambeduOrder.distinct('buyer', match);
+};
+
+const SEGMENT_LABELS = {
+  all_koyambedu:   'All Koyambedu Daily customers',
+  active:          'Active customers (ordered in last 30 days)',
+  lapsed:          'Lapsed customers (no order in 30+ days)',
+  all_subscribers: 'All app users (every push subscriber)',
+};
+
+/** GET /api/koyambedu/admin/notifications/audience-count?segment=&area= */
+const adminPreviewOfferAudience = async (req, res) => {
+  try {
+    const { segment = 'all_koyambedu', area = '' } = req.query;
+    if (segment === 'all_subscribers') {
+      const PushSubscription = require('../models/PushSubscription');
+      const count = await PushSubscription.countDocuments({ isActive: true });
+      return res.json({ success: true, segment, label: SEGMENT_LABELS[segment], audienceCount: count, subscriberCount: count });
+    }
+    const userIds = await resolveKoyambeduAudienceIds(segment, area);
+    const PushSubscription = require('../models/PushSubscription');
+    const subscriberCount = userIds.length
+      ? await PushSubscription.countDocuments({ user: { $in: userIds }, isActive: true })
+      : 0;
+    res.json({
+      success: true,
+      segment,
+      label: SEGMENT_LABELS[segment] || segment,
+      audienceCount: userIds.length,   // matching customers
+      subscriberCount,                 // of those, how many have push enabled — the actual reach
+    });
+  } catch (err) {
+    console.error('[adminPreviewOfferAudience] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to compute audience' });
+  }
+};
+
+/** POST /api/koyambedu/admin/notifications/broadcast */
+const adminBroadcastOffer = async (req, res) => {
+  try {
+    const { title, body, url, segment = 'all_koyambedu', areaFilter = '' } = req.body;
+    if (!title?.trim() || !body?.trim()) {
+      return res.status(400).json({ success: false, message: 'Title and body are required' });
+    }
+    if (!SEGMENT_LABELS[segment]) {
+      return res.status(400).json({ success: false, message: 'Invalid audience segment' });
+    }
+
+    const payload = {
+      title: title.trim(),
+      body:  body.trim(),
+      icon:  '/icons/icon-192x192.png',
+      badge: '/icons/icon-72x72.png',
+      url:   url?.trim() || '/koyambedu',
+      tag:   'koyambedu-offer',
+    };
+
+    let audienceCount, result;
+    if (segment === 'all_subscribers') {
+      result = await notifyAll(payload);
+      audienceCount = result.total;
+    } else {
+      const userIds = await resolveKoyambeduAudienceIds(segment, areaFilter);
+      audienceCount = userIds.length;
+      result = await notifyAudience(userIds, payload);
+    }
+
+    const log = await KoyambeduOfferBroadcast.create({
+      title: payload.title,
+      body:  payload.body,
+      url:   payload.url,
+      segment,
+      areaFilter: (areaFilter || '').trim(),
+      audienceCount,
+      sentCount:   result.sent,
+      failedCount: Math.max(0, (result.total || 0) - result.sent),
+      sentBy:     req.user._id,
+      sentByName: req.user.name || req.user.email,
+    });
+
+    res.json({
+      success: true,
+      message: `Offer pushed to ${result.sent} of ${result.total} subscribed device${result.total === 1 ? '' : 's'}.`,
+      audienceCount,
+      sentCount:   result.sent,
+      totalTargeted: result.total,
+      broadcastId: log._id,
+    });
+  } catch (err) {
+    console.error('[adminBroadcastOffer] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to send offer notification' });
+  }
+};
+
+/** GET /api/koyambedu/admin/notifications/history */
+const adminGetOfferBroadcasts = async (req, res) => {
+  try {
+    const items = await KoyambeduOfferBroadcast.find({}).sort({ createdAt: -1 }).limit(50).lean();
+    res.json({ success: true, items });
+  } catch (err) {
+    console.error('[adminGetOfferBroadcasts] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to load broadcast history' });
+  }
+};
+
 module.exports = {
   // Public
   getCategories, getProducts, getFeaturedProducts, getHomepageProducts, getProductsByCategory, getProductDetail, getDeliverySlots,
@@ -6276,6 +6430,8 @@ module.exports = {
   adminGetUserCarts,
   // Super Admin — Procurement Report (confirmed orders)
   adminProcurementReport, adminUpdateProcurementItem, adminShareProcurement,
+  // Super Admin — Offer push notifications
+  adminPreviewOfferAudience, adminBroadcastOffer, adminGetOfferBroadcasts,
   // Buyer orders
   placeOrder, createRazorpayOrder, verifyPayment, testPayment,
   getMyOrders, getMyOrder, cancelPendingOrder, approveRevision, cancelOrder, getOrderInvoice,

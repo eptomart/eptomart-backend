@@ -214,6 +214,10 @@ router.get  ('/admin/carts',                                          protectSup
 router.get  ('/admin/reports/procurement-confirmed',                  protectAdmin,      ctrl.adminProcurementReport);
 router.patch('/admin/reports/procurement-confirmed/item',             protectAdmin,      ctrl.adminUpdateProcurementItem);
 router.post ('/admin/reports/procurement-confirmed/share',            protectAdmin,      ctrl.adminShareProcurement);
+
+router.get  ('/admin/notifications/audience-count',                   protectAdmin,      ctrl.adminPreviewOfferAudience);
+router.post ('/admin/notifications/broadcast',                        protectAdmin,      ctrl.adminBroadcastOffer);
+router.get  ('/admin/notifications/history',                          protectAdmin,      ctrl.adminGetOfferBroadcasts);
 // All-customer wallet management (SuperAdmin)
 router.get  ('/admin/wallets',                                        protectSuperAdmin, ctrl.adminGetAllWallets);
 router.get  ('/admin/wallets/:walletId/transactions',                 protectSuperAdmin, ctrl.adminGetWalletTransactions);

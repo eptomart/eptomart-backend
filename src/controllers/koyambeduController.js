@@ -73,7 +73,12 @@ const itemWeightKg = (item) => {
     // in the description (e.g. "13 KGS box"). So for box/bunch specifically,
     // the description is checked FIRST; `weightKg` is only trusted as a
     // fallback when it's been changed from that untouched default.
-    const descMatch = (item.product?.description || '').match(KG_IN_DESC_RE);
+    // Sellers often put the weight in the product NAME instead of the
+    // description (e.g. "Apple Dames Gala New Zealand 20 Kgs") — check both,
+    // description first, falling back to the product/cart-item name.
+    const descMatch =
+      (item.product?.description || '').match(KG_IN_DESC_RE) ||
+      (item.product?.name || item.name || '').match(KG_IN_DESC_RE);
     if (descMatch) return parseFloat(descMatch[1]) * qty;
 
     if (item.product?.weightKg != null && item.product.weightKg !== 1) {
@@ -382,7 +387,7 @@ const checkDeliveryAvailability = async (req, res) => {
   // that it's the standard ₹125-per-4km rate.
   let grossWeightKg = null;
   if (req.user?._id) {
-    const cart = await KoyambeduCart.findOne({ user: req.user._id }).populate('items.product', 'weightKg unit description');
+    const cart = await KoyambeduCart.findOne({ user: req.user._id }).populate('items.product', 'weightKg unit description name');
     if (cart?.items?.length) {
       grossWeightKg = cart.items.reduce((s, ci) => s + itemWeightKg(ci), 0);
     }

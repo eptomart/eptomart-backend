@@ -48,11 +48,37 @@ const haversineKm = (lat1, lon1, lat2, lon2) => {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
 
-/** Weight per item in kg */
+/** Explicit "NN KG"/"NN KGS" weight stated in a product description, e.g. "Farm-fresh box — 13 KG". */
+const KG_IN_DESC_RE = /(\d+(?:\.\d+)?)\s*kgs?\b/i;
+
+/**
+ * Weight per item in kg — feeds the weight-aware delivery fee slabs
+ * (computeDeliveryCharge / the <15kg light-order flat-fee logic) ONLY.
+ * Box/bunch products rarely have an explicit `weightKg` set, so before
+ * falling back to a flat guess this checks the product description for a
+ * stated weight (e.g. "13 KG" for a box). For bunches with no stated
+ * weight, falls back to an estimate anchored on two reference points:
+ * a 12kg-equivalent order of bunches is either ~5 heavy bunches (12/5 =
+ * 2.4kg each) or up to ~10 light bunches (assume under 5kg total for 10,
+ * i.e. ~0.5kg each). Does not affect pricing, the separate admin
+ * gross-weight display (summarizeOrderWeight, unchanged), or anything else.
+ */
 const itemWeightKg = (item) => {
-  const wpu = item.product?.weightKg != null ? item.product.weightKg
-    : (item.unit === 'g' ? 0.001 : 1);
-  return wpu * (item.quantity || 0);
+  const qty = item.quantity || 0;
+  if (item.product?.weightKg != null) return item.product.weightKg * qty;
+  if (item.unit === 'g') return 0.001 * qty;
+
+  if (item.unit === 'box' || item.unit === 'bunch') {
+    const descMatch = (item.product?.description || '').match(KG_IN_DESC_RE);
+    if (descMatch) return parseFloat(descMatch[1]) * qty;
+
+    if (item.unit === 'bunch') {
+      const perBunch = qty <= 5 ? 2.4 : 0.5;
+      return perBunch * qty;
+    }
+  }
+
+  return 1 * qty; // unchanged default for boxes with no stated weight, and everything else
 };
 
 /**
@@ -345,7 +371,7 @@ const checkDeliveryAvailability = async (req, res) => {
   // that it's the standard ₹125-per-4km rate.
   let grossWeightKg = null;
   if (req.user?._id) {
-    const cart = await KoyambeduCart.findOne({ user: req.user._id }).populate('items.product', 'weightKg unit');
+    const cart = await KoyambeduCart.findOne({ user: req.user._id }).populate('items.product', 'weightKg unit description');
     if (cart?.items?.length) {
       grossWeightKg = cart.items.reduce((s, ci) => s + itemWeightKg(ci), 0);
     }

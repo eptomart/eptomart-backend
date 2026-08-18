@@ -6,15 +6,25 @@ const router = express.Router();
 const PushSubscription = require('../models/PushSubscription');
 const Notification     = require('../models/Notification');
 const { notifyUser, notifyAll, notifications } = require('../utils/pushNotification');
-const { protect } = require('../middleware/auth');
+const { protect, optionalAuth } = require('../middleware/auth');
 const { protectAdmin } = require('../middleware/adminAuth');
 
 /**
  * @route   POST /api/notifications/subscribe
  * @desc    Save push subscription
- * @access  Public (works for guests too)
+ * @access  Public (works for guests too) — but attaches `user` when a valid
+ *          auth token is present, via optionalAuth. Without this, EVERY
+ *          subscription (logged in or not) was stored with user: null,
+ *          which silently broke all Koyambedu-audience-targeted broadcasts
+ *          (they resolve target user IDs from KoyambeduOrder.buyer and can
+ *          only match subscriptions that have a `user` set). The frontend
+ *          also calls this endpoint again on every app load once a push
+ *          subscription already exists (see usePushNotifications.js
+ *          checkSubscription), so an existing guest subscription gets its
+ *          `user` backfilled the next time that device opens the app while
+ *          logged in — no re-subscription required.
  */
-router.post('/subscribe', async (req, res) => {
+router.post('/subscribe', optionalAuth, async (req, res) => {
   const { subscription } = req.body;
   if (!subscription?.endpoint) {
     return res.status(400).json({ success: false, message: 'Invalid subscription' });

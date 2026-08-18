@@ -486,6 +486,41 @@ const updateCart = async (req, res) => {
     return res.status(400).json({ success: false, message: 'Invalid product ID' });
   }
 
+  // ── Explicit removal (quantity <= 0) — handled BEFORE the product lookup
+  // below. Removing a cart line must never require the referenced product
+  // to still exist/be active: if it was deleted or deactivated after being
+  // added to the cart, the customer still needs to be able to remove it.
+  // The product-existence + availability checks further down are only
+  // meaningful for add/increase operations and are left completely
+  // unchanged for that path.
+  if (Number(quantity) <= 0) {
+    let cart = await KoyambeduCart.findOne({ user: req.user._id });
+    if (cart) {
+      const idx = cart.items.findIndex(i =>
+        String(i.product) === String(productId) &&
+        (gradeKey ? (i.gradeKey || null) === (gradeKey || null) : true)
+      );
+      if (idx > -1) {
+        cart.items.splice(idx, 1);
+        await cart.save();
+      }
+    } else {
+      cart = new KoyambeduCart({ user: req.user._id, items: [] });
+    }
+
+    await cart.populate({
+      path: 'items.product',
+      select: 'name unit images qtyStep minQty maxQty currentPrice variants gradesEnabled grades isActive isAvailable',
+      populate: { path: 'seller', select: 'isActive status' },
+    });
+    const cartObj = cart.toObject();
+    cartObj.items = cartObj.items.filter(it =>
+      it.product?.isActive && it.product?.isAvailable &&
+      it.product?.seller?.isActive && it.product?.seller?.status === 'approved'
+    );
+    return res.json({ success: true, cart: cartObj });
+  }
+
   const product = await KoyambeduProduct.findOne({ _id: productId, isActive: true, isAvailable: true })
     .populate('seller', '_id status isActive');
   if (!product) return res.status(404).json({ success: false, message: 'Product not found or unavailable' });

@@ -65,20 +65,31 @@ const KG_IN_DESC_RE = /(\d+(?:\.\d+)?)\s*kgs?\b/i;
  */
 const itemWeightKg = (item) => {
   const qty = item.quantity || 0;
-  if (item.product?.weightKg != null) return item.product.weightKg * qty;
-  if (item.unit === 'g') return 0.001 * qty;
 
   if (item.unit === 'box' || item.unit === 'bunch') {
+    // `weightKg` defaults to 1 on every KoyambeduProduct (schema default)
+    // and is almost never manually corrected for box/bunch items — treating
+    // it as authoritative here would silently ignore a real weight stated
+    // in the description (e.g. "13 KGS box"). So for box/bunch specifically,
+    // the description is checked FIRST; `weightKg` is only trusted as a
+    // fallback when it's been changed from that untouched default.
     const descMatch = (item.product?.description || '').match(KG_IN_DESC_RE);
     if (descMatch) return parseFloat(descMatch[1]) * qty;
+
+    if (item.product?.weightKg != null && item.product.weightKg !== 1) {
+      return item.product.weightKg * qty;
+    }
 
     if (item.unit === 'bunch') {
       const perBunch = qty <= 5 ? 2.4 : 0.5;
       return perBunch * qty;
     }
+    return 1 * qty; // box, no description weight, weightKg still at its untouched default
   }
 
-  return 1 * qty; // unchanged default for boxes with no stated weight, and everything else
+  if (item.product?.weightKg != null) return item.product.weightKg * qty;
+  if (item.unit === 'g') return 0.001 * qty;
+  return 1 * qty; // unchanged default for everything else
 };
 
 /**

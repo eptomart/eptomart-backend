@@ -677,7 +677,7 @@ const placeOrder = async (req, res) => {
   }
 
   // ── 7. Minimum order check ────────────────────────────────────
-  const MIN_ORDER_VALUE = 1500;
+  const MIN_ORDER_VALUE = 799;
   if (subtotal < MIN_ORDER_VALUE) {
     return res.status(400).json({
       success: false,
@@ -685,7 +685,7 @@ const placeOrder = async (req, res) => {
     });
   }
 
-  // ── 7b. Delivery charge (distance-based: ₹249 per 8 km radius) ──
+  // ── 7b. Delivery charge (distance-based: ₹125 per 4 km radius) ──
   const deliveryCharge = Math.ceil(distanceKm / 4) * 125;
   const platformFee    = 75; // ₹75 incl. 18% GST (SAC 9985 — marketplace services)
   const deliveryType   = deliveryTypes.size > 1 ? 'mixed' : [...deliveryTypes][0];

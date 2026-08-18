@@ -132,17 +132,41 @@ const calcDeliveryCharge = (totalKg) => {
 };
 
 /**
- * Distance + weight based delivery charge.
- * - Light orders (gross weight < 15 kg): flat-fee slabs by distance —
- *   0–10km ₹149, 10–20km ₹249, 20–30km ₹349.
- * - Anything 15 kg or heavier, OR beyond 30 km regardless of weight,
- *   falls back to the standard ₹125-per-4km slab.
- * `grossWeightKg` may be null/undefined (e.g. weight unknown at call time) —
- * treated the same as "15kg or heavier" so it safely defaults to the
- * standard distance slab.
+ * Summarizes a cart/order's items for the weight-aware delivery fee rule
+ * (see computeDeliveryCharge): counts total bunches, and separately sums
+ * the weight of every NON-bunch item (kg, box, piece, etc. — using the
+ * same description/name-aware weight lookup as itemWeightKg). Bunches
+ * themselves are only counted here, not weighed — the light-fare rule
+ * gates purely on bunch count, not bunch weight.
  */
-const computeDeliveryCharge = (distanceKm, grossWeightKg) => {
-  const isLight = grossWeightKg != null && grossWeightKg < 15;
+const summarizeCartForDeliveryFee = (items) => {
+  let bunchCount = 0;
+  let nonBunchWeightKg = 0;
+  for (const it of items || []) {
+    const qty = it.quantity || 0;
+    if (!qty) continue;
+    if (it.unit === 'bunch') {
+      bunchCount += qty;
+    } else {
+      nonBunchWeightKg += itemWeightKg(it);
+    }
+  }
+  return { bunchCount, nonBunchWeightKg: Math.round(nonBunchWeightKg * 100) / 100 };
+};
+
+/**
+ * Distance + cart-composition based delivery charge.
+ * - Light orders — bunch count ≤ 10 AND every non-bunch item combined
+ *   weighs ≤ 5kg — get flat-fee slabs by distance: 0–10km ₹149,
+ *   10–20km ₹249, 20–30km ₹349.
+ * - Otherwise (more than 10 bunches — regardless of anything else in the
+ *   cart — OR non-bunch items over 5kg, OR beyond 30km) falls back to the
+ *   standard ₹125-per-4km slab.
+ * `summary` may be null/undefined (e.g. unknown at call time) — treated
+ * the same as "not light" so it safely defaults to the standard slab.
+ */
+const computeDeliveryCharge = (distanceKm, summary) => {
+  const isLight = !!summary && summary.bunchCount <= 10 && summary.nonBunchWeightKg <= 5;
   if (isLight && distanceKm <= 30) {
     if (distanceKm <= 10) return 149;
     if (distanceKm <= 20) return 249;
@@ -382,18 +406,19 @@ const checkDeliveryAvailability = async (req, res) => {
 
   const distanceKm = haversineKm(Number(lat), Number(lng), KOYAMBEDU_LAT, KOYAMBEDU_LNG);
 
-  // Weight-aware distance-based delivery charge (see computeDeliveryCharge):
-  // light carts (<15kg gross) get flat slabs up to 30km, otherwise/beyond
-  // that it's the standard ₹125-per-4km rate.
-  let grossWeightKg = null;
+  // Cart-composition-aware distance-based delivery charge (see
+  // computeDeliveryCharge): light carts — ≤10 bunches AND ≤5kg of
+  // non-bunch items — get flat slabs up to 30km, otherwise/beyond that
+  // it's the standard ₹125-per-4km rate.
+  let cartSummary = null;
   if (req.user?._id) {
     const cart = await KoyambeduCart.findOne({ user: req.user._id }).populate('items.product', 'weightKg unit description name');
     if (cart?.items?.length) {
-      grossWeightKg = cart.items.reduce((s, ci) => s + itemWeightKg(ci), 0);
+      cartSummary = summarizeCartForDeliveryFee(cart.items);
     }
   }
   const kmRounded    = Math.round(distanceKm * 10) / 10;
-  const deliveryCharge = computeDeliveryCharge(distanceKm, grossWeightKg);
+  const deliveryCharge = computeDeliveryCharge(distanceKm, cartSummary);
 
   res.json({
     success:       true,
@@ -793,8 +818,11 @@ const placeOrder = async (req, res) => {
     });
   }
 
-  // ── 7b. Delivery charge — weight-aware distance slabs (see computeDeliveryCharge) ──
-  const deliveryCharge = computeDeliveryCharge(distanceKm, totalWeightKg);
+  // ── 7b. Delivery charge — cart-composition-aware distance slabs (see computeDeliveryCharge) ──
+  // Uses its own bunch-count/non-bunch-weight summary, kept separate from
+  // `totalWeightKg` above (which stays exactly as-is for the unrelated
+  // 1kg minimum-order-quantity gate).
+  const deliveryCharge = computeDeliveryCharge(distanceKm, summarizeCartForDeliveryFee(cart.items));
   const platformFee    = 75; // ₹75 incl. 18% GST (SAC 9985 — marketplace services)
   const deliveryType   = deliveryTypes.size > 1 ? 'mixed' : [...deliveryTypes][0];
 

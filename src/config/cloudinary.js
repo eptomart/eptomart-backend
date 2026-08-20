@@ -142,12 +142,19 @@ const uploadKoyambedu = multer({
   },
 });
 
-// Hero video storage (Koyambedu home banner) — mp4/webm up to 50MB
+// Hero video storage (Koyambedu home banner) — mp4/webm up to 50MB.
+// This banner is displayed on the home page (highest-traffic page in the
+// app) at a small tile size (~165px tall), looping/autoplaying for every
+// visitor. Capping width + auto quality/format at upload time means every
+// visitor streams a compressed, right-sized file instead of whatever raw
+// resolution/bitrate the admin originally uploaded — this is by far the
+// single biggest per-asset bandwidth cost in the app if left uncapped.
 const heroVideoStorage = new CloudinaryStorage({
   cloudinary,
   params: {
     folder: 'eptomart/koyambedu/hero',
     resource_type: 'video',
+    transformation: [{ width: 720, crop: 'limit', quality: 'auto', fetch_format: 'auto' }],
   },
 });
 const uploadHeroVideo = multer({

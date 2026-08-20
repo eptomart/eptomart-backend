@@ -192,7 +192,13 @@ router.patch('/admin/orders/:orderId/close',      protectSuperAdmin, ctrl.adminC
 const { uploadHeroVideo } = require('../config/cloudinary');
 router.post('/admin/hero-video/upload', protectSuperAdmin, uploadHeroVideo.single('video'), (req, res) => {
   if (!req.file?.path) return res.status(400).json({ success: false, message: 'No video uploaded' });
-  const url = req.file.path;
+  let url = req.file.path;
+  // Belt-and-braces delivery-time cap on top of the upload-time transform
+  // (see config/cloudinary.js uploadHeroVideo) — also protects any hero
+  // video uploaded before that cap existed, without needing a re-upload.
+  if (url.includes('res.cloudinary.com') && !url.includes('/upload/w_')) {
+    url = url.replace('/upload/', '/upload/w_720,c_limit,q_auto,f_auto/');
+  }
   // Cloudinary derives a poster frame by swapping the extension to .jpg
   const poster = url.replace(/\.(mp4|webm|mov|m4v)(\?.*)?$/i, '.jpg');
   res.json({ success: true, url, poster });

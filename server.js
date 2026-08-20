@@ -170,6 +170,8 @@ const ALLOWED_ORIGINS = [
   'https://eptomart.com',
   'https://www.eptomart.com',
   'https://admin.eptomart.com',
+  'https://eptomart.in',
+  'https://www.eptomart.in',
   ...(process.env.NODE_ENV !== 'production' ? ['http://localhost:5173', 'http://localhost:3000'] : []),
 ];
 app.use(cors({

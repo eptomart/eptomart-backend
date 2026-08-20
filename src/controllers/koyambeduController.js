@@ -156,17 +156,25 @@ const summarizeCartForDeliveryFee = (items) => {
 
 /**
  * Distance + cart-composition based delivery charge.
- * - Light orders — bunch count ≤ 10 AND every non-bunch item combined
- *   weighs ≤ 5kg — get flat-fee slabs by distance: 0–10km ₹149,
- *   10–20km ₹249, 20–30km ₹349.
+ * - Light orders get flat-fee slabs by distance: 0–10km ₹149, 10–20km
+ *   ₹249, 20–30km ₹349. "Light" is:
+ *     • If the cart has ANY bunches: bunch count ≤ 10 AND every non-bunch
+ *       item combined weighs ≤ 5kg.
+ *     • If the cart has NO bunches at all: non-bunch items combined
+ *       weigh ≤ 12kg (the tighter 5kg cap only applies when bunches are
+ *       also present).
  * - Otherwise (more than 10 bunches — regardless of anything else in the
- *   cart — OR non-bunch items over 5kg, OR beyond 30km) falls back to the
- *   standard ₹125-per-4km slab.
+ *   cart — OR the applicable weight cap above is exceeded, OR beyond
+ *   30km) falls back to the standard ₹125-per-4km slab.
  * `summary` may be null/undefined (e.g. unknown at call time) — treated
  * the same as "not light" so it safely defaults to the standard slab.
  */
 const computeDeliveryCharge = (distanceKm, summary) => {
-  const isLight = !!summary && summary.bunchCount <= 10 && summary.nonBunchWeightKg <= 5;
+  const isLight = !!summary && (
+    summary.bunchCount > 0
+      ? (summary.bunchCount <= 10 && summary.nonBunchWeightKg <= 5)
+      : summary.nonBunchWeightKg <= 12
+  );
   if (isLight && distanceKm <= 30) {
     if (distanceKm <= 10) return 149;
     if (distanceKm <= 20) return 249;

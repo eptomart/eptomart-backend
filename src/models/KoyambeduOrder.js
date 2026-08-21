@@ -238,6 +238,13 @@ const koyambeduOrderSchema = new Schema({
     total:               { type: Number, default: 0 },
     revisedTotal:        Number,
     refundAmount:        Number,
+    // Small-order discount display (see computeKoyambeduCharges) — only set
+    // when isSmallOrder is true. Original (pre-discount) delivery/platform
+    // fee, shown struck-through next to the discounted amount so the
+    // customer sees it as a promotion, not just a lower price.
+    isSmallOrder:           { type: Boolean, default: false },
+    originalDeliveryCharge: Number,
+    originalPlatformFee:    Number,
   },
 
   // calculatedPricing: always recomputed by orderCalculationService, stored for synchronization

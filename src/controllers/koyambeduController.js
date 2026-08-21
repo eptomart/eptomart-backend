@@ -155,32 +155,56 @@ const summarizeCartForDeliveryFee = (items) => {
 };
 
 /**
- * Distance + cart-composition based delivery charge.
- * - Light orders get flat-fee slabs by distance: 0–10km ₹149, 10–20km
- *   ₹249, 20–30km ₹349. "Light" is:
- *     • If the cart has ANY bunches: bunch count ≤ 10 AND every non-bunch
- *       item combined weighs ≤ 5kg.
- *     • If the cart has NO bunches at all: non-bunch items combined
- *       weigh ≤ 12kg (the tighter 5kg cap only applies when bunches are
- *       also present).
- * - Otherwise (more than 10 bunches — regardless of anything else in the
- *   cart — OR the applicable weight cap above is exceeded, OR beyond
- *   30km) falls back to the standard ₹125-per-4km slab.
- * `summary` may be null/undefined (e.g. unknown at call time) — treated
- * the same as "not light" so it safely defaults to the standard slab.
+ * Distance + cart-composition based charges for "small orders" — delivery
+ * fee, platform fee, and packing charge — with slashed/original prices for
+ * a promotional discount display on checkout.
+ *
+ * A cart qualifies as a small order when it's "light":
+ *   • If the cart has ANY bunches: bunch count ≤ 10 AND every non-bunch
+ *     item combined weighs ≤ 5kg.
+ *   • If the cart has NO bunches at all: non-bunch items combined weigh
+ *     ≤ 12kg (the tighter 5kg cap only applies when bunches are present).
+ * ...AND the delivery distance is ≤ 30km — beyond that, even a light cart
+ * is treated as a normal order (per business rule: "beyond 30km considered
+ * as normal order").
+ *
+ * Small-order delivery fee slabs (discounted price / struck-through original):
+ *   0–5km: ₹49 / ₹149    6–10km: ₹99 / ₹199
+ *   11–20km: ₹149 / ₹249  21–30km: ₹199 / ₹349
+ * Small-order platform fee: ₹25 (vs standard ₹75), shown struck-through.
+ * Small-order packing charge: flat ₹35 (no discount shown — this is a new
+ * charge, not a markdown of an existing one).
+ *
+ * Normal (non-small) orders are completely unaffected: standard ₹125-per-4km
+ * delivery, ₹75 flat platform fee, no packing charge — exactly as before.
  */
-const computeDeliveryCharge = (distanceKm, summary) => {
-  const isLight = !!summary && (
-    summary.bunchCount > 0
-      ? (summary.bunchCount <= 10 && summary.nonBunchWeightKg <= 5)
-      : summary.nonBunchWeightKg <= 12
+const computeKoyambeduCharges = (distanceKm, cartSummary) => {
+  const isLight = !!cartSummary && (
+    cartSummary.bunchCount > 0
+      ? (cartSummary.bunchCount <= 10 && cartSummary.nonBunchWeightKg <= 5)
+      : cartSummary.nonBunchWeightKg <= 12
   );
-  if (isLight && distanceKm <= 30) {
-    if (distanceKm <= 10) return 149;
-    if (distanceKm <= 20) return 249;
-    return 349; // 20–30 km
+  const isSmallOrder = isLight && distanceKm <= 30;
+
+  let deliveryCharge, originalDeliveryCharge;
+  if (isSmallOrder) {
+    if (distanceKm <= 5)       { deliveryCharge = 49;  originalDeliveryCharge = 149; }
+    else if (distanceKm <= 10) { deliveryCharge = 99;  originalDeliveryCharge = 199; }
+    else if (distanceKm <= 20) { deliveryCharge = 149; originalDeliveryCharge = 249; }
+    else                       { deliveryCharge = 199; originalDeliveryCharge = 349; } // 21–30km
+  } else {
+    deliveryCharge = Math.ceil(distanceKm / 4) * 125;
+    originalDeliveryCharge = null;
   }
-  return Math.ceil(distanceKm / 4) * 125;
+
+  return {
+    isSmallOrder,
+    deliveryCharge,
+    originalDeliveryCharge,
+    platformFee:         isSmallOrder ? 25 : 75,
+    originalPlatformFee: isSmallOrder ? 75 : null,
+    packingCharge:        isSmallOrder ? 35 : 0,
+  };
 };
 
 const getRazorpay = () => {
@@ -414,10 +438,11 @@ const checkDeliveryAvailability = async (req, res) => {
 
   const distanceKm = haversineKm(Number(lat), Number(lng), KOYAMBEDU_LAT, KOYAMBEDU_LNG);
 
-  // Cart-composition-aware distance-based delivery charge (see
-  // computeDeliveryCharge): light carts — ≤10 bunches AND ≤5kg of
-  // non-bunch items — get flat slabs up to 30km, otherwise/beyond that
-  // it's the standard ₹125-per-4km rate.
+  // Cart-composition-aware small-order charges (see computeKoyambeduCharges):
+  // light carts — ≤10 bunches AND ≤5kg of non-bunch items (or ≤12kg with no
+  // bunches) — within 30km get discounted delivery/platform fees plus a
+  // packing charge, shown to the customer with the original price struck
+  // through; otherwise it's the standard rate with no packing charge.
   let cartSummary = null;
   if (req.user?._id) {
     const cart = await KoyambeduCart.findOne({ user: req.user._id }).populate('items.product', 'weightKg unit description name');
@@ -425,14 +450,19 @@ const checkDeliveryAvailability = async (req, res) => {
       cartSummary = summarizeCartForDeliveryFee(cart.items);
     }
   }
-  const kmRounded    = Math.round(distanceKm * 10) / 10;
-  const deliveryCharge = computeDeliveryCharge(distanceKm, cartSummary);
+  const kmRounded = Math.round(distanceKm * 10) / 10;
+  const charges   = computeKoyambeduCharges(distanceKm, cartSummary);
 
   res.json({
     success:       true,
     available:     true,
     distanceKm:    kmRounded,
-    deliveryCharge,
+    deliveryCharge:         charges.deliveryCharge,
+    originalDeliveryCharge: charges.originalDeliveryCharge,
+    platformFee:            charges.platformFee,
+    originalPlatformFee:    charges.originalPlatformFee,
+    packingCharge:          charges.packingCharge,
+    isSmallOrder:           charges.isSmallOrder,
     message:       `Delivery available · ${kmRounded} km from Koyambedu market`,
   });
 };
@@ -830,8 +860,8 @@ const placeOrder = async (req, res) => {
   // Uses its own bunch-count/non-bunch-weight summary, kept separate from
   // `totalWeightKg` above (which stays exactly as-is for the unrelated
   // 1kg minimum-order-quantity gate).
-  const deliveryCharge = computeDeliveryCharge(distanceKm, summarizeCartForDeliveryFee(cart.items));
-  const platformFee    = 75; // ₹75 incl. 18% GST (SAC 9985 — marketplace services)
+  const charges = computeKoyambeduCharges(distanceKm, summarizeCartForDeliveryFee(cart.items));
+  const { deliveryCharge, originalDeliveryCharge, platformFee, originalPlatformFee, packingCharge, isSmallOrder } = charges;
   const deliveryType   = deliveryTypes.size > 1 ? 'mixed' : [...deliveryTypes][0];
 
   // ── 7b. Coupon discount (applied on subtotal, shipping excluded) ──
@@ -867,7 +897,7 @@ const placeOrder = async (req, res) => {
   try {
     walletDoc = await KoyambeduWallet.findOne({ user: req.user._id });
     if (walletDoc && walletDoc.balance !== 0) {
-      const baseTotal = parseFloat((subtotal + deliveryCharge + platformFee - couponDiscount).toFixed(2));
+      const baseTotal = parseFloat((subtotal + deliveryCharge + platformFee + packingCharge - couponDiscount).toFixed(2));
       if (walletDoc.balance > 0) {
         // Credit: only available balance (total − reserved) can be applied at checkout
         const available = parseFloat((walletDoc.balance - (walletDoc.reservedBalance || 0)).toFixed(2));
@@ -880,7 +910,7 @@ const placeOrder = async (req, res) => {
   } catch (_) { /* non-blocking */ }
 
   // walletAdjustment: positive = reduces total, negative = increases total
-  const baseTotal = parseFloat((subtotal + deliveryCharge + platformFee - couponDiscount).toFixed(2));
+  const baseTotal = parseFloat((subtotal + deliveryCharge + platformFee + packingCharge - couponDiscount).toFixed(2));
   const total = parseFloat((baseTotal - walletAdjustment).toFixed(2));
 
   // ── 8. Save order ─────────────────────────────────────────
@@ -924,10 +954,14 @@ const placeOrder = async (req, res) => {
     deliveryCharge,
     deliveryDistance: Math.round(distanceKm * 10) / 10,
     platformFee,
+    packingLogisticsFee: packingCharge,
     discount:       couponDiscount,
     couponCode:     appliedCoupon?.code || undefined,
     walletAdjustment, // positive = customer saved, negative = debt recovered
     total,
+    isSmallOrder,
+    originalDeliveryCharge: originalDeliveryCharge ?? undefined,
+    originalPlatformFee:    originalPlatformFee    ?? undefined,
   };
 
   // ── 9. Build the order ───────────────────────────────────────────────────────
@@ -1624,7 +1658,7 @@ const requestPriceRevision = async (req, res) => {
     requestedAt:  new Date(),
     requestedBy:  seller._id,
     revisedItems: revisedItemDetails,
-    revisedTotal: newTotal + order.pricing.deliveryCharge + (order.pricing.platformFee || order.pricing.serviceFee || 75),
+    revisedTotal: newTotal + order.pricing.deliveryCharge + (order.pricing.platformFee || order.pricing.serviceFee || 75) + (order.pricing.packingLogisticsFee || 0),
     buyerResponse:'pending',
   };
   order.orderStatus = 'price_revision_pending';

@@ -1895,10 +1895,19 @@ const getOrdersForPrinting = async (req, res) => {
         deliverySlot: o.deliverySlot,
         customerName: o.shippingAddress?.fullName || o.buyer?.name || '—',
         customerPhone: o.shippingAddress?.phone || o.buyer?.phone || '',
-        // Area/locality only — NOT the full private street address
-        // (addressLine1/2), which packers don't need and shouldn't have
-        // printed on a slip that could be handled by multiple people.
+        // Area/locality only — used on pack labels (a label stuck on a
+        // pack that may pass through several hands doesn't need the full
+        // street address, just enough to identify roughly where it's going).
         customerArea: o.buyerLocation?.areaName || o.shippingAddress?.landmark || o.shippingAddress?.city || '',
+        // Full delivery address — used on the full packing slip, which stays
+        // with the order rather than being handled loosely like a pack label.
+        customerAddress: [
+          o.shippingAddress?.addressLine1,
+          o.shippingAddress?.addressLine2,
+          o.shippingAddress?.landmark,
+          o.shippingAddress?.city,
+          o.shippingAddress?.pincode,
+        ].filter(Boolean).join(', '),
         printedItemNames: o.packingProgress?.printedItemNames || [],
         items: sourceItems
           .filter(it => it.itemStatus !== 'declined')

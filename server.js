@@ -50,6 +50,7 @@ const eptoFreshRoutes     = require('./src/routes/eptoFresh');
 const couponRoutes        = require('./src/routes/coupon');
 const v2OrderRoutes       = require('./src/routes/v2Orders');   // Unified Orders API (all verticals)
 const webhookRoutes       = require('./src/routes/webhook');     // Meta WhatsApp webhook (public)
+const searchRoutes        = require('./src/routes/search');      // Unified ecosystem-wide product search
 
 const app = express();
 
@@ -248,6 +249,7 @@ app.use('/api/eptofresh',     eptoFreshRoutes);
 app.use('/api/coupon',       couponRoutes);
 app.use('/api/v2/orders',    v2OrderRoutes);   // Unified Orders API (all verticals)
 app.use('/api/webhooks',     webhookRoutes);   // Meta WhatsApp inbound webhook (public, no auth)
+app.use('/api/search',       searchRoutes);    // Unified ecosystem-wide product search
 app.use('/',             sitemapRoutes);  // /sitemap.xml and /robots.txt
 
 // ─── Health Check ────────────────────────────

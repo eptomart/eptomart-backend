@@ -5,6 +5,9 @@ const Product  = require('../models/Product');
 const Seller   = require('../models/Seller');
 const Category = require('../models/Category');
 const { deleteImage } = require('../config/cloudinary');
+const KoyambeduProduct = require('../models/KoyambeduProduct');
+const { rankByFuzzy } = require('../utils/fuzzySearch');
+const { fetchCandidates: fetchSearchCandidates, KOY_FILTER, koyLink, toResult } = require('./searchController');
 
 // Helper: get Seller._id from req.user
 // User.sellerProfile is already populated by protect middleware — no extra DB query needed
@@ -54,7 +57,7 @@ const getProducts = async (req, res) => {
 
   const skip = (Number(page) - 1) * Number(limit);
 
-  const [products, total] = await Promise.all([
+  let [products, total] = await Promise.all([
     Product.find(filter)
       .populate('category', 'name slug').populate('subCategory', 'name slug')
       .populate('seller', 'businessName sellerId')
@@ -65,6 +68,40 @@ const getProducts = async (req, res) => {
     Product.countDocuments(filter),
   ]);
 
+  // Near-match fallback — Mongo's $text search needs a word-stem match, so a
+  // typo ("tomatoe", "bananna") returns zero results. When that happens
+  // (page 1 only — this is a fallback, not a paginated path), fuzzy-rank a
+  // broader candidate pool by edit-distance similarity instead, the way a
+  // normal e-commerce/Google search always surfaces the closest match.
+  if (search && total === 0 && Number(page) === 1) {
+    const candidateFilter = { approvalStatus: 'approved', isActive: true };
+    const pool = await Product.find(candidateFilter).sort({ createdAt: -1 }).limit(300)
+      .populate('category', 'name slug').populate('subCategory', 'name slug')
+      .populate('seller', 'businessName sellerId').select('-reviews').lean();
+    const ranked = rankByFuzzy(pool, search, ['name', 'brand']).slice(0, Number(limit)).map(r => r.doc);
+    if (ranked.length) {
+      products = ranked;
+      total = ranked.length;
+    }
+  }
+
+  // Ecosystem-wide suggestions — surface near-matches from Koyambedu Daily
+  // alongside the main marketplace's own results, so search works across
+  // the whole Eptomart ecosystem, not just this catalog. Kept as a separate
+  // list rather than merged into the paginated grid so it never disturbs
+  // this page's own pagination/sort order.
+  let alsoOnKoyambedu = [];
+  if (search) {
+    try {
+      const koyCandidates = await fetchSearchCandidates(
+        KoyambeduProduct, KOY_FILTER, search, ['name', 'nameTamil', 'description', 'tags'], { freshArrivalDate: -1 }
+      );
+      alsoOnKoyambedu = rankByFuzzy(koyCandidates, search, ['name', 'nameTamil'])
+        .slice(0, 6)
+        .map(({ doc }) => toResult(doc, 'koyambedu', koyLink));
+    } catch { /* never let cross-vertical suggestions break the main marketplace search */ }
+  }
+
   res.json({
     success: true,
     count: products.length,
@@ -72,6 +109,7 @@ const getProducts = async (req, res) => {
     totalPages: Math.ceil(total / Number(limit)),
     currentPage: Number(page),
     products,
+    alsoOnKoyambedu,
   });
 };
 
@@ -517,6 +555,17 @@ const searchProducts = async (req, res) => {
       name: { $in: words.map(w => new RegExp(w, 'i')) },
     }).populate(POPULATE).limit(cap).select(SELECT).lean();
     results = dedup(results, anyWord).slice(0, cap);
+  }
+
+  // Tier 5: fuzzy near-match fallback — every tier above is substring regex,
+  // so a typo ("tomatoe", "bananna") still returns nothing at this point.
+  // Fuzzy-rank a broader candidate pool by edit-distance similarity so a
+  // typo still surfaces the closest real product, like a normal
+  // e-commerce/Google search would.
+  if (!results.length) {
+    const pool = await Product.find(baseFilter).sort({ createdAt: -1 }).limit(300)
+      .populate(POPULATE).select(SELECT).lean();
+    results = rankByFuzzy(pool, terms, ['name', 'brand']).slice(0, cap).map(r => r.doc);
   }
 
   res.json({ success: true, products: results });

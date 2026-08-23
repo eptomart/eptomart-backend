@@ -25,6 +25,9 @@ const KoyambeduOfferBroadcast       = require('../models/KoyambeduOfferBroadcast
 const { notifyAudience, notifyAll } = require('../utils/pushNotification');
 const User                  = require('../models/User');
 const EptoFreshCoupon       = require('../models/EptoFreshCoupon');
+const Product                = require('../models/Product');
+const { rankByFuzzy }        = require('../utils/fuzzySearch');
+const { fetchCandidates: fetchSearchCandidates, MAIN_FILTER, mainLink, toResult } = require('./searchController');
 const Razorpay              = require('razorpay');
 const crypto                = require('crypto');
 const {
@@ -312,7 +315,7 @@ const getProducts = async (req, res) => {
     };
 
     const skip = (Number(page) - 1) * Number(limit);
-    const [products, total] = await Promise.all([
+    let [products, total] = await Promise.all([
       KoyambeduProduct.find(filter)
         .populate('seller', 'businessName stallNumber marketSection rating servicePincodes')
         .populate('category', 'name icon')
@@ -322,6 +325,49 @@ const getProducts = async (req, res) => {
         .lean(),
       KoyambeduProduct.countDocuments(filter),
     ]);
+
+    // Near-match fallback — a search with a typo ("tomatoe", "bananna")
+    // would otherwise return zero results from the literal regex filter
+    // above. When that happens (page 1 only — this is a fallback, not a
+    // paginated path), fuzzy-rank a broader candidate pool by edit-distance
+    // similarity so the customer still sees the closest real products,
+    // the way a normal e-commerce/Google search would.
+    if (search && total === 0 && Number(page) === 1) {
+      const candidateFilter = {
+        isActive: true,
+        ...(filterAvailability ? { isAvailable: true } : {}),
+        $or: [{ approvalStatus: 'approved' }, { approvalStatus: { $exists: false } }],
+      };
+      const pool = await KoyambeduProduct.find(candidateFilter).sort({ createdAt: -1 }).limit(300).lean();
+      const rankedIds = rankByFuzzy(pool, search, ['name', 'nameTamil']).slice(0, Number(limit)).map(r => r.doc._id);
+      if (rankedIds.length) {
+        const populated = await KoyambeduProduct.find({ _id: { $in: rankedIds } })
+          .populate('seller', 'businessName stallNumber marketSection rating servicePincodes')
+          .populate('category', 'name icon')
+          .lean();
+        const byId = new Map(populated.map(p => [String(p._id), p]));
+        products = rankedIds.map(id => byId.get(String(id))).filter(Boolean);
+        total = products.length;
+      }
+    }
+
+    // Ecosystem-wide suggestions — surface near-matches from the main
+    // Eptomart marketplace alongside Koyambedu's own results, so searching
+    // "wherever" in the app searches the whole ecosystem, not just this
+    // vertical. Kept as a small separate list (not merged into the paginated
+    // grid) so it never disturbs Koyambedu's own pagination/sort order.
+    let alsoOnEptomart = [];
+    if (search) {
+      try {
+        const mainCandidates = await fetchSearchCandidates(
+          Product, MAIN_FILTER, search, ['name', 'brand', 'tags', 'description'], { createdAt: -1 }
+        );
+        alsoOnEptomart = rankByFuzzy(mainCandidates, search, ['name', 'brand'])
+          .slice(0, 6)
+          .map(({ doc }) => toResult(doc, 'main', mainLink));
+      } catch { /* never let cross-vertical suggestions break Koyambedu's own search */ }
+    }
+
     // Enrich graded products with lowestUnitPrice across all active grades
     const enrichedProducts = products.map(p => {
       if (p.gradesEnabled && p.grades?.length > 0) {
@@ -329,7 +375,14 @@ const getProducts = async (req, res) => {
       }
       return { ...p, lowestUnitPrice: getLowestUnitPrice(p.variants || []) };
     });
-    res.json({ success: true, products: enrichedProducts, total, page: Number(page), pages: Math.ceil(total / limit) });
+    res.json({
+      success: true,
+      products: enrichedProducts,
+      total,
+      page: Number(page),
+      pages: Math.ceil(total / limit),
+      alsoOnEptomart,
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

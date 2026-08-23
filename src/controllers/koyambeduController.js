@@ -1849,6 +1849,69 @@ const adminGetOrders = async (req, res) => {
   res.json({ success: true, orders: shaped, total, page: Number(page), pages: Math.ceil(total / limit) });
 };
 
+/**
+ * GET /api/koyambedu/admin/orders/print-list
+ * Standalone, print-only order list for the thermal-printer admin tab.
+ * Deliberately separate from adminGetOrders (used by the existing Orders
+ * tab) — this never touches that function or its response shape, so the
+ * existing Orders tab is completely unaffected by this feature.
+ *
+ * Filters: dateFrom/dateTo (on placedAt — when the order was placed, not
+ * delivery date, since packing/printing is usually organised by "orders
+ * placed today" rather than delivery slot) and status. Returns only the
+ * fields a packing slip needs, already flattened/print-ready.
+ */
+const getOrdersForPrinting = async (req, res) => {
+  try {
+    const { dateFrom, dateTo, status, page = 1, limit = 50 } = req.query;
+    const filter = {};
+    if (status) filter.orderStatus = status;
+    if (dateFrom || dateTo) {
+      filter.placedAt = {};
+      if (dateFrom) filter.placedAt.$gte = new Date(`${dateFrom}T00:00:00`);
+      if (dateTo)   filter.placedAt.$lte = new Date(`${dateTo}T23:59:59.999`);
+    }
+
+    const skip = (Number(page) - 1) * Number(limit);
+    const [orders, total] = await Promise.all([
+      KoyambeduOrder.find(filter)
+        .populate('buyer', 'name phone')
+        .select('orderId placedAt createdAt orderStatus deliveryDate deliverySlot shippingAddress buyer items itemsOrdered')
+        .sort({ placedAt: -1, createdAt: -1 })
+        .skip(skip)
+        .limit(Number(limit))
+        .lean(),
+      KoyambeduOrder.countDocuments(filter),
+    ]);
+
+    const slips = orders.map(o => {
+      const sourceItems = o.itemsOrdered?.length ? o.itemsOrdered : (o.items || []);
+      return {
+        _id: o._id,
+        orderId: o.orderId,
+        placedAt: o.placedAt || o.createdAt,
+        orderStatus: o.orderStatus,
+        deliveryDate: o.deliveryDate,
+        deliverySlot: o.deliverySlot,
+        customerName: o.shippingAddress?.fullName || o.buyer?.name || '—',
+        customerPhone: o.shippingAddress?.phone || o.buyer?.phone || '',
+        items: sourceItems
+          .filter(it => it.itemStatus !== 'declined')
+          .map(it => ({
+            name: it.name,
+            unit: it.unit || it.unitLabel || '',
+            qty: it.confirmedQty ?? it.orderedQty ?? it.quantity ?? 0,
+            gradeName: it.gradeName || null,
+          })),
+      };
+    });
+
+    res.json({ success: true, orders: slips, total, page: Number(page), pages: Math.ceil(total / limit) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 /** GET /api/koyambedu/admin/orders/:orderId/wallet-history */
 const adminGetOrderWalletHistory = async (req, res) => {
   const order = await KoyambeduOrder.findById(req.params.orderId).select('buyer orderId').lean();
@@ -6641,7 +6704,7 @@ module.exports = {
   toggleProductAvailability, deleteSellerProduct,
   getSellerOrders, confirmStock, requestPriceRevision, createSellerCategory,
   // Admin — sellers
-  adminDashboard, adminGetOrders, adminGetOrderWalletHistory, adminUpdateOrderStatus, adminEditOrderItemQty, adminDeclineOrderItem,
+  adminDashboard, adminGetOrders, getOrdersForPrinting, adminGetOrderWalletHistory, adminUpdateOrderStatus, adminEditOrderItemQty, adminDeclineOrderItem,
   // Settings / last update time
   getLastProductUpdateTime,
   // Procurement invoice

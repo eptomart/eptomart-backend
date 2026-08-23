@@ -1876,7 +1876,7 @@ const getOrdersForPrinting = async (req, res) => {
     const [orders, total] = await Promise.all([
       KoyambeduOrder.find(filter)
         .populate('buyer', 'name phone')
-        .select('orderId placedAt createdAt orderStatus deliveryDate deliverySlot shippingAddress buyer items itemsOrdered')
+        .select('orderId placedAt createdAt orderStatus deliveryDate deliverySlot shippingAddress buyer items itemsOrdered packingProgress')
         .sort({ placedAt: -1, createdAt: -1 })
         .skip(skip)
         .limit(Number(limit))
@@ -1895,6 +1895,7 @@ const getOrdersForPrinting = async (req, res) => {
         deliverySlot: o.deliverySlot,
         customerName: o.shippingAddress?.fullName || o.buyer?.name || '—',
         customerPhone: o.shippingAddress?.phone || o.buyer?.phone || '',
+        printedItemNames: o.packingProgress?.printedItemNames || [],
         items: sourceItems
           .filter(it => it.itemStatus !== 'declined')
           .map(it => ({
@@ -1907,6 +1908,60 @@ const getOrdersForPrinting = async (req, res) => {
     });
 
     res.json({ success: true, orders: slips, total, page: Number(page), pages: Math.ceil(total / limit) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * POST /api/koyambedu/admin/orders/:orderId/packing/mark-printed
+ * Records that the given item names were just printed as a pack label, so
+ * they show as already-packed (disabled) next time this order's item list
+ * is rendered — the admin doesn't have to remember which items they already
+ * selected/printed for a previous pack. Additive-only ($addToSet — de-dupes
+ * automatically), never removes anything; only "packing/reset" below clears it.
+ */
+const markItemsPrinted = async (req, res) => {
+  try {
+    const { itemNames } = req.body;
+    if (!Array.isArray(itemNames) || !itemNames.length) {
+      return res.status(400).json({ success: false, message: 'itemNames array is required' });
+    }
+    const order = await KoyambeduOrder.findByIdAndUpdate(
+      req.params.orderId,
+      { $addToSet: { 'packingProgress.printedItemNames': { $each: itemNames } } },
+      { new: true }
+    ).select('packingProgress');
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    res.json({ success: true, printedItemNames: order.packingProgress?.printedItemNames || [] });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * POST /api/koyambedu/admin/orders/:orderId/packing/reset
+ * Clears the "already printed" list for this order so every item becomes
+ * selectable again — requires a reason, kept as an audit trail (e.g. a pack
+ * was damaged and needs re-labeling). Does not touch order status, items,
+ * or pricing in any way.
+ */
+const resetPackingProgress = async (req, res) => {
+  try {
+    const { reason } = req.body;
+    if (!reason || !reason.trim()) {
+      return res.status(400).json({ success: false, message: 'A reason is required to reset packing progress' });
+    }
+    const order = await KoyambeduOrder.findByIdAndUpdate(
+      req.params.orderId,
+      {
+        $set: { 'packingProgress.printedItemNames': [] },
+        $push: { 'packingProgress.resets': { reason: reason.trim(), resetBy: req.user?._id, resetAt: new Date() } },
+      },
+      { new: true }
+    ).select('packingProgress');
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    res.json({ success: true, printedItemNames: order.packingProgress?.printedItemNames || [] });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -6704,7 +6759,7 @@ module.exports = {
   toggleProductAvailability, deleteSellerProduct,
   getSellerOrders, confirmStock, requestPriceRevision, createSellerCategory,
   // Admin — sellers
-  adminDashboard, adminGetOrders, getOrdersForPrinting, adminGetOrderWalletHistory, adminUpdateOrderStatus, adminEditOrderItemQty, adminDeclineOrderItem,
+  adminDashboard, adminGetOrders, getOrdersForPrinting, markItemsPrinted, resetPackingProgress, adminGetOrderWalletHistory, adminUpdateOrderStatus, adminEditOrderItemQty, adminDeclineOrderItem,
   // Settings / last update time
   getLastProductUpdateTime,
   // Procurement invoice

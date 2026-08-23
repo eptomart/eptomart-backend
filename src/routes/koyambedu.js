@@ -185,6 +185,8 @@ router.post ('/seller-admin/orders/:orderId/confirm-all',                  prote
 router.get  ('/admin/dashboard',                  protectAdmin, ctrl.adminDashboard);
 router.get  ('/admin/orders',                               protectAdmin,      ctrl.adminGetOrders);
 router.get  ('/admin/orders/print-list',                    protectAdmin,      ctrl.getOrdersForPrinting); // Thermal-printer tab — separate from adminGetOrders above, does not affect it
+router.post ('/admin/orders/:orderId/packing/mark-printed', protectAdmin,      ctrl.markItemsPrinted);
+router.post ('/admin/orders/:orderId/packing/reset',        protectAdmin,      ctrl.resetPackingProgress);
 router.get  ('/admin/orders/pending-approval',              protectSuperAdmin, ctrl.adminGetPendingApprovalOrders);
 router.get  ('/admin/orders/:orderId/wallet-history',       protectSuperAdmin, ctrl.adminGetOrderWalletHistory);
 router.patch('/admin/orders/:orderId/close',      protectSuperAdmin, ctrl.adminCloseOrder);

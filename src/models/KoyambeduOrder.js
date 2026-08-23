@@ -399,6 +399,22 @@ const koyambeduOrderSchema = new Schema({
     }],
   },
 
+  // ── PACKING PROGRESS (thermal-printer admin tab) ──────────────
+  // Tracks which item names have already been printed as a "pack label" so
+  // the admin doesn't have to manually re-select/deselect the same items
+  // every time they print the next pack for this order. Cleared only via
+  // an explicit reset (with a reason, for audit purposes) if a pack needs
+  // to be redone. Purely additive — not read or written by any existing
+  // order logic, checkout, pricing, or business rule.
+  packingProgress: {
+    printedItemNames: { type: [String], default: [] },
+    resets: [{
+      reason:   String,
+      resetBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      resetAt:  { type: Date, default: Date.now },
+    }],
+  },
+
   // ── TIMELINE & AUDIT ─────────────────────────
   timeline: [timelineSchema],
   auditLog:  [auditLogSchema],

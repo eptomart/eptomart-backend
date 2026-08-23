@@ -1876,7 +1876,7 @@ const getOrdersForPrinting = async (req, res) => {
     const [orders, total] = await Promise.all([
       KoyambeduOrder.find(filter)
         .populate('buyer', 'name phone')
-        .select('orderId placedAt createdAt orderStatus deliveryDate deliverySlot shippingAddress buyer items itemsOrdered packingProgress')
+        .select('orderId placedAt createdAt orderStatus deliveryDate deliverySlot shippingAddress buyerLocation buyer items itemsOrdered packingProgress')
         .sort({ placedAt: -1, createdAt: -1 })
         .skip(skip)
         .limit(Number(limit))
@@ -1895,6 +1895,10 @@ const getOrdersForPrinting = async (req, res) => {
         deliverySlot: o.deliverySlot,
         customerName: o.shippingAddress?.fullName || o.buyer?.name || '—',
         customerPhone: o.shippingAddress?.phone || o.buyer?.phone || '',
+        // Area/locality only — NOT the full private street address
+        // (addressLine1/2), which packers don't need and shouldn't have
+        // printed on a slip that could be handled by multiple people.
+        customerArea: o.buyerLocation?.areaName || o.shippingAddress?.landmark || o.shippingAddress?.city || '',
         printedItemNames: o.packingProgress?.printedItemNames || [],
         items: sourceItems
           .filter(it => it.itemStatus !== 'declined')

@@ -42,6 +42,13 @@ const orderItemSchema = new Schema({
   // SA who actioned this item
   actionedBy:    { type: Schema.Types.ObjectId, ref: 'KoyambeduSellerAdmin' },
   actionedAt:    Date,
+
+  // Set only on item rows appended via the "Add More Items" order-amendment
+  // feature (see `amendments` below) — never on rows from the original
+  // placeOrder. Purely informational (lets the UI badge these rows as
+  // "Added on <date>"); doesn't change how pricing/SA-review treats them.
+  isAmendment:   { type: Boolean, default: false },
+  amendedAt:     Date,
 }, { _id: true });
 
 // ── Immutable original-order snapshot ─────────
@@ -57,6 +64,37 @@ const itemsOrderedSchema = new Schema({
   // Grade snapshot
   gradeKey:     { type: String, enum: ['premium','mixed','economy'], default: null },
   gradeName:    { type: String, default: null },
+  isAmendment:  { type: Boolean, default: false }, // see orderItemSchema.isAmendment above
+}, { _id: true });
+
+// ── Order-amendment record ("Add More Items") ─────────────────
+// One entry per successful top-up payment. Never edited after creation
+// except to flip status pending_payment → paid/failed — the `items`
+// snapshot inside is what actually got appended to `items`/`itemsOrdered`
+// above, kept here as a standalone audit trail of what was added and when.
+const amendmentItemSchema = new Schema({
+  product:      { type: Schema.Types.ObjectId, ref: 'KoyambeduProduct' },
+  seller:       { type: Schema.Types.ObjectId, ref: 'KoyambeduSeller' },
+  name:         String,
+  unit:         String,
+  gradeKey:     { type: String, enum: ['premium','mixed','economy'], default: null },
+  gradeName:    { type: String, default: null },
+  addedQty:     Number, // qty added in THIS amendment (delta for an existing item, full qty for a new one)
+  unitPrice:    Number,
+  lineTotal:    Number,
+  sellerPayout: Number,
+  isNewItem:    Boolean, // true = product wasn't on the order before; false = increased an existing item
+}, { _id: false });
+
+const amendmentSchema = new Schema({
+  items:             [amendmentItemSchema],
+  amount:            { type: Number, default: 0 }, // total charged for this amendment (sum of lineTotal)
+  status:            { type: String, enum: ['pending_payment', 'paid', 'failed'], default: 'pending_payment' },
+  razorpayOrderId:   String,
+  razorpayPaymentId: String,
+  razorpaySignature: String,
+  createdAt:         { type: Date, default: Date.now },
+  paidAt:            Date,
 }, { _id: true });
 
 // ── Timeline event ─────────────────────────────
@@ -222,6 +260,11 @@ const koyambeduOrderSchema = new Schema({
     upiRef:            String,
     paidAt:            Date,
   },
+
+  // "Add More Items" — customer top-up payments made on this order after
+  // the original placeOrder/verifyPayment, up until the same-day cutoff.
+  // Purely additive: see amendmentSchema above.
+  amendments: [amendmentSchema],
 
   // ── PRICING — single source of truth ──────────
   // pricing: original values set at order time (never mutated)

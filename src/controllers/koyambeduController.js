@@ -1252,6 +1252,253 @@ const verifyPayment = async (req, res) => {
   res.json({ success: true, message: 'Payment confirmed!', orderId: order.orderId });
 };
 
+// ═══════════════════════════════════════════════════════════════
+// ORDER AMENDMENT — "Add More Items" on an already-paid Koyambedu order,
+// up until the same same-day cutoff used at checkout. Additive only: this
+// never mutates an existing items/itemsOrdered row and never allows
+// decreasing a quantity or removing an item — it only ever APPENDS new
+// item rows (a brand-new product, or more of a product already on the
+// order), gated behind a fresh, separate Razorpay payment for just the
+// added amount. placeOrder/verifyPayment/SA-review/invoice logic above is
+// completely untouched by any of this.
+// ═══════════════════════════════════════════════════════════════
+
+/** Same cutoff rule as placeOrder step 6b (see above), factored out for reuse here. */
+const checkAmendmentEligibility = async (order) => {
+  if (order.paymentStatus !== 'paid') {
+    return { allowed: false, reason: 'Order is not paid yet.' };
+  }
+  if (['cancelled', 'closed', 'refund_initiated', 'dispatched', 'delivered'].includes(order.orderStatus)) {
+    return { allowed: false, reason: 'This order can no longer be amended.' };
+  }
+
+  const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+  const nowIST   = new Date(Date.now() + IST_OFFSET_MS);
+  const todayISO = nowIST.toISOString().slice(0, 10);
+  const deliveryDateISO = order.deliveryDate ? new Date(order.deliveryDate).toISOString().slice(0, 10) : null;
+
+  if (deliveryDateISO && deliveryDateISO < todayISO) {
+    return { allowed: false, reason: "This order's delivery date has already passed." };
+  }
+
+  const sameDay = await KoyambeduSettings.getSameDayDelivery();
+  if (deliveryDateISO === todayISO) {
+    if (!sameDay.enabled) {
+      return { allowed: false, reason: 'Same-day ordering is currently unavailable.' };
+    }
+    const [cutH, cutM] = sameDay.cutoffTime.split(':').map(Number);
+    const cutoffMinutes = cutH * 60 + cutM;
+    const nowMinutes = nowIST.getUTCHours() * 60 + nowIST.getUTCMinutes();
+    if (nowMinutes >= cutoffMinutes) {
+      return { allowed: false, reason: `Adding items closes at ${sameDay.cutoffTime} for today's delivery.`, cutoffTime: sameDay.cutoffTime };
+    }
+  }
+  return { allowed: true, cutoffTime: sameDay.cutoffTime };
+};
+
+/** GET /api/koyambedu/orders/:orderId/amend/eligibility */
+const getAmendEligibility = async (req, res) => {
+  const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id })
+    .select('paymentStatus orderStatus deliveryDate');
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+  const eligibility = await checkAmendmentEligibility(order);
+  res.json({ success: true, ...eligibility });
+};
+
+/**
+ * POST /api/koyambedu/orders/:orderId/amend/checkout
+ * Body: { items: [{ productId, gradeKey, qty }] }
+ * `qty` is the DESIRED TOTAL quantity for that product+grade on the order —
+ * for a brand-new product any qty > 0 works; for a product already on the
+ * order, qty must be strictly greater than what's already there (increase
+ * only — enforced here server-side, not just in the UI). Prices the delta,
+ * opens a fresh Razorpay order for just that amount, and records a
+ * 'pending_payment' amendment (finalized by verifyAmendmentPayment below).
+ */
+const createAmendmentPayment = async (req, res) => {
+  const razorpay = getRazorpay();
+  if (!razorpay) return res.status(503).json({ success: false, message: 'Payment gateway not configured' });
+
+  const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  const eligibility = await checkAmendmentEligibility(order);
+  if (!eligibility.allowed) {
+    return res.status(400).json({ success: false, message: eligibility.reason });
+  }
+
+  const requestedItems = Array.isArray(req.body.items) ? req.body.items : [];
+  if (!requestedItems.length) {
+    return res.status(400).json({ success: false, message: 'No items provided' });
+  }
+
+  // Qty already on the order per product+grade (declined rows were refunded
+  // and no longer count as "on the order", so they don't block re-adding).
+  const currentQtyMap = new Map(); // key: `${productId}__${gradeKey||''}` -> qty
+  for (const it of order.items) {
+    if (it.itemStatus === 'declined') continue;
+    const key = `${it.product}__${it.gradeKey || ''}`;
+    currentQtyMap.set(key, (currentQtyMap.get(key) || 0) + Number(it.confirmedQty ?? it.quantity ?? 0));
+  }
+
+  const buyerPincode = String(order.shippingAddress?.pincode || '').trim();
+  const amendmentItems = [];
+  let amount = 0;
+
+  for (const reqItem of requestedItems) {
+    const qty = Number(reqItem.qty);
+    if (!qty || qty <= 0) continue;
+    const gradeKey = reqItem.gradeKey || null;
+
+    const product = await KoyambeduProduct.findById(reqItem.productId)
+      .select('name unit qtyStep minQty maxQty currentPrice variants gradesEnabled grades isActive isAvailable')
+      .populate('seller', 'status isActive commissionRate servicePincodes');
+    if (!product) {
+      return res.status(400).json({ success: false, message: 'One of the selected products no longer exists' });
+    }
+    if (!product.isActive || !product.isAvailable || product.seller?.status !== 'approved' || !product.seller?.isActive) {
+      return res.status(400).json({ success: false, message: `"${product.name}" is currently unavailable` });
+    }
+    if (product.seller?.servicePincodes?.length > 0 && buyerPincode && !product.seller.servicePincodes.includes(buyerPincode)) {
+      return res.status(400).json({ success: false, message: `"${product.name}" doesn't deliver to your address` });
+    }
+
+    const key = `${product._id}__${gradeKey || ''}`;
+    const currentQty = currentQtyMap.get(key) || 0;
+    const isNewItem  = currentQty === 0;
+
+    if (qty <= currentQty) {
+      return res.status(400).json({
+        success: false,
+        message: `"${product.name}" already has ${currentQty}${product.unit ? ' ' + product.unit : ''} on this order — you can only increase the quantity, not decrease it.`,
+      });
+    }
+    const addedQty = qty - currentQty;
+
+    const { unitPrice, minQty } = getLiveUnitPriceAndMinQty(product, qty, gradeKey);
+    if (isNewItem && minQty > 0 && qty < minQty) {
+      return res.status(400).json({ success: false, message: `Minimum quantity for "${product.name}" is ${minQty}${product.unit ? ' ' + product.unit : ''}` });
+    }
+
+    let gradeName = null;
+    if (product.gradesEnabled && gradeKey) {
+      const grade = product.grades.find(g => g.gradeKey === gradeKey);
+      gradeName = grade?.gradeName || gradeKey;
+    }
+
+    const lineTotal    = Math.round(unitPrice * addedQty * 100) / 100;
+    const commission   = (product.seller.commissionRate || 8) / 100;
+    const sellerPayout = Math.round(lineTotal * (1 - commission) * 100) / 100;
+
+    amendmentItems.push({
+      product: product._id, seller: product.seller._id,
+      name: (product.gradesEnabled && gradeName) ? `${product.name} (${gradeName})` : product.name,
+      unit: product.unit, gradeKey, gradeName,
+      addedQty, unitPrice, lineTotal, sellerPayout, isNewItem,
+    });
+    amount += lineTotal;
+  }
+
+  if (!amendmentItems.length || amount <= 0) {
+    return res.status(400).json({ success: false, message: 'Nothing to add' });
+  }
+  amount = Math.round(amount * 100) / 100;
+
+  const rzpOrder = await razorpay.orders.create({
+    amount:   Math.round(amount * 100),
+    currency: 'INR',
+    receipt:  `${order.orderId}-AMEND-${Date.now().toString(36)}`,
+    notes:    { kbdOrderId: String(order._id), type: 'koyambedu_amendment' },
+  });
+
+  order.amendments.push({
+    items: amendmentItems,
+    amount,
+    status: 'pending_payment',
+    razorpayOrderId: rzpOrder.id,
+  });
+  await order.save();
+
+  res.json({ success: true, rzpOrderId: rzpOrder.id, amount, currency: 'INR', keyId: process.env.RAZORPAY_KEY_ID, orderId: order._id });
+};
+
+/**
+ * POST /api/koyambedu/orders/:orderId/amend/verify
+ * Body: { razorpayOrderId, razorpayPaymentId, razorpaySignature }
+ * Verifies the top-up payment, then APPENDS the priced items recorded at
+ * checkout time to items/itemsOrdered — never touching any existing row,
+ * so nothing already on the order can be deleted, decreased, or re-priced
+ * by this flow.
+ */
+const verifyAmendmentPayment = async (req, res) => {
+  const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
+  const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  const amendment = order.amendments.find(a => a.razorpayOrderId === razorpayOrderId);
+  if (!amendment) return res.status(404).json({ success: false, message: 'Amendment not found' });
+
+  // Idempotency guard — same reasoning as verifyPayment above.
+  if (amendment.status === 'paid') {
+    return res.json({ success: true, message: 'Payment already confirmed', orderId: order.orderId });
+  }
+
+  const secret = process.env.RAZORPAY_KEY_SECRET;
+  const body   = `${razorpayOrderId}|${razorpayPaymentId}`;
+  const expectedSig = crypto.createHmac('sha256', secret).update(body).digest('hex');
+  if (expectedSig !== razorpaySignature) {
+    amendment.status = 'failed';
+    await order.save();
+    return res.status(400).json({ success: false, message: 'Payment verification failed' });
+  }
+
+  amendment.status            = 'paid';
+  amendment.razorpayPaymentId = razorpayPaymentId;
+  amendment.razorpaySignature = razorpaySignature;
+  amendment.paidAt            = new Date();
+
+  const IST_OFFSET_MS  = (5 * 60 + 30) * 60 * 1000;
+  const todayISO       = new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
+  const deliveryDateISO = order.deliveryDate ? new Date(order.deliveryDate).toISOString().slice(0, 10) : null;
+  const itemDeliveryType = deliveryDateISO === todayISO ? 'today' : 'tomorrow';
+  const now = new Date();
+
+  for (const it of amendment.items) {
+    order.items.push({
+      product: it.product, seller: it.seller, name: it.name, unit: it.unit,
+      gradeKey: it.gradeKey, gradeName: it.gradeName,
+      orderedQty: it.addedQty, confirmedQty: it.addedQty, declinedQty: 0,
+      quantity: it.addedQty, deliveryType: itemDeliveryType,
+      orderedPrice: it.unitPrice, finalPrice: it.unitPrice, sellerPayout: it.sellerPayout,
+      itemStatus: 'pending', isAmendment: true, amendedAt: now,
+    });
+    order.itemsOrdered.push({
+      product: it.product, seller: it.seller, name: it.name, unit: it.unit,
+      orderedQty: it.addedQty, unitPrice: it.unitPrice, lineTotal: it.lineTotal,
+      sellerPayout: it.sellerPayout, gradeKey: it.gradeKey, gradeName: it.gradeName,
+      isAmendment: true,
+    });
+  }
+
+  // Keep the static pricing snapshot in sync too (live totals shown on the
+  // order-detail page come from calculateOrderTotals, which reads `items`
+  // directly and so already reflects the new rows regardless of this).
+  order.pricing.subtotal = Math.round(((order.pricing.subtotal || 0) + amendment.amount) * 100) / 100;
+  order.pricing.total    = Math.round(((order.pricing.total    || 0) + amendment.amount) * 100) / 100;
+
+  order.timeline.push({
+    event:       'order_amended',
+    description: `Customer added ${amendment.items.length} item${amendment.items.length > 1 ? 's' : ''} (₹${amendment.amount.toFixed(2)})`,
+    actor:       { role: 'customer', userId: order.buyer, name: '' },
+    timestamp:   now,
+    meta:        { amendmentId: amendment._id, amount: amendment.amount },
+  });
+
+  await order.save();
+
+  res.json({ success: true, message: 'Items added to your order!', orderId: order.orderId, amount: amendment.amount });
+};
+
 // ─────────────────────────────────────────────────────────────────
 // DEV-ONLY: Test payment endpoint
 // Guarded by Super Admin-controlled paymentTestMode setting in DB.
@@ -6766,6 +7013,8 @@ module.exports = {
   // Buyer orders
   placeOrder, createRazorpayOrder, verifyPayment, testPayment,
   getMyOrders, getMyOrder, cancelPendingOrder, approveRevision, cancelOrder, getOrderInvoice,
+  // Buyer — order amendment ("Add More Items")
+  getAmendEligibility, createAmendmentPayment, verifyAmendmentPayment,
   // Seller
   sellerRegister, getSellerProfile, updateSellerProfile,
   getSellerProducts, createSellerProduct, updateSellerProduct,

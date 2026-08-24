@@ -97,6 +97,10 @@ router.delete('/cart/clear',               protect, ctrl.clearCart);
 router.post  ('/orders',                    protect, ctrl.placeOrder);
 router.post  ('/orders/create-razorpay',    protect, ctrl.createRazorpayOrder);
 router.post  ('/orders/verify-payment',     protect, ctrl.verifyPayment);
+// "Add More Items" order amendment — add-only, increase-only, gated by same cutoff as checkout
+router.get   ('/orders/:orderId/amend/eligibility', protect, ctrl.getAmendEligibility);
+router.post  ('/orders/:orderId/amend/checkout',    protect, ctrl.createAmendmentPayment);
+router.post  ('/orders/:orderId/amend/verify',      protect, ctrl.verifyAmendmentPayment);
 // DEV ONLY — guarded by ENABLE_TEST_PAYMENT_BUTTONS=true on the server; no-op in production
 router.post  ('/orders/test-payment',       protect, ctrl.testPayment);
 router.delete('/orders/:orderId/pending',   protect, ctrl.cancelPendingOrder);

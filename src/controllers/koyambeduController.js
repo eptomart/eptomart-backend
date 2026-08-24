@@ -1375,10 +1375,14 @@ const createAmendmentPayment = async (req, res) => {
     }
     const addedQty = qty - currentQty;
 
-    const { unitPrice, minQty } = getLiveUnitPriceAndMinQty(product, qty, gradeKey);
-    if (isNewItem && minQty > 0 && qty < minQty) {
-      return res.status(400).json({ success: false, message: `Minimum quantity for "${product.name}" is ${minQty}${product.unit ? ' ' + product.unit : ''}` });
-    }
+    // Note: deliberately NOT enforcing product.minQty here. minQty is a
+    // fresh-cart-checkout rule (see placeOrder step 6) — this order has
+    // already cleared the overall minimum order value once; amending an
+    // existing paid order to add a little more of something, or a small
+    // amount of a new item, shouldn't be blocked by the from-scratch
+    // per-product minimum. Still uses getLiveUnitPriceAndMinQty purely for
+    // its live unitPrice (tier-based pricing), ignoring the minQty it returns.
+    const { unitPrice } = getLiveUnitPriceAndMinQty(product, qty, gradeKey);
 
     let gradeName = null;
     if (product.gradesEnabled && gradeKey) {

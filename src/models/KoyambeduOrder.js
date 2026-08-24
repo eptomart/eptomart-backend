@@ -88,7 +88,16 @@ const amendmentItemSchema = new Schema({
 
 const amendmentSchema = new Schema({
   items:             [amendmentItemSchema],
-  amount:            { type: Number, default: 0 }, // total charged for this amendment (sum of lineTotal)
+  itemsAmount:       { type: Number, default: 0 }, // sum of item lineTotals only (no fees)
+  // Extra delivery/platform/packing charge, if adding these items pushed the
+  // order's combined weight out of the small-order discount tier it was on
+  // (see priceAmendmentRequest). 0 when no tier change happens.
+  feeSurcharge:      { type: Number, default: 0 },
+  amount:            { type: Number, default: 0 }, // TOTAL charged = itemsAmount + feeSurcharge
+  // Snapshot of the recomputed delivery/platform/packing charges to apply
+  // to order.pricing once this amendment is paid — only set when
+  // feeSurcharge > 0 (order dropped out of small-order pricing).
+  newCharges:        { type: Schema.Types.Mixed, default: undefined },
   status:            { type: String, enum: ['pending_payment', 'paid', 'failed'], default: 'pending_payment' },
   razorpayOrderId:   String,
   razorpayPaymentId: String,

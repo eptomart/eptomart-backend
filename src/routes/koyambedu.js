@@ -99,6 +99,7 @@ router.post  ('/orders/create-razorpay',    protect, ctrl.createRazorpayOrder);
 router.post  ('/orders/verify-payment',     protect, ctrl.verifyPayment);
 // "Add More Items" order amendment — add-only, increase-only, gated by same cutoff as checkout
 router.get   ('/orders/:orderId/amend/eligibility', protect, ctrl.getAmendEligibility);
+router.post  ('/orders/:orderId/amend/quote',       protect, ctrl.getAmendQuote);
 router.post  ('/orders/:orderId/amend/checkout',    protect, ctrl.createAmendmentPayment);
 router.post  ('/orders/:orderId/amend/verify',      protect, ctrl.verifyAmendmentPayment);
 // DEV ONLY — guarded by ENABLE_TEST_PAYMENT_BUTTONS=true on the server; no-op in production

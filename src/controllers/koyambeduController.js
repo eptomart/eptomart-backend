@@ -1306,30 +1306,24 @@ const getAmendEligibility = async (req, res) => {
 };
 
 /**
- * POST /api/koyambedu/orders/:orderId/amend/checkout
- * Body: { items: [{ productId, gradeKey, qty }] }
- * `qty` is the DESIRED TOTAL quantity for that product+grade on the order —
- * for a brand-new product any qty > 0 works; for a product already on the
- * order, qty must be strictly greater than what's already there (increase
- * only — enforced here server-side, not just in the UI). Prices the delta,
- * opens a fresh Razorpay order for just that amount, and records a
- * 'pending_payment' amendment (finalized by verifyAmendmentPayment below).
+ * Shared pricing/validation for an amendment request — used by BOTH the
+ * no-side-effect /amend/quote preview and the real /amend/checkout (which
+ * additionally opens a Razorpay payment). Throws { statusCode, message }
+ * for validation failures; the caller sends that straight back as the
+ * HTTP response.
+ *
+ * Also re-checks the SMALL-ORDER weight/bunch-count threshold (see
+ * computeKoyambeduCharges) against the combined post-amendment cart — if
+ * this order is currently on small-order pricing and adding these items
+ * would push its total weight past that threshold, the delta between
+ * small-order and standard delivery/platform/packing charges is added on
+ * top as `feeSurcharge`, and `newCharges` carries the values to apply to
+ * order.pricing once paid. An order that was never small-order, or one
+ * that stays within the threshold after adding these items, is untouched.
  */
-const createAmendmentPayment = async (req, res) => {
-  const razorpay = getRazorpay();
-  if (!razorpay) return res.status(503).json({ success: false, message: 'Payment gateway not configured' });
-
-  const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
-  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-  const eligibility = await checkAmendmentEligibility(order);
-  if (!eligibility.allowed) {
-    return res.status(400).json({ success: false, message: eligibility.reason });
-  }
-
-  const requestedItems = Array.isArray(req.body.items) ? req.body.items : [];
+const priceAmendmentRequest = async (order, requestedItems) => {
   if (!requestedItems.length) {
-    return res.status(400).json({ success: false, message: 'No items provided' });
+    throw { statusCode: 400, message: 'No items provided' };
   }
 
   // Qty already on the order per product+grade (declined rows were refunded
@@ -1343,7 +1337,7 @@ const createAmendmentPayment = async (req, res) => {
 
   const buyerPincode = String(order.shippingAddress?.pincode || '').trim();
   const amendmentItems = [];
-  let amount = 0;
+  let itemsAmount = 0;
 
   for (const reqItem of requestedItems) {
     const qty = Number(reqItem.qty);
@@ -1351,16 +1345,16 @@ const createAmendmentPayment = async (req, res) => {
     const gradeKey = reqItem.gradeKey || null;
 
     const product = await KoyambeduProduct.findById(reqItem.productId)
-      .select('name unit qtyStep minQty maxQty currentPrice variants gradesEnabled grades isActive isAvailable')
+      .select('name unit description weightKg qtyStep minQty maxQty currentPrice variants gradesEnabled grades isActive isAvailable')
       .populate('seller', 'status isActive commissionRate servicePincodes');
     if (!product) {
-      return res.status(400).json({ success: false, message: 'One of the selected products no longer exists' });
+      throw { statusCode: 400, message: 'One of the selected products no longer exists' };
     }
     if (!product.isActive || !product.isAvailable || product.seller?.status !== 'approved' || !product.seller?.isActive) {
-      return res.status(400).json({ success: false, message: `"${product.name}" is currently unavailable` });
+      throw { statusCode: 400, message: `"${product.name}" is currently unavailable` };
     }
     if (product.seller?.servicePincodes?.length > 0 && buyerPincode && !product.seller.servicePincodes.includes(buyerPincode)) {
-      return res.status(400).json({ success: false, message: `"${product.name}" doesn't deliver to your address` });
+      throw { statusCode: 400, message: `"${product.name}" doesn't deliver to your address` };
     }
 
     const key = `${product._id}__${gradeKey || ''}`;
@@ -1368,10 +1362,10 @@ const createAmendmentPayment = async (req, res) => {
     const isNewItem  = currentQty === 0;
 
     if (qty <= currentQty) {
-      return res.status(400).json({
-        success: false,
+      throw {
+        statusCode: 400,
         message: `"${product.name}" already has ${currentQty}${product.unit ? ' ' + product.unit : ''} on this order — you can only increase the quantity, not decrease it.`,
-      });
+      };
     }
     const addedQty = qty - currentQty;
 
@@ -1399,31 +1393,138 @@ const createAmendmentPayment = async (req, res) => {
       name: (product.gradesEnabled && gradeName) ? `${product.name} (${gradeName})` : product.name,
       unit: product.unit, gradeKey, gradeName,
       addedQty, unitPrice, lineTotal, sellerPayout, isNewItem,
+      // Kept only for the weight recompute below — stripped before this
+      // object is persisted/returned (see cleanItems).
+      _weight: { unit: product.unit, description: product.description, name: product.name, weightKg: product.weightKg },
     });
-    amount += lineTotal;
+    itemsAmount += lineTotal;
   }
 
-  if (!amendmentItems.length || amount <= 0) {
-    return res.status(400).json({ success: false, message: 'Nothing to add' });
+  if (!amendmentItems.length || itemsAmount <= 0) {
+    throw { statusCode: 400, message: 'Nothing to add' };
   }
-  amount = Math.round(amount * 100) / 100;
+  itemsAmount = Math.round(itemsAmount * 100) / 100;
+
+  // ── Small-order re-check ──────────────────────────────────────────
+  let feeSurcharge = 0;
+  let willExceedSmallOrder = false;
+  let newCharges = null;
+  if (order.pricing?.isSmallOrder) {
+    const existingProductIds = [...new Set(
+      order.items.filter(it => it.itemStatus !== 'declined').map(it => String(it.product))
+    )];
+    const existingProducts = await KoyambeduProduct.find({ _id: { $in: existingProductIds } })
+      .select('description name weightKg').lean();
+    const productMap = new Map(existingProducts.map(p => [String(p._id), p]));
+
+    const combinedForWeight = [
+      ...order.items.filter(it => it.itemStatus !== 'declined').map(it => ({
+        unit: it.unit, quantity: it.confirmedQty ?? it.quantity,
+        product: productMap.get(String(it.product)) || null,
+      })),
+      ...amendmentItems.map(it => ({
+        unit: it._weight.unit, quantity: it.addedQty,
+        product: { description: it._weight.description, name: it._weight.name, weightKg: it._weight.weightKg },
+      })),
+    ];
+
+    newCharges = computeKoyambeduCharges(order.pricing.deliveryDistance || 0, summarizeCartForDeliveryFee(combinedForWeight));
+    if (!newCharges.isSmallOrder) {
+      willExceedSmallOrder = true;
+      const deliveryDelta = newCharges.deliveryCharge - (order.pricing.deliveryCharge || 0);
+      const platformDelta = newCharges.platformFee    - (order.pricing.platformFee    || 0);
+      const packingDelta  = newCharges.packingCharge  - (order.pricing.packingLogisticsFee || 0);
+      feeSurcharge = Math.round((deliveryDelta + platformDelta + packingDelta) * 100) / 100;
+    }
+  }
+
+  const cleanItems  = amendmentItems.map(({ _weight, ...rest }) => rest);
+  const totalAmount = Math.round((itemsAmount + feeSurcharge) * 100) / 100;
+
+  return { amendmentItems: cleanItems, itemsAmount, feeSurcharge, totalAmount, willExceedSmallOrder, newCharges };
+};
+
+/**
+ * POST /api/koyambedu/orders/:orderId/amend/quote
+ * Body: { items: [{ productId, gradeKey, qty }] }
+ * No side effects — prices the request exactly like /amend/checkout would,
+ * so the frontend can show the customer the full breakdown (including any
+ * small-order-tier surcharge) BEFORE they commit to paying.
+ */
+const getAmendQuote = async (req, res) => {
+  const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  const eligibility = await checkAmendmentEligibility(order);
+  if (!eligibility.allowed) {
+    return res.status(400).json({ success: false, message: eligibility.reason });
+  }
+
+  try {
+    const requestedItems = Array.isArray(req.body.items) ? req.body.items : [];
+    const priced = await priceAmendmentRequest(order, requestedItems);
+    res.json({ success: true, ...priced });
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    throw err;
+  }
+};
+
+/**
+ * POST /api/koyambedu/orders/:orderId/amend/checkout
+ * Body: { items: [{ productId, gradeKey, qty }] }
+ * `qty` is the DESIRED TOTAL quantity for that product+grade on the order —
+ * for a brand-new product any qty > 0 works; for a product already on the
+ * order, qty must be strictly greater than what's already there (increase
+ * only — enforced here server-side, not just in the UI). Prices the delta
+ * (see priceAmendmentRequest), opens a fresh Razorpay order for the full
+ * amount (items + any small-order-tier surcharge), and records a
+ * 'pending_payment' amendment (finalized by verifyAmendmentPayment below).
+ */
+const createAmendmentPayment = async (req, res) => {
+  const razorpay = getRazorpay();
+  if (!razorpay) return res.status(503).json({ success: false, message: 'Payment gateway not configured' });
+
+  const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  const eligibility = await checkAmendmentEligibility(order);
+  if (!eligibility.allowed) {
+    return res.status(400).json({ success: false, message: eligibility.reason });
+  }
+
+  let priced;
+  try {
+    const requestedItems = Array.isArray(req.body.items) ? req.body.items : [];
+    priced = await priceAmendmentRequest(order, requestedItems);
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    throw err;
+  }
 
   const rzpOrder = await razorpay.orders.create({
-    amount:   Math.round(amount * 100),
+    amount:   Math.round(priced.totalAmount * 100),
     currency: 'INR',
     receipt:  `${order.orderId}-AMEND-${Date.now().toString(36)}`,
     notes:    { kbdOrderId: String(order._id), type: 'koyambedu_amendment' },
   });
 
   order.amendments.push({
-    items: amendmentItems,
-    amount,
+    items:        priced.amendmentItems,
+    itemsAmount:  priced.itemsAmount,
+    feeSurcharge: priced.feeSurcharge,
+    amount:       priced.totalAmount,
+    newCharges:   priced.newCharges || undefined,
     status: 'pending_payment',
     razorpayOrderId: rzpOrder.id,
   });
   await order.save();
 
-  res.json({ success: true, rzpOrderId: rzpOrder.id, amount, currency: 'INR', keyId: process.env.RAZORPAY_KEY_ID, orderId: order._id });
+  res.json({
+    success: true, rzpOrderId: rzpOrder.id, amount: priced.totalAmount,
+    itemsAmount: priced.itemsAmount, feeSurcharge: priced.feeSurcharge,
+    currency: 'INR', keyId: process.env.RAZORPAY_KEY_ID, orderId: order._id,
+  });
 };
 
 /**
@@ -1487,15 +1588,34 @@ const verifyAmendmentPayment = async (req, res) => {
   // Keep the static pricing snapshot in sync too (live totals shown on the
   // order-detail page come from calculateOrderTotals, which reads `items`
   // directly and so already reflects the new rows regardless of this).
-  order.pricing.subtotal = Math.round(((order.pricing.subtotal || 0) + amendment.amount) * 100) / 100;
+  // subtotal only ever tracks item value; total tracks the full amount
+  // actually charged (items + any small-order-tier surcharge below).
+  const itemsAmount = amendment.itemsAmount ?? amendment.amount; // itemsAmount added later — fall back for any in-flight amendment created just before this deploy
+  order.pricing.subtotal = Math.round(((order.pricing.subtotal || 0) + itemsAmount) * 100) / 100;
   order.pricing.total    = Math.round(((order.pricing.total    || 0) + amendment.amount) * 100) / 100;
 
+  // If adding these items pushed the order's combined weight past the
+  // small-order threshold it was benefiting from, switch it over to the
+  // recomputed standard delivery/platform/packing charges now that the
+  // surcharge has been paid (see priceAmendmentRequest for the calc).
+  if (amendment.newCharges) {
+    order.pricing.deliveryCharge        = amendment.newCharges.deliveryCharge;
+    order.pricing.platformFee           = amendment.newCharges.platformFee;
+    order.pricing.packingLogisticsFee   = amendment.newCharges.packingCharge;
+    order.pricing.isSmallOrder          = amendment.newCharges.isSmallOrder;
+    order.pricing.originalDeliveryCharge = amendment.newCharges.originalDeliveryCharge ?? undefined;
+    order.pricing.originalPlatformFee    = amendment.newCharges.originalPlatformFee    ?? undefined;
+  }
+
+  const surchargeNote = amendment.feeSurcharge > 0
+    ? ` — moved out of small-order pricing, +₹${amendment.feeSurcharge.toFixed(2)} delivery/platform fee`
+    : '';
   order.timeline.push({
     event:       'order_amended',
-    description: `Customer added ${amendment.items.length} item${amendment.items.length > 1 ? 's' : ''} (₹${amendment.amount.toFixed(2)})`,
+    description: `Customer added ${amendment.items.length} item${amendment.items.length > 1 ? 's' : ''} (₹${itemsAmount.toFixed(2)})${surchargeNote}`,
     actor:       { role: 'customer', userId: order.buyer, name: '' },
     timestamp:   now,
-    meta:        { amendmentId: amendment._id, amount: amendment.amount },
+    meta:        { amendmentId: amendment._id, amount: amendment.amount, feeSurcharge: amendment.feeSurcharge || 0 },
   });
 
   await order.save();
@@ -7018,7 +7138,7 @@ module.exports = {
   placeOrder, createRazorpayOrder, verifyPayment, testPayment,
   getMyOrders, getMyOrder, cancelPendingOrder, approveRevision, cancelOrder, getOrderInvoice,
   // Buyer — order amendment ("Add More Items")
-  getAmendEligibility, createAmendmentPayment, verifyAmendmentPayment,
+  getAmendEligibility, getAmendQuote, createAmendmentPayment, verifyAmendmentPayment,
   // Seller
   sellerRegister, getSellerProfile, updateSellerProfile,
   getSellerProducts, createSellerProduct, updateSellerProduct,

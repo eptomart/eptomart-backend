@@ -14,6 +14,10 @@ const { protectAdmin, protectSuperAdmin } = require('../middleware/adminAuth');
 // mounted here so it rides on the existing /api/koyambedu base path without
 // any server.js changes. See routes/koyambeduInventory.js.
 const koyambeduInventoryRoutes = require('./koyambeduInventory');
+// Combos / Flash Sale settings — self-contained router (see routes/koyambeduCombo.js),
+// mounted the same way as koyambeduInventory above; combo PRODUCTS still go
+// through the normal Koyambedu product routes further below (isCombo flag).
+const koyambeduComboRoutes = require('./koyambeduCombo');
 
 // ── Seller guard middleware ──────────────────
 const protectSeller = [protect, async (req, res, next) => {
@@ -38,6 +42,11 @@ const protectSellerAdmin = [protect, async (req, res, next) => {
 // INVENTORY / PURCHASE / WASTAGE / PROFIT DASHBOARD — Super Admin only
 // ══════════════════════════════════════════════
 router.use('/inventory', koyambeduInventoryRoutes);
+
+// ══════════════════════════════════════════════
+// COMBOS / FLASH SALE — settings (Super Admin) + public status
+// ══════════════════════════════════════════════
+router.use('/combos', koyambeduComboRoutes);
 
 // ══════════════════════════════════════════════
 // DEV SETTINGS — public read, superAdmin write

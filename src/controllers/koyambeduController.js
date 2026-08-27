@@ -497,14 +497,33 @@ const checkDeliveryAvailability = async (req, res) => {
   // packing charge, shown to the customer with the original price struck
   // through; otherwise it's the standard rate with no packing charge.
   let cartSummary = null;
+  let cartHasCombo = false;
   if (req.user?._id) {
-    const cart = await KoyambeduCart.findOne({ user: req.user._id }).populate('items.product', 'weightKg unit description name');
+    const cart = await KoyambeduCart.findOne({ user: req.user._id }).populate('items.product', 'weightKg unit description name isCombo');
     if (cart?.items?.length) {
-      cartSummary = summarizeCartForDeliveryFee(cart.items);
+      cartSummary  = summarizeCartForDeliveryFee(cart.items);
+      cartHasCombo = cart.items.some(ci => ci.product?.isCombo);
     }
   }
   const kmRounded = Math.round(distanceKm * 10) / 10;
-  const charges   = computeKoyambeduCharges(distanceKm, cartSummary);
+
+  // Combo carts (feature toggle ON + combo item present) preview the
+  // Super-Admin-managed combo distance-tiered charge here too, so what the
+  // customer sees before placing the order matches what placeOrder actually
+  // charges (see the same comboActive branch there).
+  let charges;
+  if (cartHasCombo) {
+    const KoyambeduComboSettings = require('../models/KoyambeduComboSettings');
+    const comboSettingsDoc = await KoyambeduComboSettings.getGlobal().catch(() => null);
+    if (comboSettingsDoc?.featureEnabled) {
+      const comboCharge = await KoyambeduComboSettings.computeDeliveryCharge(distanceKm);
+      if (!comboCharge.available) {
+        return res.json({ success: true, available: false, distanceKm: kmRounded, message: 'Sorry, this address is outside our combo delivery zone.' });
+      }
+      charges = { deliveryCharge: comboCharge.charge, originalDeliveryCharge: undefined, platformFee: 0, originalPlatformFee: undefined, packingCharge: 0, isSmallOrder: false };
+    }
+  }
+  if (!charges) charges = computeKoyambeduCharges(distanceKm, cartSummary);
 
   res.json({
     success:       true,
@@ -554,7 +573,7 @@ const getCart = async (req, res) => {
   const cart = await KoyambeduCart.findOne({ user: req.user._id })
     .populate({
       path: 'items.product',
-      select: 'name nameTamil currentPrice unit minQty maxQty qtyStep isAvailable isActive isSameDay isNextDay images weightKg variants gradesEnabled grades',
+      select: 'name nameTamil currentPrice unit minQty maxQty qtyStep isAvailable isActive isSameDay isNextDay images weightKg variants gradesEnabled grades category isCombo comboContents',
       populate: { path: 'seller', select: 'businessName isActive status' },
     });
 
@@ -631,7 +650,7 @@ const updateCart = async (req, res) => {
 
     await cart.populate({
       path: 'items.product',
-      select: 'name unit images qtyStep minQty maxQty currentPrice variants gradesEnabled grades isActive isAvailable',
+      select: 'name unit images qtyStep minQty maxQty currentPrice variants gradesEnabled grades isActive isAvailable category isCombo comboContents',
       populate: { path: 'seller', select: 'isActive status' },
     });
     const cartObj = cart.toObject();
@@ -763,11 +782,40 @@ const placeOrder = async (req, res) => {
     return res.status(400).json({ success: false, message: 'Please select a delivery date.' });
   }
 
-  // ── 1c. Validate slot against DB schedule (Super Admin managed) ─
-  const { validateSlotForOrder } = require('./koyambeduScheduleController');
-  const slotCheck = await validateSlotForOrder(deliveryDate, deliverySlotKey);
-  if (!slotCheck.valid) {
-    return res.status(400).json({ success: false, message: slotCheck.message });
+  // ── 1c-pre. Combo / Flash Sale detection (Super Admin controlled) ──
+  // Lightweight, pre-cart check so slot/schedule validation below can branch
+  // correctly. A combo cart only gets combo-specific same-day cutoff/slots/
+  // delivery pricing/min-order when BOTH the feature toggle is on AND the
+  // cart actually contains a combo item — otherwise everything below behaves
+  // exactly as it always has (comboActive stays false).
+  const KoyambeduComboSettings = require('../models/KoyambeduComboSettings');
+  let comboActive = false;
+  let comboSettingsDoc = null;
+  {
+    const cartForCombo = await KoyambeduCart.findOne({ user: req.user._id })
+      .populate('items.product', 'isCombo').lean().catch(() => null);
+    const cartHasCombo = !!cartForCombo?.items?.some(ci => ci.product?.isCombo);
+    if (cartHasCombo) {
+      comboSettingsDoc = await KoyambeduComboSettings.getGlobal().catch(() => null);
+      comboActive = !!comboSettingsDoc?.featureEnabled;
+    }
+  }
+
+  // ── 1c. Validate slot ────────────────────────────────────────────────
+  if (comboActive) {
+    // Combo-specific: validate against Super-Admin-managed combo slots
+    // instead of the general Koyambedu schedule.
+    const comboSlot = (comboSettingsDoc.deliverySlots || []).find(s => s.key === deliverySlotKey && s.enabled);
+    if (!comboSlot) {
+      return res.status(400).json({ success: false, message: 'Please select a valid delivery slot for your combo order.' });
+    }
+  } else {
+    // Validate slot against DB schedule (Super Admin managed) — unchanged.
+    const { validateSlotForOrder } = require('./koyambeduScheduleController');
+    const slotCheck = await validateSlotForOrder(deliveryDate, deliverySlotKey);
+    if (!slotCheck.valid) {
+      return res.status(400).json({ success: false, message: slotCheck.message });
+    }
   }
 
   const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
@@ -885,23 +933,44 @@ const placeOrder = async (req, res) => {
   // platform-wide on/off switch + cutoff time, replacing what used to be a
   // hardcoded 9 AM check that lived only in the checkout frontend).
   if (deliveryTypes.has('today')) {
-    const KoyambeduSettings = require('../models/KoyambeduSettings');
-    const sameDay = await KoyambeduSettings.getSameDayDelivery();
-    if (!sameDay.enabled) {
-      return res.status(400).json({ success: false, message: 'Same-day delivery is currently unavailable. Please choose tomorrow\'s delivery instead.' });
-    }
-    if (todayISO === String(deliveryDate).slice(0, 10)) {
-      const [cutH, cutM] = sameDay.cutoffTime.split(':').map(Number);
-      const cutoffMinutes = cutH * 60 + cutM;
-      const nowMinutes = nowIST.getUTCHours() * 60 + nowIST.getUTCMinutes();
-      if (nowMinutes >= cutoffMinutes) {
-        return res.status(400).json({ success: false, message: `Same-day ordering closes at ${sameDay.cutoffTime}. Please choose tomorrow's delivery instead.` });
+    if (comboActive) {
+      // Combo-specific same-day cutoff (Super Admin managed) — used instead
+      // of the regular Koyambedu same-day gate only because this cart has an
+      // active combo item and the combo feature toggle is on.
+      const sd = comboSettingsDoc.sameDayDelivery || {};
+      if (sd.enabled === false) {
+        return res.status(400).json({ success: false, message: 'Same-day delivery is currently unavailable for combo orders. Please choose tomorrow\'s delivery instead.' });
+      }
+      if (todayISO === String(deliveryDate).slice(0, 10)) {
+        const [cutH, cutM] = (sd.cutoffTime || '14:00').split(':').map(Number);
+        const cutoffMinutes = cutH * 60 + cutM;
+        const nowMinutes = nowIST.getUTCHours() * 60 + nowIST.getUTCMinutes();
+        if (nowMinutes >= cutoffMinutes) {
+          return res.status(400).json({ success: false, message: `Same-day ordering for combo items closes at ${sd.cutoffTime || '14:00'}. Please choose tomorrow's delivery instead.` });
+        }
+      }
+    } else {
+      const KoyambeduSettings = require('../models/KoyambeduSettings');
+      const sameDay = await KoyambeduSettings.getSameDayDelivery();
+      if (!sameDay.enabled) {
+        return res.status(400).json({ success: false, message: 'Same-day delivery is currently unavailable. Please choose tomorrow\'s delivery instead.' });
+      }
+      if (todayISO === String(deliveryDate).slice(0, 10)) {
+        const [cutH, cutM] = sameDay.cutoffTime.split(':').map(Number);
+        const cutoffMinutes = cutH * 60 + cutM;
+        const nowMinutes = nowIST.getUTCHours() * 60 + nowIST.getUTCMinutes();
+        if (nowMinutes >= cutoffMinutes) {
+          return res.status(400).json({ success: false, message: `Same-day ordering closes at ${sameDay.cutoffTime}. Please choose tomorrow's delivery instead.` });
+        }
       }
     }
   }
 
   // ── 7. Minimum order check ────────────────────────────────────
-  const MIN_ORDER_VALUE = 799;
+  // Combo carts use the Super-Admin-managed combo minimum instead of the
+  // platform-wide ₹799 minimum (same "managed like Fruit Baskets" pattern
+  // as the slot/cutoff/delivery overrides above).
+  const MIN_ORDER_VALUE = comboActive ? (comboSettingsDoc.minOrderValue?.value ?? 0) : 799;
   if (subtotal < MIN_ORDER_VALUE) {
     return res.status(400).json({
       success: false,
@@ -909,11 +978,28 @@ const placeOrder = async (req, res) => {
     });
   }
 
-  // ── 7b. Delivery charge — cart-composition-aware distance slabs (see computeDeliveryCharge) ──
-  // Uses its own bunch-count/non-bunch-weight summary, kept separate from
-  // `totalWeightKg` above (which stays exactly as-is for the unrelated
-  // 1kg minimum-order-quantity gate).
-  const charges = computeKoyambeduCharges(distanceKm, summarizeCartForDeliveryFee(cart.items));
+  // ── 7b. Delivery charge ────────────────────────────────────────────────
+  // Combo carts use the Super-Admin-managed combo distance-tiered pricing
+  // (KoyambeduComboSettings.computeDeliveryCharge, same mechanism as Fruit
+  // Baskets); otherwise the existing cart-composition-aware distance slabs
+  // (computeKoyambeduCharges) are used exactly as before.
+  let charges;
+  if (comboActive) {
+    const comboCharge = await KoyambeduComboSettings.computeDeliveryCharge(distanceKm);
+    if (!comboCharge.available) {
+      return res.status(400).json({ success: false, message: 'Sorry, this address is outside our combo delivery zone.' });
+    }
+    charges = {
+      deliveryCharge: comboCharge.charge, originalDeliveryCharge: undefined,
+      platformFee: 0, originalPlatformFee: undefined,
+      packingCharge: 0, isSmallOrder: false,
+    };
+  } else {
+    // Uses its own bunch-count/non-bunch-weight summary, kept separate from
+    // `totalWeightKg` above (which stays exactly as-is for the unrelated
+    // 1kg minimum-order-quantity gate).
+    charges = computeKoyambeduCharges(distanceKm, summarizeCartForDeliveryFee(cart.items));
+  }
   const { deliveryCharge, originalDeliveryCharge, platformFee, originalPlatformFee, packingCharge, isSmallOrder } = charges;
   const deliveryType   = deliveryTypes.size > 1 ? 'mixed' : [...deliveryTypes][0];
 
@@ -1970,7 +2056,8 @@ const updateSellerProduct = async (req, res) => {
   const allowed = ['name','nameTamil','description','unit','minQty','maxQty','qtyStep',
     'marketPriceMin','marketPriceMax','currentPrice','stockQty','freshArrivalTime',
     'isSameDay','isNextDay','sameDayCutoff','badges','tags','isActive','isAvailable',
-    'isBulkAvailable','bulkMinQty','bulkPricePerUnit','isRecurringAllowed','weightKg','images'];
+    'isBulkAvailable','bulkMinQty','bulkPricePerUnit','isRecurringAllowed','weightKg','images',
+    'isCombo','comboContents'];
 
   for (const k of allowed) {
     if (req.body[k] !== undefined) product[k] = req.body[k];
@@ -2850,6 +2937,8 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
     gradesEnabled, grades,
     // Legacy fallback (single-price products)
     currentPrice, minQty, maxQty, qtyStep,
+    // Combo / Flash Sale (Super Admin only — see KoyambeduComboSettings)
+    isCombo, comboContents,
   } = body;
 
   if (!categoryId || !name) {
@@ -2886,6 +2975,7 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
       isSameDay: isSameDay !== false, isNextDay: isNextDay !== false,
       sameDayCutoff: sameDayCutoff || seller.sameDayCutoff || '10:00',
       badges: badges || [], tags: tags || [], images: body.images || [],
+      isCombo: !!isCombo, comboContents: comboContents || [],
       approvalStatus: opts.approvalStatus || 'approved',
     });
   }
@@ -2952,6 +3042,8 @@ const _createProductForSeller = async (seller, body, opts = {}) => {
     badges: badges || [],
     tags:   tags   || [],
     images: body.images || [],
+    isCombo: !!isCombo,
+    comboContents: comboContents || [],
     approvalStatus: opts.approvalStatus || 'approved',
   });
 };
@@ -3081,6 +3173,7 @@ const adminUpdateProduct = async (req, res) => {
     'name','nameTamil','unit','description','badges',
     'stockQty','isAvailable','isSameDay','isNextDay',
     'sameDayCutoff','weightKg','images',
+    'isCombo','comboContents',
   ];
   for (const k of allowed) {
     if (req.body[k] !== undefined) product[k] = req.body[k];

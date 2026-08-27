@@ -126,6 +126,19 @@ const koyambeduProductSchema = new Schema({
   // Tags for search
   tags: [{ type: String, lowercase: true }],
 
+  // ── Combo / Flash Sale (Super Admin only, see KoyambeduComboSettings) ──
+  // A combo is otherwise a completely normal product — sold through the
+  // same shop/cart/checkout as everything else. isCombo just flags it so
+  // the checkout page can decide whether to apply combo-specific same-day
+  // cutoff/slots/delivery pricing/min-order (only when the combo feature
+  // toggle is on AND the cart actually contains one of these); with the
+  // feature off, a combo behaves in every way like any other product.
+  isCombo: { type: Boolean, default: false },
+  comboContents: {
+    type: [{ item: { type: String, required: true }, qty: { type: String, required: true } }],
+    default: [],
+  },
+
   // Images
   images: [{
     url:       String,

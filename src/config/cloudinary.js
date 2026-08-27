@@ -166,4 +166,22 @@ const uploadHeroVideo = multer({
   },
 });
 
-module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, uploadBill, uploadKoyambedu, uploadKoyambeduBill, uploadHeroVideo, deleteImage };
+// Fruit Baskets & Hampers — basket listing photos (Super Admin uploads)
+const fruitBasketStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'eptomart/fruitbaskets',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+    transformation: [{ width: 800, height: 800, crop: 'limit', quality: 'auto' }],
+  },
+});
+const uploadFruitBasket = multer({
+  storage: fruitBasketStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Only image files are allowed'), false);
+  },
+});
+
+module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, uploadBill, uploadKoyambedu, uploadKoyambeduBill, uploadHeroVideo, uploadFruitBasket, deleteImage };

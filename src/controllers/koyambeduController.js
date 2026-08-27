@@ -525,14 +525,34 @@ const checkDeliveryAvailability = async (req, res) => {
   }
   if (!charges) charges = computeKoyambeduCharges(distanceKm, cartSummary);
 
+  // Preview the platform fee discount too, so the number shown before
+  // payment matches what placeOrder will actually charge (assumes the
+  // minimum order value will be met, which placeOrder itself enforces
+  // before payment can proceed — see the same discount logic there).
+  let previewPlatformFee = charges.platformFee;
+  let previewOriginalPlatformFee = charges.originalPlatformFee;
+  try {
+    const pfd = cartHasCombo
+      ? (await require('../models/KoyambeduComboSettings').getGlobal())?.platformFeeDiscount
+      : (await require('../models/KoyambeduSettings').getOrderMinimum())?.platformFeeDiscount;
+    if (pfd?.enabled && Number(pfd.value) > 0 && previewPlatformFee > 0) {
+      const discountAmt = pfd.type === 'percent' ? previewPlatformFee * (Number(pfd.value) / 100) : Number(pfd.value);
+      const clamped = Math.min(Math.max(0, discountAmt), previewPlatformFee);
+      if (clamped > 0) {
+        previewOriginalPlatformFee = previewOriginalPlatformFee ?? previewPlatformFee;
+        previewPlatformFee = Math.round((previewPlatformFee - clamped) * 100) / 100;
+      }
+    }
+  } catch (_) { /* non-blocking preview only */ }
+
   res.json({
     success:       true,
     available:     true,
     distanceKm:    kmRounded,
     deliveryCharge:         charges.deliveryCharge,
     originalDeliveryCharge: charges.originalDeliveryCharge,
-    platformFee:            charges.platformFee,
-    originalPlatformFee:    charges.originalPlatformFee,
+    platformFee:            previewPlatformFee,
+    originalPlatformFee:    previewOriginalPlatformFee,
     packingCharge:          charges.packingCharge,
     isSmallOrder:           charges.isSmallOrder,
     message:       `Delivery available · ${kmRounded} km from Koyambedu market`,
@@ -967,10 +987,15 @@ const placeOrder = async (req, res) => {
   }
 
   // ── 7. Minimum order check ────────────────────────────────────
-  // Combo carts use the Super-Admin-managed combo minimum instead of the
-  // platform-wide ₹799 minimum (same "managed like Fruit Baskets" pattern
-  // as the slot/cutoff/delivery overrides above).
-  const MIN_ORDER_VALUE = comboActive ? (comboSettingsDoc.minOrderValue?.value ?? 0) : 799;
+  // Both minimums are Super-Admin managed and kept independent: combo carts
+  // use KoyambeduComboSettings.minOrderValue, normal carts use
+  // KoyambeduSettings.orderMinimum.value (replaces the old hardcoded ₹799).
+  const KoyambeduSettings = require('../models/KoyambeduSettings');
+  let normalOrderMinDoc = null;
+  if (!comboActive) {
+    normalOrderMinDoc = await KoyambeduSettings.getOrderMinimum();
+  }
+  const MIN_ORDER_VALUE = comboActive ? (comboSettingsDoc.minOrderValue?.value ?? 0) : (normalOrderMinDoc?.value ?? 799);
   if (subtotal < MIN_ORDER_VALUE) {
     return res.status(400).json({
       success: false,
@@ -1002,6 +1027,27 @@ const placeOrder = async (req, res) => {
   }
   const { deliveryCharge, originalDeliveryCharge, platformFee, originalPlatformFee, packingCharge, isSmallOrder } = charges;
   const deliveryType   = deliveryTypes.size > 1 ? 'mixed' : [...deliveryTypes][0];
+
+  // ── 7c. Platform fee discount — reward for meeting the minimum order
+  // value above (Super Admin managed, independently for combo vs normal
+  // carts). Since MIN_ORDER_VALUE is already enforced above, every order
+  // that reaches here has "achieved" it; the discount only actually
+  // reduces anything if the admin has turned it on for that cart type.
+  let finalPlatformFee = platformFee;
+  let finalOriginalPlatformFee = originalPlatformFee;
+  {
+    const pfd = comboActive ? comboSettingsDoc?.platformFeeDiscount : normalOrderMinDoc?.platformFeeDiscount;
+    if (pfd?.enabled && Number(pfd.value) > 0 && platformFee > 0) {
+      const discountAmt = pfd.type === 'percent'
+        ? platformFee * (Number(pfd.value) / 100)
+        : Number(pfd.value);
+      const clampedDiscount = Math.min(Math.max(0, discountAmt), platformFee);
+      if (clampedDiscount > 0) {
+        finalOriginalPlatformFee = finalOriginalPlatformFee ?? platformFee;
+        finalPlatformFee = Math.round((platformFee - clampedDiscount) * 100) / 100;
+      }
+    }
+  }
 
   // ── 7b. Coupon discount (applied on subtotal, shipping excluded) ──
   let couponDiscount = 0;
@@ -1036,7 +1082,7 @@ const placeOrder = async (req, res) => {
   try {
     walletDoc = await KoyambeduWallet.findOne({ user: req.user._id });
     if (walletDoc && walletDoc.balance !== 0) {
-      const baseTotal = parseFloat((subtotal + deliveryCharge + platformFee + packingCharge - couponDiscount).toFixed(2));
+      const baseTotal = parseFloat((subtotal + deliveryCharge + finalPlatformFee + packingCharge - couponDiscount).toFixed(2));
       if (walletDoc.balance > 0) {
         // Credit: only available balance (total − reserved) can be applied at checkout
         const available = parseFloat((walletDoc.balance - (walletDoc.reservedBalance || 0)).toFixed(2));
@@ -1092,7 +1138,7 @@ const placeOrder = async (req, res) => {
     subtotal,
     deliveryCharge,
     deliveryDistance: Math.round(distanceKm * 10) / 10,
-    platformFee,
+    platformFee: finalPlatformFee,
     packingLogisticsFee: packingCharge,
     discount:       couponDiscount,
     couponCode:     appliedCoupon?.code || undefined,
@@ -1100,7 +1146,7 @@ const placeOrder = async (req, res) => {
     total,
     isSmallOrder,
     originalDeliveryCharge: originalDeliveryCharge ?? undefined,
-    originalPlatformFee:    originalPlatformFee    ?? undefined,
+    originalPlatformFee:    finalOriginalPlatformFee ?? undefined,
   };
 
   // ── 9. Build the order ───────────────────────────────────────────────────────

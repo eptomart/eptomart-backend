@@ -156,10 +156,44 @@ const adminUpdateMinOrderValue = async (req, res) => {
   }
 };
 
+/** PUT /koyambedu/combos/admin/settings/platform-fee-discount
+ *  body: { enabled?, type?: 'flat'|'percent', value? }
+ *  Reward for meeting minOrderValue above, applied to combo carts only —
+ *  see KoyambeduSettings.orderMinimum.platformFeeDiscount for the
+ *  independent normal-cart equivalent. */
+const adminUpdatePlatformFeeDiscount = async (req, res) => {
+  try {
+    const { enabled, type, value } = req.body;
+    const update = {
+      'platformFeeDiscount.updatedBy':     req.user._id,
+      'platformFeeDiscount.updatedByName': req.user.name,
+      'platformFeeDiscount.updatedAt':     new Date(),
+    };
+    if (enabled !== undefined) update['platformFeeDiscount.enabled'] = !!enabled;
+    if (type !== undefined) {
+      if (!['flat', 'percent'].includes(type)) return res.status(400).json({ success: false, message: "type must be 'flat' or 'percent'" });
+      update['platformFeeDiscount.type'] = type;
+    }
+    if (value !== undefined) {
+      const v = Number(value);
+      if (!(v >= 0)) return res.status(400).json({ success: false, message: 'value must be a non-negative number' });
+      update['platformFeeDiscount.value'] = v;
+    }
+    const doc = await KoyambeduComboSettings.findOneAndUpdate(
+      { key: 'global' }, update, { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    res.json({ success: true, platformFeeDiscount: doc.platformFeeDiscount });
+  } catch (err) {
+    console.error('[KoyambeduCombo] adminUpdatePlatformFeeDiscount error:', err);
+    res.status(500).json({ success: false, message: 'Failed to update platform fee discount' });
+  }
+};
+
 module.exports = {
   // Public
   getPublicStatus,
   // Super Admin — settings
   adminGetSettings, adminToggleFeature, adminUpdateSameDayDelivery,
   adminUpdateDeliverySlots, adminUpdateDeliveryCharges, adminUpdateMinOrderValue,
+  adminUpdatePlatformFeeDiscount,
 };

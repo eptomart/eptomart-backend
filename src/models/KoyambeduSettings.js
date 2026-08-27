@@ -64,6 +64,27 @@ const koyambeduSettingsSchema = new mongoose.Schema({
     updatedAt:    { type: Date },
   },
 
+  // ── Minimum Order Value — NORMAL products (Koyambedu Daily) ─────────
+  // Super Admin controlled. Replaces the old hardcoded ₹799 floor in
+  // placeOrder. Kept separate from KoyambeduComboSettings.minOrderValue,
+  // which governs carts containing a combo item instead — see that model
+  // for the combo-side equivalent of both fields below.
+  orderMinimum: {
+    value: { type: Number, default: 799 },
+    // Reward for reaching the minimum above: since the minimum is already
+    // enforced before an order can be placed, every successful normal order
+    // has "achieved" it — this just controls whether/how much platform fee
+    // is then discounted for that order.
+    platformFeeDiscount: {
+      enabled: { type: Boolean, default: false },
+      type:    { type: String, enum: ['flat', 'percent'], default: 'flat' }, // flat = ₹ off, percent = % off
+      value:   { type: Number, default: 0 },
+    },
+    updatedBy:     { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    updatedByName: { type: String },
+    updatedAt:     { type: Date },
+  },
+
 }, { timestamps: true });
 
 /** Upsert the global lastProductUpdateTime */
@@ -132,6 +153,20 @@ koyambeduSettingsSchema.statics.getLowWeightPromo = async function() {
     enabled:     lw.enabled || false,
     couponCode:  lw.couponCode || null,
     thresholdKg: lw.thresholdKg || 12,
+  };
+};
+
+/** Get the current normal-products minimum order config, with safe defaults if unset. */
+koyambeduSettingsSchema.statics.getOrderMinimum = async function() {
+  const doc = await this.findOne({ key: 'global' }).select('orderMinimum').lean();
+  const om = doc?.orderMinimum || {};
+  return {
+    value: om.value ?? 799,
+    platformFeeDiscount: {
+      enabled: om.platformFeeDiscount?.enabled || false,
+      type:    om.platformFeeDiscount?.type    || 'flat',
+      value:   om.platformFeeDiscount?.value   ?? 0,
+    },
   };
 };
 

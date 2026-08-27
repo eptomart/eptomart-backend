@@ -83,6 +83,19 @@ const koyambeduComboSettingsSchema = new mongoose.Schema({
     updatedByName: { type: String },
     updatedAt:     { type: Date },
   },
+
+  // ── Platform fee discount for combo carts — reward for meeting the
+  // minimum order value above. Kept independent from KoyambeduSettings'
+  // orderMinimum.platformFeeDiscount, which governs normal (non-combo)
+  // carts instead — see that model for the normal-side equivalent.
+  platformFeeDiscount: {
+    enabled: { type: Boolean, default: false },
+    type:    { type: String, enum: ['flat', 'percent'], default: 'flat' }, // flat = ₹ off, percent = % off
+    value:   { type: Number, default: 0 },
+    updatedBy:     { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    updatedByName: { type: String },
+    updatedAt:     { type: Date },
+  },
 }, { timestamps: true });
 
 /** Get the global settings doc (creates with defaults if missing). */
@@ -109,6 +122,11 @@ koyambeduComboSettingsSchema.statics.getPublicStatus = async function() {
       maxDeliveryKm:  doc.delivery?.maxDeliveryKm ?? 30,
     },
     minOrderValue: doc.minOrderValue?.value ?? 0,
+    platformFeeDiscount: {
+      enabled: doc.platformFeeDiscount?.enabled || false,
+      type:    doc.platformFeeDiscount?.type    || 'flat',
+      value:   doc.platformFeeDiscount?.value   ?? 0,
+    },
   };
 };
 

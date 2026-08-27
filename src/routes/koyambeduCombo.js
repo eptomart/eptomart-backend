@@ -28,5 +28,6 @@ router.put  ('/admin/settings/same-day-delivery', protectSuperAdmin, ctrl.adminU
 router.put  ('/admin/settings/delivery-slots',    protectSuperAdmin, ctrl.adminUpdateDeliverySlots);
 router.put  ('/admin/settings/delivery-charges',  protectSuperAdmin, ctrl.adminUpdateDeliveryCharges);
 router.put  ('/admin/settings/min-order',         protectSuperAdmin, ctrl.adminUpdateMinOrderValue);
+router.put  ('/admin/settings/platform-fee-discount', protectSuperAdmin, ctrl.adminUpdatePlatformFeeDiscount);
 
 module.exports = router;

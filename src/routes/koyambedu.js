@@ -76,6 +76,15 @@ router.get('/admin/dev-settings/low-weight-promo',           protectSuperAdmin, 
 // SuperAdmin: update — body: { enabled?: boolean, couponCode?: string, thresholdKg?: number }
 router.put('/admin/dev-settings/low-weight-promo',           protectSuperAdmin, devCtrl.updateLowWeightPromo);
 
+// Normal-products minimum order value + platform fee discount (combo carts use
+// their own independent minimum — see /combos/status and /combos/admin/settings/*)
+// Public: checkout reads this to show the minimum + any discount messaging
+router.get('/dev-settings/order-minimum',                    devCtrl.getOrderMinimumPublic);
+// SuperAdmin: full status
+router.get('/admin/dev-settings/order-minimum',              protectSuperAdmin, devCtrl.getOrderMinimumAdmin);
+// SuperAdmin: update — body: { value?: number, platformFeeDiscount?: { enabled?, type?: 'flat'|'percent', value? } }
+router.put('/admin/dev-settings/order-minimum',              protectSuperAdmin, devCtrl.updateOrderMinimum);
+
 // ══════════════════════════════════════════════
 // PUBLIC — no auth required
 // ══════════════════════════════════════════════

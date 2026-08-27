@@ -385,6 +385,107 @@ const updateLowWeightPromo = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════════════════════════
+// NORMAL-PRODUCTS MINIMUM ORDER + PLATFORM FEE DISCOUNT
+// Super Admin controlled. Replaces the old hardcoded ₹799 floor for
+// non-combo Koyambedu Daily carts (combo carts have their own independent
+// minimum + discount — see KoyambeduComboSettings / koyambeduComboController).
+// The platform fee discount is a reward applied once the minimum above is
+// met — since placeOrder already blocks any order below the minimum, every
+// successfully placed normal order "achieves" it automatically.
+//
+// Endpoints:
+//   GET /koyambedu/dev-settings/order-minimum        — public (checkout reads this)
+//   GET /koyambedu/admin/dev-settings/order-minimum   — full status (SA only)
+//   PUT /koyambedu/admin/dev-settings/order-minimum   — update (SA only)
+// ══════════════════════════════════════════════════════════════════
+
+/**
+ * GET /koyambedu/dev-settings/order-minimum
+ * Returns { value, platformFeeDiscount: { enabled, type, value } }.
+ * No auth required — checkout needs this to show the minimum + any
+ * discount messaging before the customer logs in.
+ */
+const getOrderMinimumPublic = async (req, res) => {
+  try {
+    const om = await KoyambeduSettings.getOrderMinimum();
+    res.json({ success: true, ...om });
+  } catch (err) {
+    console.error('[DevSettings] getOrderMinimumPublic error:', err.message);
+    // Fail safe — keep the old ₹799 behaviour, no discount, on error
+    res.json({ success: true, value: 799, platformFeeDiscount: { enabled: false, type: 'flat', value: 0 } });
+  }
+};
+
+/**
+ * GET /koyambedu/admin/dev-settings/order-minimum
+ * SuperAdmin only — includes who last changed it.
+ */
+const getOrderMinimumAdmin = async (req, res) => {
+  try {
+    const doc = await KoyambeduSettings.findOne({ key: 'global' });
+    const om  = doc?.orderMinimum || {};
+    res.json({
+      success: true,
+      value: om.value ?? 799,
+      platformFeeDiscount: {
+        enabled: om.platformFeeDiscount?.enabled || false,
+        type:    om.platformFeeDiscount?.type    || 'flat',
+        value:   om.platformFeeDiscount?.value   ?? 0,
+      },
+      updatedByName: om.updatedByName || null,
+      updatedAt:     om.updatedAt     || null,
+    });
+  } catch (err) {
+    console.error('[DevSettings] getOrderMinimumAdmin error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch order minimum settings' });
+  }
+};
+
+/**
+ * PUT /koyambedu/admin/dev-settings/order-minimum
+ * Body: { value?: number, platformFeeDiscount?: { enabled?, type?: 'flat'|'percent', value? } }
+ * SuperAdmin only.
+ */
+const updateOrderMinimum = async (req, res) => {
+  try {
+    const { value, platformFeeDiscount } = req.body;
+    const update = {
+      'orderMinimum.updatedBy':     req.user._id,
+      'orderMinimum.updatedByName': req.user.name || req.user.email,
+      'orderMinimum.updatedAt':     new Date(),
+    };
+    if (value !== undefined) {
+      const v = Number(value);
+      if (!(v >= 0)) return res.status(400).json({ success: false, message: 'value must be a non-negative number' });
+      update['orderMinimum.value'] = v;
+    }
+    if (platformFeeDiscount) {
+      const { enabled, type, value: discVal } = platformFeeDiscount;
+      if (enabled !== undefined) update['orderMinimum.platformFeeDiscount.enabled'] = !!enabled;
+      if (type !== undefined) {
+        if (!['flat', 'percent'].includes(type)) return res.status(400).json({ success: false, message: "type must be 'flat' or 'percent'" });
+        update['orderMinimum.platformFeeDiscount.type'] = type;
+      }
+      if (discVal !== undefined) {
+        const dv = Number(discVal);
+        if (!(dv >= 0)) return res.status(400).json({ success: false, message: 'platformFeeDiscount.value must be a non-negative number' });
+        update['orderMinimum.platformFeeDiscount.value'] = dv;
+      }
+    }
+
+    const doc = await KoyambeduSettings.findOneAndUpdate(
+      { key: 'global' }, update, { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    console.log(`[DevSettings] Order minimum updated by ${req.user.email}:`, doc.orderMinimum);
+    res.json({ success: true, ...(await KoyambeduSettings.getOrderMinimum()) });
+  } catch (err) {
+    console.error('[DevSettings] updateOrderMinimum error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to update order minimum settings' });
+  }
+};
+
 module.exports = {
   getPaymentTestModePublic,
   getPaymentTestModeAdmin,
@@ -396,4 +497,7 @@ module.exports = {
   getLowWeightPromoPublic,
   getLowWeightPromoAdmin,
   updateLowWeightPromo,
+  getOrderMinimumPublic,
+  getOrderMinimumAdmin,
+  updateOrderMinimum,
 };

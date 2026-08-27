@@ -1136,8 +1136,13 @@ const placeOrder = async (req, res) => {
     deliverySlot:    deliverySlot    || '9 AM – 12 PM',
     deliverySlotKey: deliverySlotKey || 'slot2',
     orderTimestamp:  new Date(),
-    cutoffCycle:     getProcurementCycle(new Date()),
-    procurementDate: new Date(getProcurementCycle(new Date())),
+    // Procurement must be planned around when the order needs to be
+    // DELIVERED (so sellers/admin know what to procure for that day's
+    // deliveries), not when the customer happened to place the order.
+    // Falls back to the old order-time cycle only in the defensive case
+    // deliveryDate is somehow missing (it's already required above).
+    cutoffCycle:     deliveryDate ? String(deliveryDate).slice(0, 10) : getProcurementCycle(new Date()),
+    procurementDate: parsedDeliveryDate || new Date(getProcurementCycle(new Date())),
     paymentMethod,
     // wallet_full is fully paid at placement (no cash collected, wallet was debited)
     paymentStatus: isWalletFull ? 'paid' : 'pending',

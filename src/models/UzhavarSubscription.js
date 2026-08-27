@@ -22,6 +22,8 @@ const uzhavarSubscriptionSchema = new mongoose.Schema({
   razorpayOrderId:   String,
   razorpayPaymentId: String,
   paymentStatus:     { type: String, enum: ['pending', 'paid', 'failed'], default: 'pending' },
+  // Set for the fixed demo/review account (User.isDemoAccount) — excluded from revenue reports.
+  isDemoOrder: { type: Boolean, default: false },
 
   // Validity
   startDate:  Date,

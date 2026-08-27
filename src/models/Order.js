@@ -106,6 +106,11 @@ const orderSchema = new mongoose.Schema({
     paidAt: Date,
     upiRef: String,
   },
+  // Set when the buyer is the fixed demo/review account (see User.js's
+  // isDemoAccount + paymentController.js's createRazorpayOrder/
+  // verifyRazorpayPayment). Lets admin order lists flag it and revenue
+  // aggregations exclude it — never set for a real customer order.
+  isDemoOrder: { type: Boolean, default: false },
   orderStatus: {
     type: String,
     enum: ['placed', 'confirmed', 'processing', 'shipped', 'partially_delivered', 'delivered', 'cancelled', 'returned'],

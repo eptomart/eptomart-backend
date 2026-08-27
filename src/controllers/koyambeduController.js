@@ -1126,11 +1126,21 @@ const placeOrder = async (req, res) => {
 /** POST /api/koyambedu/orders/create-razorpay — initiate Razorpay payment */
 const createRazorpayOrder = async (req, res) => {
   const { orderId } = req.body;
-  const razorpay = getRazorpay();
-  if (!razorpay) return res.status(503).json({ success: false, message: 'Payment gateway not configured' });
-
   const order = await KoyambeduOrder.findOne({ _id: orderId, buyer: req.user._id });
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  // ── Demo/review account — skip the real gateway (see paymentController.js
+  // for the identical pattern used by the main marketplace) ──
+  if (req.user.isDemoAccount) {
+    const fakeGatewayId = `demo_${order._id}`;
+    order.paymentDetails.razorpayOrderId = fakeGatewayId;
+    order.isDemoOrder = true;
+    await order.save();
+    return res.json({ success: true, demoMode: true, rzpOrderId: fakeGatewayId, amount: order.pricing.total, currency: 'INR', orderId: order._id, keyId: null });
+  }
+
+  const razorpay = getRazorpay();
+  if (!razorpay) return res.status(503).json({ success: false, message: 'Payment gateway not configured' });
 
   const rzpOrder = await razorpay.orders.create({
     amount:   Math.round(order.pricing.total * 100),
@@ -1166,11 +1176,17 @@ const verifyPayment = async (req, res) => {
     return res.json({ success: true, message: 'Payment already confirmed', orderId: order.orderId });
   }
 
-  const secret = process.env.RAZORPAY_KEY_SECRET;
-  const body   = `${razorpayOrderId}|${razorpayPaymentId}`;
-  const expectedSig = crypto.createHmac('sha256', secret).update(body).digest('hex');
-  if (expectedSig !== razorpaySignature) {
-    return res.status(400).json({ success: false, message: 'Payment verification failed' });
+  // Demo/review account — skip real signature verification. Only reachable
+  // when createRazorpayOrder above already set isDemoOrder=true, which only
+  // ever happens for req.user.isDemoAccount — a real order can't take this
+  // branch. Everything below (invoices, timeline, etc.) runs unchanged.
+  if (!order.isDemoOrder) {
+    const secret = process.env.RAZORPAY_KEY_SECRET;
+    const body   = `${razorpayOrderId}|${razorpayPaymentId}`;
+    const expectedSig = crypto.createHmac('sha256', secret).update(body).digest('hex');
+    if (expectedSig !== razorpaySignature) {
+      return res.status(400).json({ success: false, message: 'Payment verification failed' });
+    }
   }
 
   order.paymentStatus = 'paid';
@@ -2132,7 +2148,7 @@ const adminDashboard = async (req, res) => {
     KoyambeduOrder.countDocuments({ orderStatus: { $in: ['confirmed','packing'] } }),
     KoyambeduOrder.countDocuments({ orderStatus: 'delivered', deliveredAt: { $gte: today } }),
     KoyambeduOrder.aggregate([
-      { $match: { paymentStatus: 'paid', createdAt: { $gte: today } } },
+      { $match: { paymentStatus: 'paid', createdAt: { $gte: today }, isDemoOrder: { $ne: true } } },
       { $group: { _id: null, total: { $sum: '$pricing.total' } } },
     ]),
     KoyambeduOrder.countDocuments({ orderStatus: 'price_revision_pending' }),
@@ -3565,7 +3581,7 @@ const adminAnalytics = async (req, res) => {
 
   const [revenueByDay, topProducts, ordersByStatus, categoryPerf] = await Promise.all([
     KoyambeduOrder.aggregate([
-      { $match: { paymentStatus: 'paid', createdAt: { $gte: since } } },
+      { $match: { paymentStatus: 'paid', createdAt: { $gte: since }, isDemoOrder: { $ne: true } } },
       { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, revenue: { $sum: '$pricing.total' }, orders: { $sum: 1 } } },
       { $sort: { _id: 1 } },
     ]),

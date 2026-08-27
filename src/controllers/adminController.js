@@ -44,15 +44,15 @@ const getDashboard = async (req, res) => {
     Order.countDocuments({ createdAt: { $gte: today } }),
     Order.countDocuments({ orderStatus: { $in: ['placed', 'confirmed', 'processing'] } }),
     Order.aggregate([
-      { $match: { paymentStatus: 'paid' } },
+      { $match: { paymentStatus: 'paid', isDemoOrder: { $ne: true } } },
       { $group: { _id: null, total: { $sum: '$pricing.total' } } }
     ]),
     Order.aggregate([
-      { $match: { paymentStatus: 'paid', createdAt: { $gte: today } } },
+      { $match: { paymentStatus: 'paid', createdAt: { $gte: today }, isDemoOrder: { $ne: true } } },
       { $group: { _id: null, total: { $sum: '$pricing.total' } } }
     ]),
     Order.aggregate([
-      { $match: { paymentStatus: 'paid', createdAt: { $gte: thisMonth } } },
+      { $match: { paymentStatus: 'paid', createdAt: { $gte: thisMonth }, isDemoOrder: { $ne: true } } },
       { $group: { _id: null, total: { $sum: '$pricing.total' } } }
     ]),
     Analytics.distinct('ip', { isBot: false }),
@@ -66,7 +66,8 @@ const getDashboard = async (req, res) => {
     {
       $match: {
         paymentStatus: 'paid',
-        createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+        createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+        isDemoOrder: { $ne: true },
       }
     },
     {

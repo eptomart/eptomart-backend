@@ -11,6 +11,14 @@ const { sendOtpEmail } = require('../utils/sendEmail');
 // Demo account constants (module-level so all functions can access)
 const DEMO_EMAIL = process.env.DEMO_EMAIL || 'eptosicare@gmail.com';
 const DEMO_OTP   = process.env.DEMO_OTP   || '246810';
+// Second demo account, reachable via phone login — used for testing full
+// checkout (across every vertical) in production without a real payment,
+// e.g. app-store reviewers or internal QA. Mirrors the email demo account
+// above exactly; see isDemoAccount on User.js and the payment-bypass
+// branches added to each vertical's create-razorpay-order function.
+const DEMO_PHONE     = process.env.DEMO_PHONE     || '9999999999';
+const DEMO_PHONE_OTP = process.env.DEMO_PHONE_OTP || '000000';
+const isDemoContactValue = (contact) => contact === DEMO_EMAIL || contact === DEMO_PHONE;
 
 /**
  * @route   POST /api/auth/send-otp
@@ -60,10 +68,12 @@ const sendOtp = async (req, res) => {
   const existingUser = await User.findOne({ $or: [{ email: contact }, { phone: contact }] })
     .select('email phone name').lean();
 
-  // Use fixed OTP for demo account (Apple App Store review)
-  const code = (contact === DEMO_EMAIL) ? DEMO_OTP : generateOtp();
+  // Use fixed OTP for demo accounts (Apple/Play Store review + internal QA)
+  const code = (contact === DEMO_EMAIL) ? DEMO_OTP
+    : (contact === DEMO_PHONE) ? DEMO_PHONE_OTP
+    : generateOtp();
 
-  const expiryMs = (contact === DEMO_EMAIL)
+  const expiryMs = isDemoContactValue(contact)
     ? 365 * 24 * 60 * 60 * 1000
     : (parseInt(process.env.OTP_EXPIRY_MINUTES || 10)) * 60 * 1000;
 
@@ -147,7 +157,7 @@ const verifyOtp = async (req, res) => {
   }
 
   // OTP is valid — mark as used (demo account OTP stays reusable)
-  const isDemoContact = contact === (process.env.DEMO_EMAIL || 'eptosicare@gmail.com');
+  const isDemoContact = isDemoContactValue(contact);
   if (!isDemoContact) {
     otpDoc.used = true;
     await otpDoc.save();
@@ -164,6 +174,7 @@ const verifyOtp = async (req, res) => {
       name: (name || '').trim() || 'New User',
       isVerified: true,
       registrationIp: getClientIp(req),
+      ...(isDemoContact ? { isDemoAccount: true } : {}),
     };
 
     if (type === 'email') userData.email = contact;
@@ -181,6 +192,7 @@ const verifyOtp = async (req, res) => {
       });
     }
     if (!user.isVerified) { user.isVerified = true; await user.save(); }
+    if (isDemoContact && !user.isDemoAccount) { user.isDemoAccount = true; await user.save(); }
   }
 
   // Record login history
@@ -202,7 +214,7 @@ const verifyOtp = async (req, res) => {
     }
   });
 
-  const needsProfile = isNewUser && contact !== DEMO_EMAIL;
+  const needsProfile = isNewUser && !isDemoContactValue(contact);
   sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!', { isNewUser, needsProfile });
 };
 
@@ -372,12 +384,21 @@ const verifyFirebasePhone = async (req, res) => {
   let user = await User.findOne({ $or: [{ phone }, { email: phone }] });
   let isNewUser = false;
 
+  // This is the real phone-login path (Firebase Phone Auth verified above) —
+  // DEMO_PHONE only ever reaches here once it's registered as a Firebase
+  // "test phone number" (Firebase Console → Authentication → Sign-in
+  // method → Phone → Phone numbers for testing) with a fixed code, which
+  // is what actually makes phone OTP skip a real SMS. This just makes
+  // sure that account is flagged once it does log in.
+  const isDemoPhone = phone === DEMO_PHONE;
+
   if (!user) {
     user = await User.create({
       name: (name || '').trim() || 'New User',
       phone,
       isVerified: true,
       registrationIp: getClientIp(req),
+      ...(isDemoPhone ? { isDemoAccount: true } : {}),
     });
     isNewUser = true;
   } else {
@@ -398,6 +419,10 @@ const verifyFirebasePhone = async (req, res) => {
       user.isVerified = true;
       await user.save();
     }
+    if (isDemoPhone && !user.isDemoAccount) {
+      user.isDemoAccount = true;
+      await user.save();
+    }
   }
 
   // Record login
@@ -412,7 +437,7 @@ const verifyFirebasePhone = async (req, res) => {
     }
   });
 
-  const needsProfile2 = isNewUser && phone !== DEMO_EMAIL;
+  const needsProfile2 = isNewUser && phone !== DEMO_EMAIL && !isDemoPhone;
   sendTokenResponse(user, 200, res, isNewUser ? 'Account created successfully!' : 'Login successful!', { isNewUser, needsProfile: needsProfile2 });
 };
 

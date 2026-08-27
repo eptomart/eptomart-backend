@@ -78,6 +78,15 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false,   // true once user verifies via OTP
   },
+  // Fixed test/review account (email eptosicare@gmail.com or phone
+  // 9999999999 — see authController.js's DEMO_EMAIL/DEMO_PHONE). Lets
+  // checkout across every vertical skip the real Razorpay gateway and
+  // marks resulting orders as isDemoOrder so they're excluded from
+  // revenue reports. Never set for a real customer account.
+  isDemoAccount: {
+    type: Boolean,
+    default: false,
+  },
   isActive: {
     type: Boolean,
     default: true,

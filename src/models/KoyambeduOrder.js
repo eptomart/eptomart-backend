@@ -262,6 +262,9 @@ const koyambeduOrderSchema = new Schema({
   // Payment
   paymentMethod: { type: String, enum: ['razorpay','cod','upi','wallet_full'], default: 'razorpay' },
   paymentStatus: { type: String, enum: ['pending','paid','refunded','failed'], default: 'pending' },
+  // Set for the fixed demo/review account (User.isDemoAccount) — see
+  // createRazorpayOrder/verifyPayment below. Excluded from revenue reports.
+  isDemoOrder: { type: Boolean, default: false },
   paymentDetails: {
     razorpayOrderId:   String,
     razorpayPaymentId: String,

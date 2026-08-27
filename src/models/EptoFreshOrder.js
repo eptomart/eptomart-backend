@@ -154,6 +154,8 @@ const eptoFreshOrderSchema = new Schema({
   // Payment
   paymentMethod: { type: String, enum: ['razorpay', 'cod', 'wallet'], default: 'razorpay' },
   paymentStatus: { type: String, enum: ['pending', 'paid', 'refunded', 'failed'], default: 'pending' },
+  // Set for the fixed demo/review account (User.isDemoAccount) — excluded from revenue reports.
+  isDemoOrder: { type: Boolean, default: false },
   paymentDetails: {
     razorpayOrderId:   String,
     razorpayPaymentId: String,

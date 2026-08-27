@@ -79,6 +79,8 @@ const uzhavarOrderSchema = new mongoose.Schema({
   razorpayOrderId: String,
   razorpayPaymentId: String,
   paymentStatus:   { type: String, enum: ['pending', 'paid', 'failed', 'refunded'], default: 'pending' },
+  // Set for the fixed demo/review account (User.isDemoAccount) — excluded from revenue reports.
+  isDemoOrder: { type: Boolean, default: false },
   subscriptionId:  { type: mongoose.Schema.Types.ObjectId, ref: 'UzhavarSubscription' },
 
   // Order lifecycle

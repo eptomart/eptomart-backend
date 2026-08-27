@@ -359,6 +359,21 @@ exports.placeOrder = async (req, res) => {
 
   // For Razorpay — create payment order
   if (paymentMethod === 'razorpay') {
+    // Demo/review account — skip the real gateway (same pattern as the main
+    // marketplace's paymentController.js and koyambeduController.js).
+    if (req.user.isDemoAccount) {
+      const fakeGatewayId = `demo_${order._id}`;
+      order.paymentDetails = { ...order.paymentDetails, razorpayOrderId: fakeGatewayId };
+      order.isDemoOrder = true;
+      await order.save();
+      return res.json({
+        success: true, demoMode: true,
+        orderId: order._id, orderNumber: order.orderId,
+        razorpayOrderId: fakeGatewayId, amount: Math.round(total * 100), currency: 'INR',
+        keyId: null, pricing: order.pricing,
+      });
+    }
+
     const razorpay = getRazorpay();
     if (!razorpay) return res.status(503).json({ success: false, message: 'Payment gateway not configured' });
 
@@ -393,17 +408,22 @@ exports.placeOrder = async (req, res) => {
 exports.verifyPayment = async (req, res) => {
   const { razorpay_order_id, razorpay_payment_id, razorpay_signature, orderId } = req.body;
 
-  const expected = crypto
-    .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-    .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-    .digest('hex');
-
-  if (expected !== razorpay_signature) {
-    return res.status(400).json({ success: false, message: 'Payment verification failed' });
-  }
-
   const order = await EptoFreshOrder.findById(orderId);
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  // Demo/review account — skip real signature verification (only reachable
+  // when placeOrder's Razorpay branch above already set isDemoOrder=true,
+  // which only ever happens for req.user.isDemoAccount).
+  if (!order.isDemoOrder) {
+    const expected = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest('hex');
+
+    if (expected !== razorpay_signature) {
+      return res.status(400).json({ success: false, message: 'Payment verification failed' });
+    }
+  }
 
   order.paymentStatus = 'paid';
   order.orderStatus   = 'placed';

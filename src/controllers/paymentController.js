@@ -76,12 +76,31 @@ const adminVerifyUpi = async (req, res) => {
 // ════════════════ RAZORPAY ════════════════
 
 const createRazorpayOrder = async (req, res) => {
-  const razorpay = getRazorpay();
-  if (!razorpay) return res.status(503).json({ success: false, message: 'Razorpay not configured on server' });
-
   const { orderId } = req.body;
   const order = await Order.findOne({ _id: orderId, user: req.user._id });
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  // ── Demo/review account — skip the real gateway entirely ──────────────
+  // req.user.isDemoAccount is only ever true for the fixed test phone/email
+  // account (see User.js, authController.js). A fake gateway order id is
+  // stored so verifyRazorpayPayment below has something to match against;
+  // the frontend skips opening the real Razorpay widget when it sees
+  // demoMode:true and calls verify-payment directly instead.
+  if (req.user.isDemoAccount) {
+    const fakeGatewayId = `demo_${order._id}`;
+    order.paymentDetails = { ...order.paymentDetails, gatewayOrderId: fakeGatewayId };
+    order.paymentMethod = 'razorpay';
+    order.isDemoOrder = true;
+    await order.save();
+    return res.json({
+      success: true, demoMode: true,
+      razorpayOrderId: fakeGatewayId, amount: Math.round(order.pricing.total * 100), currency: 'INR',
+      keyId: null, orderId: order._id, orderNumber: order.orderId,
+    });
+  }
+
+  const razorpay = getRazorpay();
+  if (!razorpay) return res.status(503).json({ success: false, message: 'Razorpay not configured on server' });
 
   const rzpOrder = await razorpay.orders.create({
     amount: Math.round(order.pricing.total * 100),
@@ -108,25 +127,36 @@ const createRazorpayOrder = async (req, res) => {
 const verifyRazorpayPayment = async (req, res) => {
   const { razorpay_order_id, razorpay_payment_id, razorpay_signature, orderId } = req.body;
 
-  if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-    return res.status(400).json({ success: false, message: 'Missing payment details' });
-  }
-
-  const expectedSignature = crypto
-    .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-    .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-    .digest('hex');
-
-  if (expectedSignature !== razorpay_signature) {
-    return res.status(400).json({ success: false, message: 'Payment verification failed' });
-  }
-
   const order = await Order.findById(orderId).populate('user');
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
-  order.paymentStatus = 'paid';
-  order.paymentDetails = { transactionId: razorpay_payment_id, gatewayOrderId: razorpay_order_id, paidAt: new Date() };
-  await order.save();
+  // ── Demo/review account — skip real signature verification ────────────
+  // Only ever true for an order createRazorpayOrder above already flagged
+  // isDemoOrder (which itself only happens for req.user.isDemoAccount) —
+  // a real customer's order can never take this branch. Everything after
+  // this if/else (notifications, invoice, etc.) runs unchanged either way.
+  if (order.isDemoOrder) {
+    order.paymentStatus = 'paid';
+    order.paymentDetails = { transactionId: `demo_pay_${Date.now()}`, gatewayOrderId: order.paymentDetails?.gatewayOrderId || `demo_${order._id}`, paidAt: new Date() };
+    await order.save();
+  } else {
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ success: false, message: 'Missing payment details' });
+    }
+
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest('hex');
+
+    if (expectedSignature !== razorpay_signature) {
+      return res.status(400).json({ success: false, message: 'Payment verification failed' });
+    }
+
+    order.paymentStatus = 'paid';
+    order.paymentDetails = { transactionId: razorpay_payment_id, gatewayOrderId: razorpay_order_id, paidAt: new Date() };
+    await order.save();
+  }
 
   // ── Notify customer of payment confirmation ──────────────────────────
   const User = require('../models/User');

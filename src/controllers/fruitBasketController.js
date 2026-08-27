@@ -244,16 +244,21 @@ const createRazorpayOrder = async (req, res) => {
     const { items, deliveryAddress, deliveryDate, slotKey, notes } = req.body;
     const priced = await priceOrderRequest(items, deliveryAddress, deliveryDate, slotKey);
 
-    const razorpay = getRazorpay();
-    if (!razorpay) return res.status(500).json({ success: false, message: 'Payment gateway not configured' });
+    const isDemo = !!req.user.isDemoAccount;
+    const razorpay = isDemo ? null : getRazorpay();
+    if (!isDemo && !razorpay) return res.status(500).json({ success: false, message: 'Payment gateway not configured' });
 
     const orderId = genOrderId();
-    const rzpOrder = await razorpay.orders.create({
-      amount:   Math.round(priced.total * 100),
-      currency: 'INR',
-      receipt:  orderId,
-      notes:    { fbOrderId: orderId, type: 'fruit_basket_order' },
-    });
+    // Demo/review account — skip the real gateway (same pattern used across
+    // every other vertical's payment controller).
+    const rzpOrder = isDemo
+      ? { id: `demo_${orderId}` }
+      : await razorpay.orders.create({
+          amount:   Math.round(priced.total * 100),
+          currency: 'INR',
+          receipt:  orderId,
+          notes:    { fbOrderId: orderId, type: 'fruit_basket_order' },
+        });
 
     const order = await FruitBasketOrder.create({
       orderId,
@@ -272,13 +277,14 @@ const createRazorpayOrder = async (req, res) => {
         deliveryCharge: priced.deliveryCharge, total: priced.total,
       },
       razorpayOrderId: rzpOrder.id,
+      isDemoOrder: isDemo,
       notes: notes || '',
       timeline: [{ status: 'placed', note: 'Order created, awaiting payment' }],
     });
 
     res.json({
-      success: true, rzpOrderId: rzpOrder.id, amount: priced.total, currency: 'INR',
-      orderId: order._id, keyId: process.env.RAZORPAY_KEY_ID,
+      success: true, demoMode: isDemo, rzpOrderId: rzpOrder.id, amount: priced.total, currency: 'INR',
+      orderId: order._id, keyId: isDemo ? null : process.env.RAZORPAY_KEY_ID,
     });
   } catch (err) {
     if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
@@ -303,13 +309,17 @@ const verifyPayment = async (req, res) => {
       return res.json({ success: true, message: 'Payment already confirmed', orderId: order.orderId });
     }
 
-    const secret = process.env.RAZORPAY_KEY_SECRET;
-    const body   = `${razorpayOrderId}|${razorpayPaymentId}`;
-    const expectedSig = crypto.createHmac('sha256', secret).update(body).digest('hex');
-    if (expectedSig !== razorpaySignature) {
-      order.paymentStatus = 'failed';
-      await order.save();
-      return res.status(400).json({ success: false, message: 'Payment verification failed' });
+    // Demo/review account — skip real signature verification (only
+    // reachable when createRazorpayOrder above already set isDemoOrder=true).
+    if (!order.isDemoOrder) {
+      const secret = process.env.RAZORPAY_KEY_SECRET;
+      const body   = `${razorpayOrderId}|${razorpayPaymentId}`;
+      const expectedSig = crypto.createHmac('sha256', secret).update(body).digest('hex');
+      if (expectedSig !== razorpaySignature) {
+        order.paymentStatus = 'failed';
+        await order.save();
+        return res.status(400).json({ success: false, message: 'Payment verification failed' });
+      }
     }
 
     order.paymentStatus       = 'paid';

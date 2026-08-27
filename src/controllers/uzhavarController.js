@@ -435,15 +435,29 @@ exports.createPaymentOrder = async (req, res) => {
   const { uzhavarOrderId } = req.body;
   if (!uzhavarOrderId) return res.status(400).json({ success: false, message: 'uzhavarOrderId required' });
 
-  const rzp = getRazorpay();
-  if (!rzp) return res.status(503).json({ success: false, message: 'Payment not configured — contact support' });
-
   const order = await UzhavarOrder.findOne({ _id: uzhavarOrderId, buyer: req.user._id });
   if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
   // Only charge the platform booking fee (₹24.78). The product amount (subtotal)
   // is paid directly to the farmer at delivery — it is NOT collected via Razorpay.
   const chargeAmount = Math.round(order.bookingFee.total * 100); // paise
+
+  // Demo/review account — skip the real gateway (same pattern used across
+  // every other vertical's payment controller).
+  if (req.user.isDemoAccount) {
+    const fakeGatewayId = `demo_${order._id}`;
+    order.razorpayOrderId = fakeGatewayId;
+    order.isDemoOrder = true;
+    await order.save();
+    return res.json({
+      success: true, demoMode: true,
+      rzpOrderId: fakeGatewayId, amount: chargeAmount, currency: 'INR', orderNumber: order.orderNumber,
+      bookingFee: order.bookingFee.total, productSubtotal: order.subtotal, balancePayableToFarmer: order.balancePayableToFarmer,
+    });
+  }
+
+  const rzp = getRazorpay();
+  if (!rzp) return res.status(503).json({ success: false, message: 'Payment not configured — contact support' });
 
   const rzpOrder = await rzp.orders.create({
     amount:   chargeAmount,
@@ -477,13 +491,19 @@ exports.verifyPayment = async (req, res) => {
   try {
   const { uzhavarOrderId, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
 
-  const expected = crypto
-    .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET || '')
-    .update(`${razorpayOrderId}|${razorpayPaymentId}`)
-    .digest('hex');
+  // Demo/review account — skip real signature verification (only reachable
+  // when createPaymentOrder above already set isDemoOrder=true, which only
+  // ever happens for req.user.isDemoAccount).
+  const preloaded = await UzhavarOrder.findById(uzhavarOrderId).select('isDemoOrder').lean();
+  if (!preloaded?.isDemoOrder) {
+    const expected = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET || '')
+      .update(`${razorpayOrderId}|${razorpayPaymentId}`)
+      .digest('hex');
 
-  if (expected !== razorpaySignature) {
-    return res.status(400).json({ success: false, message: 'Payment verification failed' });
+    if (expected !== razorpaySignature) {
+      return res.status(400).json({ success: false, message: 'Payment verification failed' });
+    }
   }
 
   const order = await UzhavarOrder.findByIdAndUpdate(uzhavarOrderId, {
@@ -636,6 +656,16 @@ exports.createSubscription = async (req, res) => {
   const pricing = UzhavarSubscription.calcPricing(plan);
   if (!pricing) return res.status(400).json({ success: false, message: 'Invalid plan' });
 
+  // Demo/review account — skip the real gateway (same pattern used across
+  // every other vertical's payment controller).
+  if (req.user.isDemoAccount) {
+    const sub = await UzhavarSubscription.create({
+      buyer: req.user._id, plan, pricing,
+      razorpayOrderId: `demo_sub_${Date.now()}`, isDemoOrder: true,
+    });
+    return res.json({ success: true, demoMode: true, subscriptionId: sub._id, rzpOrderId: sub.razorpayOrderId, amount: Math.round(pricing.total * 100), pricing });
+  }
+
   const rzp = getRazorpay();
   if (!rzp) return res.status(503).json({ success: false, message: 'Payment not configured' });
 
@@ -658,17 +688,21 @@ exports.createSubscription = async (req, res) => {
 exports.verifySubscription = async (req, res) => {
   const { subscriptionId, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
 
-  const expected = crypto
-    .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET || '')
-    .update(`${razorpayOrderId}|${razorpayPaymentId}`)
-    .digest('hex');
-
-  if (expected !== razorpaySignature) {
-    return res.status(400).json({ success: false, message: 'Payment verification failed' });
-  }
-
   const sub = await UzhavarSubscription.findOne({ _id: subscriptionId, buyer: req.user._id });
   if (!sub) return res.status(404).json({ success: false, message: 'Subscription not found' });
+
+  // Demo/review account — skip real signature verification (only reachable
+  // when createSubscription above already set isDemoOrder=true).
+  if (!sub.isDemoOrder) {
+    const expected = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET || '')
+      .update(`${razorpayOrderId}|${razorpayPaymentId}`)
+      .digest('hex');
+
+    if (expected !== razorpaySignature) {
+      return res.status(400).json({ success: false, message: 'Payment verification failed' });
+    }
+  }
 
   const start = new Date();
   const end   = new Date();

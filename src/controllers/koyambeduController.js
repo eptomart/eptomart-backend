@@ -7282,10 +7282,46 @@ const adminGetOfferBroadcasts = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/koyambedu/admin/fix-cutoff-cycle — SuperAdmin only, one-time data
+ * repair. Orders placed before the "procurement grouped by delivery date"
+ * fix (see placeOrder above) had their cutoffCycle set from the ORDER date
+ * instead of the deliveryDate — that value is baked into the DB and never
+ * auto-corrects itself. This recomputes cutoffCycle from each order's own
+ * (always-correct) deliveryDate and fixes any mismatch. Safe to run more
+ * than once — orders that already match are simply skipped.
+ */
+const fixProcurementCutoffCycle = async (req, res) => {
+  try {
+    const orders = await KoyambeduOrder.find({ deliveryDate: { $exists: true, $ne: null } })
+      .select('_id deliveryDate cutoffCycle').lean();
+
+    let fixed = 0;
+    const bulkOps = [];
+    for (const o of orders) {
+      const correctCycle = new Date(o.deliveryDate).toISOString().slice(0, 10);
+      if (o.cutoffCycle !== correctCycle) {
+        bulkOps.push({
+          updateOne: { filter: { _id: o._id }, update: { $set: { cutoffCycle: correctCycle } } },
+        });
+        fixed++;
+      }
+    }
+    if (bulkOps.length) await KoyambeduOrder.bulkWrite(bulkOps);
+
+    console.log(`[fixProcurementCutoffCycle] ${req.user.email} fixed ${fixed} of ${orders.length} orders`);
+    res.json({ success: true, message: `Fixed ${fixed} of ${orders.length} orders`, fixed, total: orders.length });
+  } catch (err) {
+    console.error('[fixProcurementCutoffCycle] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fix cutoffCycle data' });
+  }
+};
+
 module.exports = {
   // Public
   getCategories, getProducts, getFeaturedProducts, getHomepageProducts, getProductsByCategory, getProductDetail, getDeliverySlots,
   checkDeliveryAvailability,
+  fixProcurementCutoffCycle,
   // Cart
   getCart, updateCart, clearCart,
   // Super Admin — Users Cart tab

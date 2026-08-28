@@ -246,6 +246,9 @@ router.get  ('/admin/carts',                                          protectSup
 router.get  ('/admin/reports/procurement-confirmed',                  protectAdmin,      ctrl.adminProcurementReport);
 router.patch('/admin/reports/procurement-confirmed/item',             protectAdmin,      ctrl.adminUpdateProcurementItem);
 router.post ('/admin/reports/procurement-confirmed/share',            protectAdmin,      ctrl.adminShareProcurement);
+// One-time data repair — recomputes cutoffCycle from deliveryDate for orders
+// placed before that fix went live (see koyambeduController.fixProcurementCutoffCycle).
+router.post ('/admin/fix-cutoff-cycle',                                protectSuperAdmin, ctrl.fixProcurementCutoffCycle);
 
 router.get  ('/admin/notifications/audience-count',                   protectAdmin,      ctrl.adminPreviewOfferAudience);
 router.post ('/admin/notifications/broadcast',                        protectAdmin,      ctrl.adminBroadcastOffer);

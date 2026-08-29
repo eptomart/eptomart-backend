@@ -758,7 +758,7 @@ const updateCart = async (req, res) => {
   // this prevents previously-filtered items from reappearing after every quantity update.
   await cart.populate({
     path: 'items.product',
-    select: 'name unit images qtyStep minQty maxQty currentPrice variants gradesEnabled grades isActive isAvailable',
+    select: 'name unit images qtyStep minQty maxQty currentPrice variants gradesEnabled grades isActive isAvailable isCombo comboContents',
     populate: { path: 'seller', select: 'isActive status' },
   });
 

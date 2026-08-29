@@ -7031,7 +7031,7 @@ const adminProcurementReport = async (req, res) => {
       orderStatus: { $in: CONFIRMED_REPORT_STATUSES },
     }).populate({
       path: 'items.product',
-      select: 'name unit category',
+      select: 'name unit category isCombo comboContents',
       populate: { path: 'category', select: 'name icon' },
     }).lean();
 
@@ -7057,6 +7057,7 @@ const adminProcurementReport = async (req, res) => {
             totalQty:     0,
             totalValue:   0,
             orderCount:   0,
+            fromCombo:    0, // qty contributed purely by combo recipes (see below), not ordered directly
             orderMap:     {}, // orderId (human-readable) -> quantity — per-order breakdown
           };
         }
@@ -7064,6 +7065,46 @@ const adminProcurementReport = async (req, res) => {
         summary[productKey].totalValue += (item.finalPrice || item.orderedPrice || 0) * (item.quantity || 0);
         summary[productKey].orderCount += 1;
         summary[productKey].orderMap[order.orderId] = (summary[productKey].orderMap[order.orderId] || 0) + (item.quantity || 0);
+
+        // ── Combo raw-material rollup ──────────────────────────────────
+        // A combo's comboContents (product + qty per single combo) tells us
+        // the actual raw ingredients Procurement needs to source — e.g. 10
+        // combos ordered × 250g Drumstick/combo = 2.5kg Drumstick, on top of
+        // whatever Drumstick was already ordered directly. Merged into the
+        // SAME bucket (by product id, ungraded) so admin sees one true total
+        // per product instead of hunting through combo recipes by hand.
+        if (item.product?.isCombo && Array.isArray(item.product?.comboContents)) {
+          for (const content of item.product.comboContents) {
+            if (!content?.product) continue; // legacy free-text entries have no product link — can't be rolled up
+            const neededQty = (Number(content.qty) || 0) * (item.quantity || 0);
+            if (neededQty <= 0) continue;
+
+            const ingredientKey = content.product.toString(); // ingredients aren't graded
+            if (!summary[ingredientKey]) {
+              summary[ingredientKey] = {
+                productKey:   ingredientKey,
+                productName:  content.name || 'Combo ingredient',
+                gradeKey:     null,
+                gradeName:    null,
+                unit:         content.unit || 'kg',
+                category:     'Combo Ingredients',
+                categoryIcon: '🧺',
+                totalQty:     0,
+                totalValue:   0,
+                orderCount:   0,
+                fromCombo:    0,
+                orderMap:     {},
+              };
+            }
+            summary[ingredientKey].totalQty  += neededQty;
+            summary[ingredientKey].fromCombo += neededQty;
+            summary[ingredientKey].orderMap[order.orderId] = (summary[ingredientKey].orderMap[order.orderId] || 0) + neededQty;
+            // orderCount intentionally not incremented here — it counts distinct
+            // ordered LINES; combo-derived ingredient quantities aren't a line
+            // the customer ordered directly, so counting them would overstate
+            // how many separate orders contain this product.
+          }
+        }
       }
     }
 

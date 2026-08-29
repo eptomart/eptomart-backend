@@ -134,8 +134,21 @@ const koyambeduProductSchema = new Schema({
   // toggle is on AND the cart actually contains one of these); with the
   // feature off, a combo behaves in every way like any other product.
   isCombo: { type: Boolean, default: false },
+  // Each line links to an ACTUAL Koyambedu Daily product plus the quantity
+  // needed for this combo (e.g. 250 g of Drumstick) — this is what lets
+  // Procurement roll up real raw-material needs across combo orders, not
+  // just a free-text description. `name`/`unit` are snapshotted at the
+  // moment the seller admin picks the product, so display and past-order
+  // procurement math stay stable even if the underlying product is later
+  // renamed/removed. No price is attached — combo contents are informational
+  // and for procurement only, never sold or priced separately.
   comboContents: {
-    type: [{ item: { type: String, required: true }, qty: { type: String, required: true } }],
+    type: [{
+      product: { type: Schema.Types.ObjectId, ref: 'KoyambeduProduct' },
+      name:    { type: String, required: true }, // snapshot of product name at selection time
+      unit:    { type: String, required: true }, // snapshot of product unit (kg, g, piece, etc.)
+      qty:     { type: Number, required: true, min: 0 },
+    }],
     default: [],
   },
 

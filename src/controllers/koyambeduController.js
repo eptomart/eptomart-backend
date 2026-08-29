@@ -278,7 +278,7 @@ const getCategories = async (req, res) => {
 /** GET /api/koyambedu/products?category=&search=&deliveryType=&page= */
 const getProducts = async (req, res) => {
   try {
-    const { category, search, deliveryType, context, page = 1, limit = 20, sort = 'default' } = req.query;
+    const { category, search, deliveryType, context, page = 1, limit = 20, sort = 'default', combo } = req.query;
 
     // context=navbar: Navbar/homepage search — find any active product regardless of today's slot,
     //                 so the search bar is never empty outside business hours.
@@ -294,6 +294,10 @@ const getProducts = async (req, res) => {
     // Guard: only set category filter when value is a valid ObjectId.
     // Passing a slug string would cause a Mongoose CastError (500).
     if (category && /^[a-fA-F0-9]{24}$/.test(category)) filter.category = category;
+    // combo=true — Home.jsx's Flash Sale/Combo banner links here to show ONLY
+    // combo/flash-sale products (never changes the default listing, which
+    // still shows every product including combos mixed in normally).
+    if (combo === 'true' || combo === '1') filter.isCombo = true;
     if (deliveryType === 'today')    filter.isSameDay = true;
     if (deliveryType === 'tomorrow') filter.isNextDay = true;
     if (search) {

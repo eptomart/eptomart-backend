@@ -20,6 +20,13 @@ router.get ('/products/:idOrSlug',     ctrl.getProductDetail);
 router.post('/check-delivery',         optionalAuth, ctrl.checkDelivery);
 
 // ══════════════════════════════════════════════
+// BUYER — cart (server-persisted so items appear in the common /cart page)
+// ══════════════════════════════════════════════
+router.get   ('/cart',        protect, ctrl.getCart);
+router.post  ('/cart',        protect, ctrl.updateCart);
+router.delete('/cart/clear',  protect, ctrl.clearCart);
+
+// ══════════════════════════════════════════════
 // BUYER — auth required
 // ══════════════════════════════════════════════
 router.post('/quote',                       protect, ctrl.getQuote);

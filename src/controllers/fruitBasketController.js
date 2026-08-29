@@ -18,6 +18,7 @@ const Razorpay   = require('razorpay');
 const FruitBasketProduct = require('../models/FruitBasketProduct');
 const FruitBasketOrder   = require('../models/FruitBasketOrder');
 const FruitBasketSettings = require('../models/FruitBasketSettings');
+const FruitBasketCart    = require('../models/FruitBasketCart');
 
 const getRazorpay = () => {
   if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return null;
@@ -133,10 +134,102 @@ const checkDelivery = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════
-// BUYER — Checkout (no persistent server cart; frontend sends the basket
-// selection directly at checkout time, similar in spirit to Koyambedu's
-// cart but intentionally simpler — this vertical doesn't need a saved
-// cross-session cart per the "separate, standalone checkout" requirement).
+// BUYER — Cart (persisted server-side so Fruit Basket items appear in the
+// common Eptomart /cart page, same pattern as KoyambeduCart). This is
+// purely additive: everything below the "Checkout" section — quote,
+// create-razorpay, verify-payment, pricing rules — is completely untouched
+// and keeps re-pricing from the live catalog exactly as before.
+// ══════════════════════════════════════════════
+
+/** GET /fruitbaskets/cart */
+const getCart = async (req, res) => {
+  try {
+    let cart = await FruitBasketCart.findOne({ user: req.user._id });
+    if (!cart) return res.json({ success: true, cart: { items: [] } });
+
+    // Refresh price/availability against the live catalog, same approach as
+    // KoyambeduCart.getCart — never let a stale snapshot silently overcharge
+    // or undercharge, and drop items that were deactivated after being added.
+    const ids = cart.items.map(it => it.product);
+    const products = await FruitBasketProduct.find({ _id: { $in: ids } }).lean();
+    const byId = new Map(products.map(p => [String(p._id), p]));
+
+    let changed = false;
+    const keptItems = [];
+    for (const it of cart.items) {
+      const p = byId.get(String(it.product));
+      if (!p || !p.isActive || !p.isAvailable) { changed = true; continue; }
+      if (it.price !== p.price || it.compareAtPrice !== (p.compareAtPrice ?? null) || it.name !== p.name) {
+        it.price = p.price; it.compareAtPrice = p.compareAtPrice ?? null; it.name = p.name;
+        it.image = p.images?.[0] || ''; changed = true;
+      }
+      keptItems.push(it);
+    }
+    if (changed) { cart.items = keptItems; await cart.save(); }
+
+    res.json({ success: true, cart: cart.toObject() });
+  } catch (err) {
+    console.error('[FruitBasket] getCart error:', err);
+    res.status(500).json({ success: false, message: 'Failed to load cart' });
+  }
+};
+
+/** POST /fruitbaskets/cart — body: { productId, quantity } (quantity <= 0 removes the line) */
+const updateCart = async (req, res) => {
+  try {
+    const { productId, quantity } = req.body;
+    if (!productId || String(productId) === 'null' || String(productId) === 'undefined') {
+      return res.status(400).json({ success: false, message: 'Invalid basket ID' });
+    }
+
+    let cart = await FruitBasketCart.findOne({ user: req.user._id });
+    if (!cart) cart = new FruitBasketCart({ user: req.user._id, items: [] });
+
+    const idx = cart.items.findIndex(i => String(i.product) === String(productId));
+    const qtyNum = Number(quantity);
+
+    if (qtyNum <= 0) {
+      if (idx > -1) cart.items.splice(idx, 1);
+    } else {
+      const product = await FruitBasketProduct.findOne({ _id: productId, isActive: true, isAvailable: true }).lean();
+      if (!product) return res.status(404).json({ success: false, message: 'Basket not found or unavailable' });
+      if (product.stock !== null && product.stock !== undefined && qtyNum > product.stock) {
+        return res.status(400).json({ success: false, message: `Only ${product.stock} of "${product.name}" left in stock.` });
+      }
+      const itemData = {
+        product: product._id, name: product.name, price: product.price,
+        compareAtPrice: product.compareAtPrice ?? null, image: product.images?.[0] || '',
+        occasion: product.occasion, weightKg: product.weightKg ?? null, quantity: qtyNum,
+      };
+      if (idx > -1) Object.assign(cart.items[idx], itemData);
+      else cart.items.push(itemData);
+    }
+
+    await cart.save();
+    res.json({ success: true, cart: cart.toObject() });
+  } catch (err) {
+    console.error('[FruitBasket] updateCart error:', err);
+    res.status(500).json({ success: false, message: 'Failed to update cart' });
+  }
+};
+
+/** DELETE /fruitbaskets/cart/clear */
+const clearCart = async (req, res) => {
+  try {
+    await FruitBasketCart.findOneAndUpdate({ user: req.user._id }, { items: [] }, { upsert: true });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[FruitBasket] clearCart error:', err);
+    res.status(500).json({ success: false, message: 'Failed to clear cart' });
+  }
+};
+
+// ══════════════════════════════════════════════
+// BUYER — Checkout (existing quote/create/verify flow — UNCHANGED below.
+// FruitBasketCheckout.jsx now sources its item list from the cart above
+// instead of sessionStorage, but sends the same { items, deliveryAddress,
+// deliveryDate, slotKey } shape into priceOrderRequest/getQuote/
+// createRazorpayOrder exactly as before).
 // ══════════════════════════════════════════════
 
 /**
@@ -592,6 +685,8 @@ const adminUpdateOrderStatus = async (req, res) => {
 module.exports = {
   // Public
   getPublicStatus, getProducts, getProductDetail, checkDelivery,
+  // Buyer — cart
+  getCart, updateCart, clearCart,
   // Buyer
   getQuote, createRazorpayOrder, verifyPayment, getMyOrders, getMyOrder, cancelMyOrder,
   // Super Admin — settings

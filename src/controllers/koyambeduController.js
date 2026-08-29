@@ -2548,6 +2548,69 @@ const adminUpdateOrderStatus = async (req, res) => {
   res.json({ success: true, order });
 };
 
+// Fixed delivery-slot labels — same 4 slots KoyambeduDeliverySchedule.js
+// defines (slot1..slot4). Used only to display a readable label alongside
+// deliverySlotKey when Super Admin reschedules an order; not a new source
+// of truth for slot capacity/validation, which remains untouched.
+const KBD_RESCHEDULE_SLOT_LABELS = {
+  slot1: '7 AM – 9 AM',
+  slot2: '9 AM – 12 PM',
+  slot3: '12 PM – 2 PM',
+  slot4: '2 PM – 4 PM',
+};
+
+/** PATCH /api/koyambedu/admin/orders/:orderId/reschedule
+ *  Super Admin only — change the delivery date and/or delivery slot of an
+ *  existing (already confirmed) order. Body: { deliveryDate: 'YYYY-MM-DD', deliverySlotKey }
+ */
+const adminRescheduleOrder = async (req, res) => {
+  try {
+    const { deliveryDate, deliverySlotKey } = req.body;
+    if (!deliveryDate || !deliverySlotKey) {
+      return res.status(400).json({ success: false, message: 'deliveryDate and deliverySlotKey are required' });
+    }
+    if (!KBD_RESCHEDULE_SLOT_LABELS[deliverySlotKey]) {
+      return res.status(400).json({ success: false, message: 'Invalid delivery slot' });
+    }
+
+    const order = await KoyambeduOrder.findById(req.params.orderId).populate('buyer', 'phone name');
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    const BLOCKED_STATUSES = ['delivered', 'cancelled', 'closed', 'refund_initiated'];
+    if (BLOCKED_STATUSES.includes(order.orderStatus)) {
+      return res.status(400).json({ success: false, message: `Cannot reschedule an order that is already ${order.orderStatus}` });
+    }
+
+    const oldDateStr = order.deliveryDate ? new Date(order.deliveryDate).toISOString().slice(0, 10) : null;
+    const oldSlot    = order.deliverySlot;
+
+    order.deliveryDate    = new Date(deliveryDate);
+    order.deliverySlotKey = deliverySlotKey;
+    order.deliverySlot    = KBD_RESCHEDULE_SLOT_LABELS[deliverySlotKey];
+
+    // Keep procurement/supplier grouping in sync with the new delivery date —
+    // this is the exact fix already applied for the cutoffCycle bug earlier;
+    // skipping this here would silently reintroduce it for rescheduled orders.
+    order.cutoffCycle     = String(deliveryDate).slice(0, 10);
+    order.procurementDate = new Date(deliveryDate);
+
+    order.timeline.push({
+      event: 'delivery_rescheduled',
+      description: `Delivery rescheduled by admin: ${oldDateStr || '—'} (${oldSlot || '—'}) → ${deliveryDate} (${order.deliverySlot})`,
+      actor: { role: 'admin', userId: req.user._id, name: req.user.name },
+    });
+
+    await order.save();
+
+    _notifyBuyerRescheduled(order, oldDateStr, oldSlot);
+
+    res.json({ success: true, order });
+  } catch (err) {
+    console.error('[Koyambedu] adminRescheduleOrder error:', err);
+    res.status(500).json({ success: false, message: 'Failed to reschedule order' });
+  }
+};
+
 /** PATCH /api/koyambedu/admin/orders/:orderId/items/:itemIndex/qty — edit item quantity */
 const adminEditOrderItemQty = async (req, res) => {
   const { newQty } = req.body;
@@ -3841,6 +3904,22 @@ const _notifyBuyer = async (order, event) => {
     waSend(buyer.phone, [buyer.name || 'Customer', order.orderId, status, detail]);
   } catch (err) {
     console.error('[KBD] Buyer notify error:', err.message);
+  }
+};
+
+const _notifyBuyerRescheduled = async (order, oldDateStr, oldSlot) => {
+  try {
+    // order.buyer is already populated (phone/name) by adminRescheduleOrder,
+    // but fall back to a lookup so this stays safe if called elsewhere.
+    const buyer = order.buyer?.phone ? order.buyer : await User.findById(order.buyer).select('phone name').lean();
+    if (!buyer?.phone) return;
+    const newDateStr = order.deliveryDate
+      ? new Date(order.deliveryDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
+      : '—';
+    const detail = `Your delivery has been rescheduled to ${newDateStr}, ${order.deliverySlot}.`;
+    waSend(buyer.phone, [buyer.name || 'Customer', order.orderId, 'Delivery Rescheduled 📅', detail]);
+  } catch (err) {
+    console.error('[KBD] Buyer reschedule notify error:', err.message);
   }
 };
 
@@ -7341,7 +7420,7 @@ module.exports = {
   toggleProductAvailability, deleteSellerProduct,
   getSellerOrders, confirmStock, requestPriceRevision, createSellerCategory,
   // Admin — sellers
-  adminDashboard, adminGetOrders, getOrdersForPrinting, markItemsPrinted, resetPackingProgress, adminGetOrderWalletHistory, adminUpdateOrderStatus, adminEditOrderItemQty, adminDeclineOrderItem,
+  adminDashboard, adminGetOrders, getOrdersForPrinting, markItemsPrinted, resetPackingProgress, adminGetOrderWalletHistory, adminUpdateOrderStatus, adminRescheduleOrder, adminEditOrderItemQty, adminDeclineOrderItem,
   // Settings / last update time
   getLastProductUpdateTime,
   // Procurement invoice

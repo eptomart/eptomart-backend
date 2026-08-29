@@ -232,6 +232,7 @@ router.post('/admin/hero-video/upload', protectSuperAdmin, uploadHeroVideo.singl
 router.get  ('/admin/alerts',                     protectAdmin,      ctrl.adminGetAlerts);
 router.patch('/admin/orders/:orderId/alerts/resolve', protectSuperAdmin, ctrl.adminResolveAlert);
 router.patch('/admin/orders/:orderId/status',                         protectAdmin, ctrl.adminUpdateOrderStatus);
+router.patch('/admin/orders/:orderId/reschedule',                     protectSuperAdmin, ctrl.adminRescheduleOrder);
 router.patch('/admin/orders/:orderId/delivered',                      protectAdmin, ctrl.adminMarkDelivered);
 router.patch('/admin/orders/:orderId/approve-review',                 protectSuperAdmin, ctrl.adminApproveOrderReview);
 router.patch('/admin/orders/:orderId/cancel',                         protectSuperAdmin, ctrl.adminCancelOrder);

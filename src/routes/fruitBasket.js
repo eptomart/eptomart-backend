@@ -53,6 +53,7 @@ router.post  ('/admin/products',              protectSuperAdmin, ctrl.adminCreat
 router.put   ('/admin/products/:productId',   protectSuperAdmin, ctrl.adminUpdateProduct);
 router.delete('/admin/products/:productId',   protectSuperAdmin, ctrl.adminDeleteProduct);
 router.post  ('/admin/upload-image',          protectSuperAdmin, uploadFruitBasket.single('image'), ctrl.uploadImage);
+router.post  ('/admin/generate-description',  protectSuperAdmin, ctrl.adminGenerateDescription);
 
 // ══════════════════════════════════════════════
 // SUPER ADMIN — orders

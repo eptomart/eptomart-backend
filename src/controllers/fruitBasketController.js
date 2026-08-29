@@ -19,6 +19,7 @@ const FruitBasketProduct = require('../models/FruitBasketProduct');
 const FruitBasketOrder   = require('../models/FruitBasketOrder');
 const FruitBasketSettings = require('../models/FruitBasketSettings');
 const FruitBasketCart    = require('../models/FruitBasketCart');
+const { callClaude }     = require('../utils/claudeApi');
 
 const getRazorpay = () => {
   if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return null;
@@ -572,6 +573,59 @@ const adminUpdateDeliveryCharges = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════
+// SUPER ADMIN — AI-assisted description
+// Reuses the same Claude helper (utils/claudeApi.js) already powering
+// aiController.js's seller product-description generator — no new SDK,
+// no new env var (ANTHROPIC_API_KEY is already configured).
+// ══════════════════════════════════════════════
+
+const FB_DESCRIPTION_SYSTEM = `You are an elegant copywriter for Eptomart's Fruit Baskets & Hampers — a premium, "royal" gifting vertical.
+Write a gift-worthy product description that:
+- Opens with an inviting one-sentence hook suited to gifting
+- Naturally weaves in what's inside and the occasion(s) it suits, if given
+- Uses warm, premium, refined language (never cheesy or over-the-top)
+- Stays between 45 and 80 words
+- Does NOT include price, delivery, or seller information
+- Uses plain flowing prose only — no markdown, no bullet points, no asterisks
+Output ONLY the description text, nothing else.`;
+
+/** POST /fruitbaskets/admin/generate-description
+ *  body: { name, shortNote, occasion, contents }
+ *  Admin gives a short note about the basket; Claude expands it into a
+ *  polished product description. Purely a text generator — does not touch
+ *  or save any product; the admin still clicks Save Basket separately. */
+const adminGenerateDescription = async (req, res) => {
+  try {
+    const { name, shortNote, occasion, contents } = req.body;
+    if (!name && !shortNote) {
+      return res.status(400).json({ success: false, message: 'Give a basket name or a short note to generate from' });
+    }
+
+    const contentsText = Array.isArray(contents) && contents.length
+      ? contents.map(c => `${c.item}${c.qty ? ` (${c.qty})` : ''}`).filter(Boolean).join(', ')
+      : '';
+
+    const userPrompt = [
+      name        ? `Basket name: ${name}` : null,
+      occasion && occasion !== 'general' ? `Occasion: ${occasion}` : null,
+      contentsText ? `What's inside: ${contentsText}` : null,
+      shortNote   ? `Admin's short note about this basket: ${shortNote}` : null,
+    ].filter(Boolean).join('\n');
+
+    const result = await callClaude({
+      system: FB_DESCRIPTION_SYSTEM,
+      messages: [{ role: 'user', content: userPrompt }],
+      max_tokens: 180,
+      temperature: 0.75,
+    });
+    res.json({ success: true, description: result.text.trim() });
+  } catch (err) {
+    console.error('[FruitBasket] adminGenerateDescription error:', err.message);
+    res.status(503).json({ success: false, message: 'Could not generate description right now. Try again.' });
+  }
+};
+
+// ══════════════════════════════════════════════
 // SUPER ADMIN — Basket catalog CRUD
 // ══════════════════════════════════════════════
 
@@ -693,6 +747,7 @@ module.exports = {
   adminGetSettings, adminToggleFeature, adminUpdateSameDayDelivery, adminUpdateDeliverySlots, adminUpdateDeliveryCharges,
   // Super Admin — catalog
   adminGetProducts, adminCreateProduct, adminUpdateProduct, adminDeleteProduct, uploadImage,
+  adminGenerateDescription,
   // Super Admin — orders
   adminGetOrders, adminUpdateOrderStatus,
 };

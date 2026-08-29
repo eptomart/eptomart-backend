@@ -3992,19 +3992,35 @@ const aiTranslate = async (req, res) => {
   res.json({ success: true, tamil });
 };
 
-/** POST /api/koyambedu/ai/describe  { name, nameTamil, category, unit } → { description } */
+/** POST /api/koyambedu/ai/describe  { name, nameTamil, category, unit, isCombo, comboContents } → { description } */
 const aiDescribe = async (req, res) => {
-  const { name, nameTamil, category, unit } = req.body;
+  const { name, nameTamil, category, unit, isCombo, comboContents } = req.body;
   if (!name?.trim()) return res.status(400).json({ success: false, message: 'name is required' });
 
-  const prompt = [
-    `Write a short, appealing product description (2–3 sentences) for a fresh produce listing on an ecommerce app.`,
-    `Product: ${name.trim()}`,
-    nameTamil ? `Tamil name: ${nameTamil}` : '',
-    category  ? `Category: ${category}`    : '',
-    unit      ? `Sold by: ${unit}`         : '',
-    `Focus on freshness, taste, and health benefits. Keep it simple and friendly for Indian shoppers. No emojis.`,
-  ].filter(Boolean).join('\n');
+  // Combo products: describe based on the ACTUAL items+quantities the seller
+  // admin picked (comboContents), not just the combo's name — so the AI
+  // description tells the buyer exactly what's in the pack instead of a
+  // generic "fresh produce" blurb.
+  const comboLines = (Array.isArray(comboContents) && comboContents.length > 0)
+    ? comboContents.map(c => `- ${c.name || c.item} (${c.qty}${c.unit || ''})`).join('\n')
+    : '';
+
+  const prompt = isCombo && comboLines
+    ? [
+        `Write a short, appealing description (2–3 sentences) for a combo/flash-sale pack on a fresh produce ecommerce app.`,
+        `Combo name: ${name.trim()}`,
+        `This combo contains exactly these items:`,
+        comboLines,
+        `Mention the mix of items naturally (don't just list them mechanically) and highlight the value/convenience of buying them together. Focus on freshness and everyday cooking use. Keep it simple and friendly for Indian shoppers. No emojis.`,
+      ].filter(Boolean).join('\n')
+    : [
+        `Write a short, appealing product description (2–3 sentences) for a fresh produce listing on an ecommerce app.`,
+        `Product: ${name.trim()}`,
+        nameTamil ? `Tamil name: ${nameTamil}` : '',
+        category  ? `Category: ${category}`    : '',
+        unit      ? `Sold by: ${unit}`         : '',
+        `Focus on freshness, taste, and health benefits. Keep it simple and friendly for Indian shoppers. No emojis.`,
+      ].filter(Boolean).join('\n');
 
   const description = await callClaude(
     prompt,

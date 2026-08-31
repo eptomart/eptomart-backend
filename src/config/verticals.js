@@ -111,6 +111,30 @@ const VERTICALS = {
       packingFee:  0,
     },
   },
+  fruitbasket: {
+    key:        'fruitbasket',
+    name:       'Fruit Baskets & Hampers',
+    shortName:  'Fruit Baskets',
+    emoji:      '🧺',
+    color:      '#7c3aed',
+    logo:       '/categories/fruitbaskets.jpg',
+    orderModel: 'FruitBasketOrder',
+    idPrefix:   'FB',
+    features: {
+      supportsPartialDecline: false,
+      supportsSlots:          true,
+      supportsWallet:         false,
+      deliveryProvider:       'internal',
+      invoiceStages:          ['proforma', 'confirmation', 'tax'],
+      trackingUrlField:       null,
+    },
+    fees: {
+      gstMode:     'flat_rate',
+      gstRate:     0,
+      platformFee: 0,
+      packingFee:  0,
+    },
+  },
 };
 
 /** Ordered list for tabs (All Orders tab is added by the frontend). */

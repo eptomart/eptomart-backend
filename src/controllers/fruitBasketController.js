@@ -19,6 +19,7 @@ const FruitBasketProduct = require('../models/FruitBasketProduct');
 const FruitBasketOrder   = require('../models/FruitBasketOrder');
 const FruitBasketSettings = require('../models/FruitBasketSettings');
 const FruitBasketCart    = require('../models/FruitBasketCart');
+const EptoFreshCoupon    = require('../models/EptoFreshCoupon');
 const { callClaude }     = require('../utils/claudeApi');
 
 const getRazorpay = () => {
@@ -37,6 +38,33 @@ const haversineKm = (lat1, lon1, lat2, lon2) => {
 };
 
 const genOrderId = () => 'FB-' + crypto.randomBytes(4).toString('hex').toUpperCase();
+
+/**
+ * Validate + price a coupon against a subtotal — same universal-coupon model
+ * (EptoFreshCoupon) and rules /api/coupon/validate uses, applied inline here
+ * so priceOrderRequest below can fold the discount into the total it returns.
+ * Never throws — an invalid/expired code is silently ignored (0 discount)
+ * so a stale code left over from a previous session can't block checkout.
+ */
+const applyCoupon = async (couponCode, subtotal) => {
+  if (!couponCode) return { couponDiscount: 0, appliedCode: null };
+  const coupon = await EptoFreshCoupon.findOne({
+    code: String(couponCode).toUpperCase().trim(),
+    isActive: true,
+    requestStatus: { $in: ['admin_created', 'approved'] },
+    validFrom: { $lte: new Date() },
+    validTo:   { $gte: new Date() },
+  });
+  const platformOk = !coupon || !coupon.platformRestriction || ['all', 'fruitbasket'].includes(coupon.platformRestriction);
+  if (!coupon || !platformOk || coupon.usedCount >= coupon.maxUsage || subtotal < coupon.minOrderValue) {
+    return { couponDiscount: 0, appliedCode: null };
+  }
+  let discount = coupon.discountType === 'flat'
+    ? Math.min(coupon.discountValue, subtotal)
+    : (subtotal * coupon.discountValue) / 100;
+  if (coupon.discountType === 'percent' && coupon.maxDiscount) discount = Math.min(discount, coupon.maxDiscount);
+  return { couponDiscount: parseFloat(discount.toFixed(2)), appliedCode: coupon.code };
+};
 
 // IST "now" helper — same trick used throughout Koyambedu (avoids a timezone
 // library): shift UTC-now by +5:30 and read UTC getters back off the result.
@@ -243,7 +271,7 @@ const clearCart = async (req, res) => {
  * real checkout, so the numbers the customer sees are always exactly what
  * they get charged (same pattern as Koyambedu's priceAmendmentRequest).
  */
-const priceOrderRequest = async (requestedItems, deliveryAddress, deliveryDateISO, slotKey) => {
+const priceOrderRequest = async (requestedItems, deliveryAddress, deliveryDateISO, slotKey, couponCode) => {
   if (!Array.isArray(requestedItems) || requestedItems.length === 0) {
     const err = new Error('Your basket is empty.'); err.statusCode = 400; throw err;
   }
@@ -329,8 +357,14 @@ const priceOrderRequest = async (requestedItems, deliveryAddress, deliveryDateIS
     deliveryChargePending = true;
   }
 
-  const total = subtotal + charge;
-  return { items, subtotal, distanceKm, deliveryCharge: charge, deliveryChargePending, total, slot };
+  // ── Coupon (optional) — same universal coupon model as other verticals ──
+  const { couponDiscount, appliedCode } = await applyCoupon(couponCode, subtotal);
+
+  const total = Math.max(0, subtotal + charge - couponDiscount);
+  return {
+    items, subtotal, distanceKm, deliveryCharge: charge, deliveryChargePending,
+    couponCode: appliedCode, couponDiscount, total, slot,
+  };
 };
 
 /**
@@ -340,8 +374,8 @@ const priceOrderRequest = async (requestedItems, deliveryAddress, deliveryDateIS
  */
 const getQuote = async (req, res) => {
   try {
-    const { items, deliveryAddress, deliveryDate, slotKey } = req.body;
-    const priced = await priceOrderRequest(items, deliveryAddress, deliveryDate, slotKey);
+    const { items, deliveryAddress, deliveryDate, slotKey, couponCode } = req.body;
+    const priced = await priceOrderRequest(items, deliveryAddress, deliveryDate, slotKey, couponCode);
     res.json({ success: true, ...priced });
   } catch (err) {
     if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
@@ -359,8 +393,8 @@ const getQuote = async (req, res) => {
  */
 const createRazorpayOrder = async (req, res) => {
   try {
-    const { items, deliveryAddress, deliveryDate, slotKey, notes } = req.body;
-    const priced = await priceOrderRequest(items, deliveryAddress, deliveryDate, slotKey);
+    const { items, deliveryAddress, deliveryDate, slotKey, notes, couponCode } = req.body;
+    const priced = await priceOrderRequest(items, deliveryAddress, deliveryDate, slotKey, couponCode);
 
     const isDemo = !!req.user.isDemoAccount;
     const razorpay = isDemo ? null : getRazorpay();
@@ -393,6 +427,7 @@ const createRazorpayOrder = async (req, res) => {
       pricing: {
         subtotal: priced.subtotal, distanceKm: priced.distanceKm,
         deliveryCharge: priced.deliveryCharge, deliveryChargePending: priced.deliveryChargePending || false,
+        couponCode: priced.couponCode || null, couponDiscount: priced.couponDiscount || 0,
         total: priced.total,
       },
       razorpayOrderId: rzpOrder.id,
@@ -447,6 +482,10 @@ const verifyPayment = async (req, res) => {
     order.orderStatus         = 'confirmed';
     order.timeline.push({ status: 'confirmed', note: 'Payment received' });
     await order.save();
+
+    if (order.pricing?.couponCode) {
+      EptoFreshCoupon.updateOne({ code: order.pricing.couponCode }, { $inc: { usedCount: 1 } }).catch(() => {});
+    }
 
     res.json({ success: true, message: 'Payment confirmed', orderId: order.orderId, id: order._id });
   } catch (err) {

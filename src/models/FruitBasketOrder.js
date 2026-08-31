@@ -61,6 +61,8 @@ const fruitBasketOrderSchema = new mongoose.Schema({
     // denied/unavailable) — deliveryCharge above is 0 until an admin
     // verifies the address and confirms/adjusts the real charge.
     deliveryChargePending: { type: Boolean, default: false },
+    couponCode:      { type: String, default: null },
+    couponDiscount:  { type: Number, default: 0 },
     total:           { type: Number, required: true },
   },
 

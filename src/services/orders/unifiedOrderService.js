@@ -15,6 +15,7 @@ const ADAPTERS = {
   koyambedu: require('./adapters/koyambeduAdapter'),
   eptofresh: require('./adapters/eptofreshAdapter'),
   uzhavar:   require('./adapters/uzhavarAdapter'),
+  fruitbasket: require('./adapters/fruitBasketAdapter'),
 };
 
 function getAdapter(verticalKey) {

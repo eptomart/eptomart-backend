@@ -30,7 +30,7 @@ const eptoFreshCouponSchema = new Schema({
   // Which sub-app this coupon applies to ('all' = all platforms)
   platformRestriction: {
     type: String,
-    enum: ['all', 'main', 'koyambedu', 'uzhavar', 'eptofresh'],
+    enum: ['all', 'main', 'koyambedu', 'uzhavar', 'eptofresh', 'fruitbasket'],
     default: 'all',
   },
   // Optional: restrict to one specific seller within the platform

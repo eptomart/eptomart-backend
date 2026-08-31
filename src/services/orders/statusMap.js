@@ -107,6 +107,15 @@ const MAPS = {
     cancelled:       'cancelled',
     auto_cancelled:  'cancelled',
   },
+
+  fruitbasket: {
+    placed:            'placed',
+    confirmed:         'confirmed',
+    preparing:         'packing',
+    out_for_delivery:  'out_for_delivery',
+    delivered:         'delivered',
+    cancelled:         'cancelled',
+  },
 };
 
 // Native-status label overrides (where canonical label is misleading)

@@ -20,6 +20,9 @@ const EptoFreshProduct = require('../../models/EptoFreshProduct');
 const Order            = require('../../models/Order');
 const Product          = require('../../models/Product');
 const UzhavarOrder     = require('../../models/UzhavarOrder');
+const FruitBasketOrder   = require('../../models/FruitBasketOrder');
+const FruitBasketCart    = require('../../models/FruitBasketCart');
+const FruitBasketProduct = require('../../models/FruitBasketProduct');
 
 /** Original items of an order (immutable snapshot preferred). */
 function sourceItems(order) {
@@ -179,11 +182,51 @@ async function reorderUzhavar(userId, orderId) {
   };
 }
 
+// ── Fruit Baskets & Hampers: merge into server cart at TODAY's price ──
+async function reorderFruitBasket(userId, orderId) {
+  const order = await FruitBasketOrder.findOne({ _id: orderId, buyer: userId }).lean();
+  if (!order) { const e = new Error('Order not found'); e.status = 404; throw e; }
+
+  let cart = await FruitBasketCart.findOne({ user: userId });
+  if (!cart) cart = new FruitBasketCart({ user: userId, items: [] });
+  cart.items = [];
+
+  let added = 0;
+  const skipped = [];
+
+  for (const it of order.items || []) {
+    const qty = Number(it.quantity || 0);
+    if (!it.product || qty <= 0) continue;
+
+    const product = await FruitBasketProduct.findOne({ _id: it.product, isAvailable: { $ne: false } }).lean();
+    if (!product || (product.stock != null && product.stock <= 0)) {
+      skipped.push(it.name || 'Unknown item');
+      continue;
+    }
+
+    cart.items.push({
+      product:        product._id,
+      name:           product.name,
+      price:          product.price,
+      compareAtPrice: product.compareAtPrice,
+      image:          product.images?.[0] || it.image || '',
+      occasion:       product.occasion,
+      weightKg:       product.weightKg,
+      quantity:       qty,
+    });
+    added++;
+  }
+
+  await cart.save();
+  return { mode: 'server', added, skipped, cartPath: '/fruitbaskets/shop' };
+}
+
 const HANDLERS = {
-  koyambedu: reorderKoyambedu,
-  eptofresh: reorderEptoFresh,
-  eptomart:  reorderEptomart,
-  uzhavar:   reorderUzhavar,
+  koyambedu:   reorderKoyambedu,
+  eptofresh:   reorderEptoFresh,
+  eptomart:    reorderEptomart,
+  uzhavar:     reorderUzhavar,
+  fruitbasket: reorderFruitBasket,
 };
 
 async function reorder(userId, verticalKey, orderId) {

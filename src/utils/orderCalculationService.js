@@ -228,6 +228,17 @@ function buildPaymentSummary(verticalKey, order) {
       break;
     }
 
+    case 'fruitbasket': {
+      const p = order.pricing || {};
+      s.originalOrderValue = round(p.subtotal);
+      s.deliveryCharge     = round(p.deliveryCharge);
+      s.couponDiscount     = round(p.couponDiscount);
+      s.finalPaidAmount    = round(p.total);
+      if (p.deliveryChargePending) s.notes.push('Delivery charge pending confirmation for this address.');
+      if (order.orderStatus === 'cancelled') s.refundAmount = round(p.total);
+      break;
+    }
+
     default:
       break;
   }

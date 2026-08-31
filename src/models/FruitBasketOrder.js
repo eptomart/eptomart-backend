@@ -38,8 +38,11 @@ const fruitBasketOrderSchema = new mongoose.Schema({
     city:        { type: String, default: '' },
     pincode:     { type: String, default: '' },
     label:       { type: String, default: '' }, // e.g. "Home", "Office"
-    lat:         { type: Number, required: true },
-    lng:         { type: Number, required: true },
+    // Not required — geolocation can fail/be denied, in which case the order
+    // still goes through using the pincode above and pricing.deliveryChargePending
+    // below flags it for manual delivery-charge confirmation.
+    lat:         { type: Number, default: null },
+    lng:         { type: Number, default: null },
   },
 
   deliveryDate: { type: Date, required: true },
@@ -54,6 +57,10 @@ const fruitBasketOrderSchema = new mongoose.Schema({
     subtotal:       { type: Number, required: true },
     distanceKm:      { type: Number, default: null },
     deliveryCharge:  { type: Number, required: true },
+    // true when the order was placed without live coordinates (geolocation
+    // denied/unavailable) — deliveryCharge above is 0 until an admin
+    // verifies the address and confirms/adjusts the real charge.
+    deliveryChargePending: { type: Boolean, default: false },
     total:           { type: Number, required: true },
   },
 

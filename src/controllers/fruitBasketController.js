@@ -79,7 +79,12 @@ const getProducts = async (req, res) => {
   try {
     const { occasion } = req.query;
     const filter = { isActive: true };
-    if (occasion) filter.occasion = occasion;
+    // 'general' is the admin-facing "All Occasions" option — a basket tagged
+    // general should surface under EVERY specific occasion tab (birthday,
+    // anniversary, etc.), not only when no occasion filter is applied. The
+    // "All Occasions" tab itself sends no occasion param at all, so it's
+    // unaffected by this and still shows everything.
+    if (occasion) filter.occasion = { $in: [occasion, 'general'] };
     const products = await FruitBasketProduct.find(filter)
       .sort({ displayOrder: 1, createdAt: -1 })
       .lean();
@@ -242,8 +247,14 @@ const priceOrderRequest = async (requestedItems, deliveryAddress, deliveryDateIS
   if (!Array.isArray(requestedItems) || requestedItems.length === 0) {
     const err = new Error('Your basket is empty.'); err.statusCode = 400; throw err;
   }
-  if (!deliveryAddress || deliveryAddress.lat === undefined || deliveryAddress.lng === undefined) {
-    const err = new Error('Delivery address with location is required.'); err.statusCode = 400; throw err;
+  // Precise coordinates (from the browser's geolocation) give the most
+  // accurate distance-based delivery charge, but geolocation can fail or be
+  // denied — in that case we still accept the order using the pincode the
+  // customer typed, and flag the delivery charge as pending manual
+  // confirmation below instead of hard-blocking checkout entirely.
+  const hasCoords = !!deliveryAddress && deliveryAddress.lat !== undefined && deliveryAddress.lng !== undefined;
+  if (!deliveryAddress || (!hasCoords && !String(deliveryAddress.pincode || '').trim())) {
+    const err = new Error('Delivery address with location or pincode is required.'); err.statusCode = 400; throw err;
   }
 
   const settingsDoc = await FruitBasketSettings.getGlobal();
@@ -295,18 +306,31 @@ const priceOrderRequest = async (requestedItems, deliveryAddress, deliveryDateIS
   }
 
   // ── Delivery charge ──
-  const origin = settingsDoc.delivery || {};
-  const distanceKm = haversineKm(
-    Number(deliveryAddress.lat), Number(deliveryAddress.lng),
-    origin.originLat ?? 13.0748, origin.originLng ?? 80.2136
-  );
-  const { available, charge } = await FruitBasketSettings.computeDeliveryCharge(distanceKm);
-  if (!available) {
-    const err = new Error('Sorry, this address is outside our fruit basket delivery zone.'); err.statusCode = 400; throw err;
+  // Only computable when we have real coordinates. Without them, accept the
+  // order with delivery charge marked pending (₹0 charged now) rather than
+  // blocking checkout — an admin confirms/adjusts it once the address is
+  // verified. This is what already-shown-to-the-customer copy ("you can
+  // still place the order, delivery charge will be confirmed by our team")
+  // was always meant to do.
+  let distanceKm = null, charge = 0, deliveryChargePending = false;
+  if (hasCoords) {
+    const origin = settingsDoc.delivery || {};
+    const rawDistanceKm = haversineKm(
+      Number(deliveryAddress.lat), Number(deliveryAddress.lng),
+      origin.originLat ?? 13.0748, origin.originLng ?? 80.2136
+    );
+    const result = await FruitBasketSettings.computeDeliveryCharge(rawDistanceKm);
+    if (!result.available) {
+      const err = new Error('Sorry, this address is outside our fruit basket delivery zone.'); err.statusCode = 400; throw err;
+    }
+    distanceKm = Math.round(rawDistanceKm * 10) / 10;
+    charge = result.charge;
+  } else {
+    deliveryChargePending = true;
   }
 
   const total = subtotal + charge;
-  return { items, subtotal, distanceKm: Math.round(distanceKm * 10) / 10, deliveryCharge: charge, total, slot };
+  return { items, subtotal, distanceKm, deliveryCharge: charge, deliveryChargePending, total, slot };
 };
 
 /**
@@ -368,7 +392,8 @@ const createRazorpayOrder = async (req, res) => {
       deliverySlot: { key: priced.slot.key, label: priced.slot.label, startTime: priced.slot.startTime, endTime: priced.slot.endTime },
       pricing: {
         subtotal: priced.subtotal, distanceKm: priced.distanceKm,
-        deliveryCharge: priced.deliveryCharge, total: priced.total,
+        deliveryCharge: priced.deliveryCharge, deliveryChargePending: priced.deliveryChargePending || false,
+        total: priced.total,
       },
       razorpayOrderId: rzpOrder.id,
       isDemoOrder: isDemo,

@@ -191,8 +191,17 @@ const verifyOtp = async (req, res) => {
         message: 'Your account has been deactivated. Please contact the SuperAdmin at support@eptomart.com to restore access.',
       });
     }
-    if (!user.isVerified) { user.isVerified = true; await user.save(); }
-    if (isDemoContact && !user.isDemoAccount) { user.isDemoAccount = true; await user.save(); }
+    // Defensive: some accounts were seeded with a role value ('customer')
+    // that predates the current User.role enum (user/seller/admin/superAdmin).
+    // user.save() below validates the WHOLE document, so a stale bad value
+    // here throws "not a valid enum value" and blocks login entirely for
+    // that account — normalize it instead of letting login fail.
+    let needsSave = false;
+    const validRoles = User.schema.path('role').enumValues;
+    if (!validRoles.includes(user.role)) { user.role = 'user'; needsSave = true; }
+    if (!user.isVerified) { user.isVerified = true; needsSave = true; }
+    if (isDemoContact && !user.isDemoAccount) { user.isDemoAccount = true; needsSave = true; }
+    if (needsSave) await user.save();
   }
 
   // Record login history
@@ -402,11 +411,6 @@ const verifyFirebasePhone = async (req, res) => {
     });
     isNewUser = true;
   } else {
-    // If existing user found but phone field not set, link the phone to their account
-    if (!user.phone) {
-      user.phone = phone;
-      await user.save();
-    }
     // Block deactivated accounts
     if (user.isActive === false) {
       return res.status(403).json({
@@ -415,14 +419,18 @@ const verifyFirebasePhone = async (req, res) => {
         message: 'Your account has been deactivated. Please contact the SuperAdmin at support@eptomart.com to restore access.',
       });
     }
-    if (!user.isVerified) {
-      user.isVerified = true;
-      await user.save();
-    }
-    if (isDemoPhone && !user.isDemoAccount) {
-      user.isDemoAccount = true;
-      await user.save();
-    }
+    // Defensive: some accounts were seeded with a role value ('customer')
+    // that predates the current User.role enum (user/seller/admin/superAdmin).
+    // user.save() below validates the WHOLE document, so a stale bad value
+    // here throws "not a valid enum value" and blocks login entirely for
+    // that account — normalize it instead of letting login fail.
+    let needsSave = false;
+    const validRoles = User.schema.path('role').enumValues;
+    if (!validRoles.includes(user.role)) { user.role = 'user'; needsSave = true; }
+    if (!user.phone) { user.phone = phone; needsSave = true; }
+    if (!user.isVerified) { user.isVerified = true; needsSave = true; }
+    if (isDemoPhone && !user.isDemoAccount) { user.isDemoAccount = true; needsSave = true; }
+    if (needsSave) await user.save();
   }
 
   // Record login

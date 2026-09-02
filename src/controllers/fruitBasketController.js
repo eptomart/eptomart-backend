@@ -20,6 +20,7 @@ const FruitBasketOrder   = require('../models/FruitBasketOrder');
 const FruitBasketSettings = require('../models/FruitBasketSettings');
 const FruitBasketCart    = require('../models/FruitBasketCart');
 const EptoFreshCoupon    = require('../models/EptoFreshCoupon');
+const Analytics          = require('../models/Analytics');
 const { callClaude }     = require('../utils/claudeApi');
 
 const getRazorpay = () => {
@@ -800,6 +801,138 @@ const adminUpdateOrderStatus = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════
+// SUPER ADMIN — Dashboard
+// GET /fruitbaskets/admin/dashboard
+// Mirrors koyambeduController.adminDashboard's shape/pattern, adapted for
+// this vertical's single-seller schema (no sellers/categories/price
+// revisions), plus visitor + cart-with-items counts the way the user
+// asked for — "see the dashboard same like Koyambedu Daily and users who
+// visited [...] and users who have added baskets to their cart".
+// ══════════════════════════════════════════════
+const adminDashboard = async (req, res) => {
+  try {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+
+    const [
+      todayOrders, pendingOrders, deliveredToday, revenue,
+      activeBaskets, cartsWithItems,
+      totalVisits, uniqueVisitorSessions, loggedInVisitors,
+    ] = await Promise.all([
+      FruitBasketOrder.countDocuments({ createdAt: { $gte: today }, paymentStatus: 'paid' }),
+      FruitBasketOrder.countDocuments({ orderStatus: { $in: ['confirmed', 'preparing', 'out_for_delivery'] } }),
+      FruitBasketOrder.countDocuments({ orderStatus: 'delivered', updatedAt: { $gte: today } }),
+      FruitBasketOrder.aggregate([
+        { $match: { paymentStatus: 'paid', createdAt: { $gte: today }, isDemoOrder: { $ne: true } } },
+        { $group: { _id: null, total: { $sum: '$pricing.total' } } },
+      ]),
+      FruitBasketProduct.countDocuments({ isActive: true }),
+      FruitBasketCart.countDocuments({ 'items.0': { $exists: true } }),
+      // Visitor stats — reuses the site-wide Analytics collection (same one
+      // powering the existing Visitors/Analytics admin pages), scoped to
+      // this vertical's API paths (page = req.path, e.g. '/fruitbaskets/status').
+      Analytics.countDocuments({ page: { $regex: '^/fruitbaskets', $options: 'i' }, isBot: { $ne: true } }),
+      Analytics.distinct('sessionId', { page: { $regex: '^/fruitbaskets', $options: 'i' }, isBot: { $ne: true } }),
+      Analytics.distinct('userId', { page: { $regex: '^/fruitbaskets', $options: 'i' }, isBot: { $ne: true }, userId: { $ne: null } }),
+    ]);
+
+    res.json({ success: true, stats: {
+      todayOrders, pendingOrders, deliveredToday,
+      todayRevenue: revenue[0]?.total || 0,
+      activeBaskets, cartsWithItems,
+      totalVisits, uniqueVisitors: uniqueVisitorSessions.length, loggedInVisitors: loggedInVisitors.length,
+    }});
+  } catch (err) {
+    console.error('[FruitBasket] adminDashboard error:', err);
+    res.status(500).json({ success: false, message: 'Failed to load dashboard' });
+  }
+};
+
+/**
+ * GET /fruitbaskets/admin/visitors
+ * Recent visits to Fruit Basket pages, pulled from the shared Analytics
+ * collection (same data the site-wide Visitors admin page reads), filtered
+ * to this vertical's paths. Read-only — does not add any new tracking.
+ */
+const adminGetVisitors = async (req, res) => {
+  try {
+    const { limit = 50 } = req.query;
+    const visits = await Analytics.find({ page: { $regex: '^/fruitbaskets', $options: 'i' }, isBot: { $ne: true } })
+      .populate('userId', 'name phone email')
+      .sort({ timestamp: -1 })
+      .limit(Math.min(200, Number(limit) || 50))
+      .lean();
+
+    res.json({ success: true, visits: visits.map(v => ({
+      _id: v._id,
+      page: v.page,
+      device: v.device || null,
+      browser: v.browser || null,
+      city: v.city || null,
+      country: v.country || null,
+      user: v.userId ? { name: v.userId.name, phone: v.userId.phone, email: v.userId.email } : null,
+      timestamp: v.timestamp,
+    })) });
+  } catch (err) {
+    console.error('[FruitBasket] adminGetVisitors error:', err);
+    res.status(500).json({ success: false, message: 'Failed to load visitors' });
+  }
+};
+
+/**
+ * GET /fruitbaskets/admin/carts
+ * Customers who currently have baskets sitting in their cart (order not
+ * placed yet) — same pattern as koyambeduController.adminGetUserCarts.
+ */
+const adminGetUserCarts = async (req, res) => {
+  try {
+    const { search } = req.query;
+
+    const carts = await FruitBasketCart.find({ 'items.0': { $exists: true } })
+      .populate('user', 'name email phone')
+      .populate('items.product', 'name occasion')
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    let result = carts
+      .filter(c => c.user) // skip carts whose user was deleted
+      .map(c => {
+        const items = (c.items || []).filter(it => (it.quantity || 0) > 0);
+        const cartValue = items.reduce((s, it) => s + (it.price || 0) * (it.quantity || 0), 0);
+        return {
+          _id:          c._id,
+          customerName: c.user?.name || 'Unknown',
+          phone:        c.user?.phone || '—',
+          email:        c.user?.email || '—',
+          itemCount:    items.length,
+          cartValue:    Math.round(cartValue * 100) / 100,
+          updatedAt:    c.updatedAt,
+          items: items.map(it => ({
+            name:     it.product?.name || it.name,
+            occasion: it.product?.occasion || it.occasion,
+            quantity: it.quantity,
+            price:    it.price,
+          })),
+        };
+      })
+      .filter(c => c.itemCount > 0);
+
+    if (search) {
+      const q = String(search).toLowerCase();
+      result = result.filter(c =>
+        c.customerName.toLowerCase().includes(q) ||
+        c.phone.toLowerCase().includes(q) ||
+        c.email.toLowerCase().includes(q)
+      );
+    }
+
+    res.json({ success: true, carts: result, count: result.length });
+  } catch (err) {
+    console.error('[FruitBasket] adminGetUserCarts error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch user carts' });
+  }
+};
+
 module.exports = {
   // Public
   getPublicStatus, getProducts, getProductDetail, checkDelivery,
@@ -814,4 +947,6 @@ module.exports = {
   adminGenerateDescription,
   // Super Admin — orders
   adminGetOrders, adminUpdateOrderStatus,
+  // Super Admin — dashboard / visitors / carts
+  adminDashboard, adminGetVisitors, adminGetUserCarts,
 };

@@ -61,4 +61,11 @@ router.post  ('/admin/generate-description',  protectSuperAdmin, ctrl.adminGener
 router.get  ('/admin/orders',                 protectSuperAdmin, ctrl.adminGetOrders);
 router.patch('/admin/orders/:orderId/status', protectSuperAdmin, ctrl.adminUpdateOrderStatus);
 
+// ══════════════════════════════════════════════
+// SUPER ADMIN — dashboard / visitors / carts
+// ══════════════════════════════════════════════
+router.get('/admin/dashboard', protectSuperAdmin, ctrl.adminDashboard);
+router.get('/admin/visitors',  protectSuperAdmin, ctrl.adminGetVisitors);
+router.get('/admin/carts',     protectSuperAdmin, ctrl.adminGetUserCarts);
+
 module.exports = router;

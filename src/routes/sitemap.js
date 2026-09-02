@@ -18,6 +18,7 @@ const Category          = require('../models/Category');
 const KoyambeduProduct  = require('../models/KoyambeduProduct');
 const KoyambeduCategory = require('../models/KoyambeduCategory');
 const EptoFreshSeller   = require('../models/EptoFreshSeller');
+const FruitBasketProduct = require('../models/FruitBasketProduct');
 
 const BASE = 'https://www.eptomart.com';
 
@@ -55,6 +56,7 @@ router.get('/sitemap.xml', (req, res) => {
     `${BASE}/sitemap/koyambedu.xml`,
     `${BASE}/sitemap/eptofresh.xml`,
     `${BASE}/sitemap/uzhavar.xml`,
+    `${BASE}/sitemap/fruitbaskets.xml`,
   ]));
 });
 
@@ -191,6 +193,31 @@ router.get('/sitemap/uzhavar.xml', async (req, res) => {
   }
 });
 
+// ── Fruit Baskets & Hampers Sitemap ─────────────────────────────────────────
+router.get('/sitemap/fruitbaskets.xml', async (req, res) => {
+  try {
+    const products = await FruitBasketProduct.find({ isActive: true, isAvailable: true })
+      .select('slug _id updatedAt').sort({ updatedAt: -1 }).limit(500).lean();
+
+    const staticPages = [
+      urlEntry(`${BASE}/fruitbaskets`, { priority: '0.9', freq: 'daily' }),
+    ];
+
+    const productUrls = products.map(p =>
+      urlEntry(`${BASE}/fruitbaskets/product/${p.slug || p._id}`, { priority: '0.7', freq: 'weekly', lastmod: p.updatedAt })
+    );
+
+    xmlHeader(res);
+    res.send(wrapUrlset([...staticPages, ...productUrls]));
+  } catch (err) {
+    console.error('[sitemap/fruitbaskets]', err);
+    xmlHeader(res);
+    res.send(wrapUrlset([
+      urlEntry(`${BASE}/fruitbaskets`, { priority: '0.9', freq: 'daily' }),
+    ]));
+  }
+});
+
 // ── robots.txt ───────────────────────────────────────────────────────────────
 router.get('/robots.txt', (req, res) => {
   res.header('Content-Type', 'text/plain');
@@ -203,6 +230,8 @@ Allow: /eptofresh
 Allow: /eptofresh/shop/
 Allow: /uzhavar
 Allow: /uzhavar/farmer/
+Allow: /fruitbaskets
+Allow: /fruitbaskets/product/
 Allow: /shop
 Allow: /categories
 Allow: /product/
@@ -226,6 +255,8 @@ Disallow: /koyambedu/seller
 Disallow: /koyambedu/seller-admin
 Disallow: /eptofresh/seller
 Disallow: /uzhavar/my-orders
+Disallow: /fruitbaskets/checkout
+Disallow: /fruitbaskets/my-orders
 Disallow: /api/
 Disallow: /login
 Disallow: /delete-account
@@ -237,7 +268,8 @@ Sitemap: ${BASE}/sitemap.xml
 Sitemap: ${BASE}/sitemap/main.xml
 Sitemap: ${BASE}/sitemap/koyambedu.xml
 Sitemap: ${BASE}/sitemap/eptofresh.xml
-Sitemap: ${BASE}/sitemap/uzhavar.xml`);
+Sitemap: ${BASE}/sitemap/uzhavar.xml
+Sitemap: ${BASE}/sitemap/fruitbaskets.xml`);
 });
 
 module.exports = router;

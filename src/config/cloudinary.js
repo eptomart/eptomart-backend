@@ -184,4 +184,40 @@ const uploadFruitBasket = multer({
   },
 });
 
-module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, uploadBill, uploadKoyambedu, uploadKoyambeduBill, uploadHeroVideo, uploadFruitBasket, deleteImage };
+// Koyambedu Bulk Harvest — listing photos, up to 5 per listing (Koyambedu admin uploads)
+const bulkHarvestStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'eptomart/koyambedu-bulk-harvest',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+    transformation: [{ width: 1000, height: 1000, crop: 'limit', quality: 'auto' }],
+  },
+});
+const uploadBulkHarvest = multer({
+  storage: bulkHarvestStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Only image files are allowed'), false);
+  },
+});
+
+// Koyambedu News — one photo per post (Koyambedu admin uploads)
+const koyambeduNewsStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'eptomart/koyambedu-news',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+    transformation: [{ width: 1000, height: 1000, crop: 'limit', quality: 'auto' }],
+  },
+});
+const uploadKoyambeduNews = multer({
+  storage: koyambeduNewsStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Only image files are allowed'), false);
+  },
+});
+
+module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, uploadBill, uploadKoyambedu, uploadKoyambeduBill, uploadHeroVideo, uploadFruitBasket, uploadBulkHarvest, uploadKoyambeduNews, deleteImage };

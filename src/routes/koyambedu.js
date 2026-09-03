@@ -18,6 +18,12 @@ const koyambeduInventoryRoutes = require('./koyambeduInventory');
 // mounted the same way as koyambeduInventory above; combo PRODUCTS still go
 // through the normal Koyambedu product routes further below (isCombo flag).
 const koyambeduComboRoutes = require('./koyambeduCombo');
+// Home tabs on/off switch, Bulk Harvest ad board, and News — self-contained
+// routers, same pattern as koyambeduCombo above. None of these touch the
+// existing Koyambedu Daily shop/cart/checkout routes below in any way.
+const koyambeduHomeTabsRoutes    = require('./koyambeduHomeTabs');
+const koyambeduBulkHarvestRoutes = require('./koyambeduBulkHarvest');
+const koyambeduNewsRoutes        = require('./koyambeduNews');
 
 // ── Seller guard middleware ──────────────────
 const protectSeller = [protect, async (req, res, next) => {
@@ -47,6 +53,9 @@ router.use('/inventory', koyambeduInventoryRoutes);
 // COMBOS / FLASH SALE — settings (Super Admin) + public status
 // ══════════════════════════════════════════════
 router.use('/combos', koyambeduComboRoutes);
+router.use('/home-tabs', koyambeduHomeTabsRoutes);
+router.use('/bulk-harvest', koyambeduBulkHarvestRoutes);
+router.use('/news', koyambeduNewsRoutes);
 
 // ══════════════════════════════════════════════
 // DEV SETTINGS — public read, superAdmin write

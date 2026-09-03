@@ -1,19 +1,28 @@
 // ============================================
-// EPTOMART EXPRESS — Product (master catalogue) Model
-// Admin-managed master list of products Express can sell. Per-store
-// availability/stock lives separately in ExpressStoreProduct so the same
-// master product can be ON in one store and OFF in another.
+// EPTOMART EXPRESS — Product Model
+// Express does NOT maintain its own product name/image/description catalog
+// — it links to an existing KoyambeduProduct for all of that (single source
+// of truth, avoids duplicate/drifting product data entry). Everything
+// Express actually owns and manages independently is here: procurement
+// cost, unit-of-sale for logistics costing, and margin overrides. Per-store
+// availability/stock is separate again, in ExpressStoreProduct.
+//
+// Reading a KoyambeduProduct's fields does not grant Express any write
+// access to Koyambedu Daily's catalog, pricing, or inventory — this is a
+// read-only reference for display purposes only.
 // ============================================
 const mongoose = require('mongoose');
 
 const expressProductSchema = new mongoose.Schema({
-  name: { type: String, required: true, trim: true },
-  category: { type: String, trim: true, default: 'General' },
-  image: {
-    url: String,
-    publicId: String,
-  },
-  // How the product is priced/sold
+  // The Koyambedu Daily product this Express listing displays as — name,
+  // description, images and category always come from here, live, via
+  // populate. Never denormalized/copied onto this document, so an edit to
+  // the Koyambedu product (e.g. a corrected description or new photo)
+  // shows up in Express immediately without any re-sync step.
+  koyambeduProduct: { type: mongoose.Schema.Types.ObjectId, ref: 'KoyambeduProduct', required: true, unique: true },
+
+  // How Express prices/sells this product — independent of however
+  // Koyambedu Daily prices the same underlying product.
   unit: {
     type: String,
     enum: ['kg', 'gram', 'piece', 'bunch', 'litre', 'dozen'],
@@ -34,7 +43,6 @@ const expressProductSchema = new mongoose.Schema({
   isActive: { type: Boolean, default: true },
 }, { timestamps: true });
 
-expressProductSchema.index({ name: 'text' });
-expressProductSchema.index({ category: 1, isActive: 1 });
+expressProductSchema.index({ isActive: 1 });
 
 module.exports = mongoose.model('ExpressProduct', expressProductSchema);

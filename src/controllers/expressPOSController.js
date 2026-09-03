@@ -29,14 +29,14 @@ const listProducts = async (req, res) => {
   try {
     const config = await getMarginConfig();
     const storeProducts = await ExpressStoreProduct.find({ store: req.posUser.store, isAvailable: true })
-      .populate('product')
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } })
       .lean();
 
     const products = storeProducts
-      .filter(sp => sp.product)
+      .filter(sp => sp.product?.koyambeduProduct)
       .map(sp => ({
         _id: sp.product._id,
-        name: sp.product.name,
+        name: sp.product.koyambeduProduct.name,
         unit: sp.product.unit,
         stockQty: sp.stockQty,
         price: computeSellingPrice(sp.product, config, 1).sellingPricePerUnit,
@@ -94,7 +94,7 @@ const createBill = async (req, res) => {
 
 const getBill = async (req, res) => {
   try {
-    const bill = await ExpressBill.findOne({ _id: req.params.billId, posUser: req.posUser._id }).lean();
+    const bill = await ExpressBill.findOne({ _id: req.params.billId, posUser: req.posUser._id, createdAt: { $gte: req.posSessionAt } }).lean();
     if (!bill) return fail(res, 404, 'Bill not found');
     res.json({ success: true, bill });
   } catch (err) {
@@ -108,26 +108,29 @@ const updateBillItem = async (req, res) => {
   try {
     const { productId, quantity } = req.body;
     if (!productId || quantity == null) return fail(res, 400, 'productId and quantity are required');
+    if (!Number.isFinite(Number(quantity))) return fail(res, 400, 'quantity must be a number');
 
-    const bill = await ExpressBill.findOne({ _id: req.params.billId, posUser: req.posUser._id });
+    const bill = await ExpressBill.findOne({ _id: req.params.billId, posUser: req.posUser._id, createdAt: { $gte: req.posSessionAt } });
     if (!bill) return fail(res, 404, 'Bill not found');
     if (bill.status !== 'held') return fail(res, 400, 'This bill can no longer be edited');
 
-    const storeProduct = await ExpressStoreProduct.findOne({ store: bill.store, product: productId, isAvailable: true }).populate('product');
-    if (!storeProduct || !storeProduct.product) return fail(res, 404, 'Product not available');
+    const storeProduct = await ExpressStoreProduct.findOne({ store: bill.store, product: productId, isAvailable: true })
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } });
+    if (!storeProduct || !storeProduct.product?.koyambeduProduct) return fail(res, 404, 'Product not available');
+    const productName = storeProduct.product.koyambeduProduct.name;
 
     const existing = bill.items.find(i => String(i.product) === String(productId));
     if (Number(quantity) <= 0) {
       bill.items = bill.items.filter(i => String(i.product) !== String(productId));
     } else {
-      if (storeProduct.stockQty < quantity) return fail(res, 400, `Only ${storeProduct.stockQty} of "${storeProduct.product.name}" left in stock`);
+      if (storeProduct.stockQty < quantity) return fail(res, 400, `Only ${storeProduct.stockQty} of "${productName}" left in stock`);
       const config = await getMarginConfig();
       const price = computeSellingPrice(storeProduct.product, config, 1).sellingPricePerUnit;
       if (existing) {
         existing.quantity = Number(quantity);
         existing.price = price;
       } else {
-        bill.items.push({ product: productId, name: storeProduct.product.name, unit: storeProduct.product.unit, price, quantity: Number(quantity) });
+        bill.items.push({ product: productId, name: productName, unit: storeProduct.product.unit, price, quantity: Number(quantity) });
       }
     }
 
@@ -143,20 +146,29 @@ const updateBillItem = async (req, res) => {
 const completeBill = async (req, res) => {
   try {
     const { paymentMethod } = req.body;
-    const bill = await ExpressBill.findOne({ _id: req.params.billId, posUser: req.posUser._id });
+    const bill = await ExpressBill.findOne({ _id: req.params.billId, posUser: req.posUser._id, createdAt: { $gte: req.posSessionAt } });
     if (!bill) return fail(res, 404, 'Bill not found');
     if (bill.status !== 'held') return fail(res, 400, 'Bill already processed');
     if (bill.items.length === 0) return fail(res, 400, 'Add at least one item before completing the sale');
 
-    // Stock check + deduction, same as the online checkout path
+    // Atomic conditional deduction — each decrement only applies if enough
+    // stock is still available at that exact moment, closing the race
+    // window a separate check-then-write pair would leave open (e.g. a
+    // double-tap on "Complete Sale", or two counters selling the last unit
+    // at once). Roll back whatever succeeded so far if a later item fails.
+    const deducted = [];
     for (const item of bill.items) {
-      const sp = await ExpressStoreProduct.findOne({ store: bill.store, product: item.product });
-      if (!sp || sp.stockQty < item.quantity) {
+      const updated = await ExpressStoreProduct.findOneAndUpdate(
+        { store: bill.store, product: item.product, stockQty: { $gte: item.quantity } },
+        { $inc: { stockQty: -item.quantity } }
+      );
+      if (!updated) {
+        for (const d of deducted) {
+          await ExpressStoreProduct.findOneAndUpdate({ store: bill.store, product: d.product }, { $inc: { stockQty: d.quantity } });
+        }
         return fail(res, 400, `Not enough stock for "${item.name}"`);
       }
-    }
-    for (const item of bill.items) {
-      await ExpressStoreProduct.findOneAndUpdate({ store: bill.store, product: item.product }, { $inc: { stockQty: -item.quantity } });
+      deducted.push(item);
     }
 
     bill.status = 'completed';
@@ -173,7 +185,7 @@ const completeBill = async (req, res) => {
 
 const voidBill = async (req, res) => {
   try {
-    const bill = await ExpressBill.findOne({ _id: req.params.billId, posUser: req.posUser._id });
+    const bill = await ExpressBill.findOne({ _id: req.params.billId, posUser: req.posUser._id, createdAt: { $gte: req.posSessionAt } });
     if (!bill) return fail(res, 404, 'Bill not found');
     if (bill.status !== 'held') return fail(res, 400, 'Only held bills can be voided');
     bill.status = 'voided';

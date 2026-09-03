@@ -74,7 +74,7 @@ const toggleMyStore = async (req, res) => {
 const listMyStoreProducts = async (req, res) => {
   try {
     const storeProducts = await ExpressStoreProduct.find({ store: req.manager.store })
-      .populate('product')
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name description images category' } })
       .sort({ createdAt: -1 })
       .lean();
     res.json({ success: true, storeProducts });
@@ -87,7 +87,8 @@ const listMyStoreProducts = async (req, res) => {
 const toggleProductAvailability = async (req, res) => {
   try {
     const { storeProductId } = req.params;
-    const sp = await ExpressStoreProduct.findOne({ _id: storeProductId, store: req.manager.store }).populate('product', 'name');
+    const sp = await ExpressStoreProduct.findOne({ _id: storeProductId, store: req.manager.store })
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } });
     if (!sp) return fail(res, 404, 'Product not found at your store');
 
     sp.isAvailable = !sp.isAvailable;
@@ -96,7 +97,7 @@ const toggleProductAvailability = async (req, res) => {
 
     await logAudit({
       actorName: req.manager.name, action: sp.isAvailable ? 'product.enable' : 'product.disable',
-      store: req.manager.store, meta: { productId: sp.product?._id, productName: sp.product?.name },
+      store: req.manager.store, meta: { productId: sp.product?._id, productName: sp.product?.koyambeduProduct?.name },
     });
     res.json({ success: true, storeProduct: sp });
   } catch (err) {
@@ -110,7 +111,7 @@ const toggleProductAvailability = async (req, res) => {
 const listMyInventoryRequests = async (req, res) => {
   try {
     const requests = await ExpressInventoryRequest.find({ store: req.manager.store })
-      .populate('items.product', 'name unit')
+      .populate({ path: 'items.product', select: 'unit', populate: { path: 'koyambeduProduct', select: 'name' } })
       .sort({ createdAt: -1 })
       .lean();
     res.json({ success: true, requests });
@@ -169,6 +170,15 @@ const updateOrderStatus = async (req, res) => {
     const order = await ExpressOrder.findOne({ _id: orderId, store: req.manager.store });
     if (!order) return fail(res, 404, 'Order not found');
     if (order.orderStatus === 'cancelled') return fail(res, 400, 'Order was cancelled');
+
+    // Fulfilment only moves forward — a manager can't accidentally (or
+    // otherwise) send an order backward through the timeline, e.g.
+    // "delivered" back to "confirmed".
+    const currentIdx = FULFILMENT_STEPS.indexOf(order.orderStatus);
+    const nextIdx = FULFILMENT_STEPS.indexOf(status);
+    if (currentIdx !== -1 && nextIdx <= currentIdx) {
+      return fail(res, 400, `Order is already at "${order.orderStatus}" or further along`);
+    }
 
     order.orderStatus = status;
     order.timeline.push({ status, note: note || `Marked ${status} by ${req.manager.name}` });

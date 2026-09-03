@@ -26,6 +26,7 @@ router.post('/pos-users',             protectSuperAdmin, ctrl.createPOSUser);
 router.put ('/pos-users/:posUserId',  protectSuperAdmin, ctrl.updatePOSUser);
 
 // Products (master catalogue)
+router.get   ('/koyambedu-catalog',         protectSuperAdmin, ctrl.searchKoyambeduCatalog);
 router.get   ('/products',                  protectSuperAdmin, ctrl.listProducts);
 router.post  ('/products',                  protectSuperAdmin, ctrl.createProduct);
 router.put   ('/products/:productId',       protectSuperAdmin, ctrl.updateProduct);

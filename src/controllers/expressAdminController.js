@@ -13,6 +13,7 @@ const ExpressStoreProduct    = require('../models/ExpressStoreProduct');
 const ExpressMarginConfig    = require('../models/ExpressMarginConfig');
 const ExpressInventoryRequest = require('../models/ExpressInventoryRequest');
 const ExpressAuditLog        = require('../models/ExpressAuditLog');
+const KoyambeduProduct       = require('../models/KoyambeduProduct');
 const { computeLogisticsCostPerKg, computeSellingPrice } = require('../services/expressPricingService');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
@@ -230,9 +231,14 @@ const updatePOSUser = async (req, res) => {
 
 // ── Products (master catalogue) ─────────────────────────────────────────
 
+const KOYAMBEDU_PRODUCT_FIELDS = 'name description images category unit';
+
 const listProducts = async (req, res) => {
   try {
-    const products = await ExpressProduct.find({}).sort({ createdAt: -1 }).lean();
+    const products = await ExpressProduct.find({})
+      .populate('koyambeduProduct', KOYAMBEDU_PRODUCT_FIELDS)
+      .sort({ createdAt: -1 })
+      .lean();
     res.json({ success: true, products });
   } catch (err) {
     console.error('[express.listProducts]', err);
@@ -240,17 +246,44 @@ const listProducts = async (req, res) => {
   }
 };
 
+/** Search Koyambedu Daily's catalogue for products to link into Express — proxies the existing public search so no duplicate index/logic is needed. */
+const searchKoyambeduCatalog = async (req, res) => {
+  try {
+    const { search = '' } = req.query;
+    const filter = { isActive: true };
+    if (search.trim()) {
+      const re = new RegExp(search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      filter.$or = [{ name: re }, { nameTamil: re }];
+    }
+    const products = await KoyambeduProduct.find(filter)
+      .select('name description images unit category')
+      .limit(20)
+      .lean();
+    res.json({ success: true, products });
+  } catch (err) {
+    console.error('[express.searchKoyambeduCatalog]', err);
+    fail(res, 500, 'Failed to search Koyambedu catalogue');
+  }
+};
+
 const createProduct = async (req, res) => {
   try {
-    const { name, category, unit, isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct } = req.body;
-    if (!name || !unit || procurementBaseCost == null) {
-      return fail(res, 400, 'name, unit and procurementBaseCost are required');
+    const { koyambeduProductId, unit, isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct } = req.body;
+    if (!koyambeduProductId || procurementBaseCost == null) {
+      return fail(res, 400, 'koyambeduProductId and procurementBaseCost are required');
     }
+    const koyambeduProduct = await KoyambeduProduct.findById(koyambeduProductId).lean();
+    if (!koyambeduProduct) return fail(res, 404, 'Koyambedu product not found');
+
     const product = await ExpressProduct.create({
-      name, category, unit, isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct,
+      koyambeduProduct: koyambeduProductId,
+      unit: unit || koyambeduProduct.unit || 'kg',
+      isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct,
     });
-    res.status(201).json({ success: true, product });
+    const populated = await product.populate('koyambeduProduct', KOYAMBEDU_PRODUCT_FIELDS);
+    res.status(201).json({ success: true, product: populated });
   } catch (err) {
+    if (err.code === 11000) return fail(res, 409, 'This Koyambedu product is already linked to Express');
     console.error('[express.createProduct]', err);
     fail(res, 500, 'Failed to create product');
   }
@@ -259,11 +292,14 @@ const createProduct = async (req, res) => {
 const updateProduct = async (req, res) => {
   try {
     const { productId } = req.params;
-    const fields = ['name', 'category', 'unit', 'isWeightBased', 'unitsPerKg', 'procurementBaseCost', 'customMarginPct', 'isActive'];
+    // koyambeduProduct is intentionally not editable here — to relink a
+    // different Koyambedu product, delete and re-create the listing instead.
+    const fields = ['unit', 'isWeightBased', 'unitsPerKg', 'procurementBaseCost', 'customMarginPct', 'isActive'];
     const update = {};
     fields.forEach(f => { if (req.body[f] !== undefined) update[f] = req.body[f]; });
 
-    const product = await ExpressProduct.findByIdAndUpdate(productId, update, { new: true, runValidators: true });
+    const product = await ExpressProduct.findByIdAndUpdate(productId, update, { new: true, runValidators: true })
+      .populate('koyambeduProduct', KOYAMBEDU_PRODUCT_FIELDS);
     if (!product) return fail(res, 404, 'Product not found');
     res.json({ success: true, product });
   } catch (err) {
@@ -308,7 +344,7 @@ const listStoreProducts = async (req, res) => {
   try {
     const { storeId } = req.params;
     const storeProducts = await ExpressStoreProduct.find({ store: storeId })
-      .populate('product')
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: KOYAMBEDU_PRODUCT_FIELDS } })
       .sort({ createdAt: -1 })
       .lean();
     res.json({ success: true, storeProducts });
@@ -427,7 +463,7 @@ const listInventoryRequests = async (req, res) => {
     const filter = status ? { status } : {};
     const requests = await ExpressInventoryRequest.find(filter)
       .populate('store', 'name code')
-      .populate('items.product', 'name unit')
+      .populate({ path: 'items.product', select: 'unit', populate: { path: 'koyambeduProduct', select: 'name' } })
       .sort({ createdAt: -1 })
       .lean();
     res.json({ success: true, requests });
@@ -445,12 +481,21 @@ const approveInventoryRequest = async (req, res) => {
     if (!request) return fail(res, 404, 'Inventory request not found');
     if (request.status !== 'pending') return fail(res, 400, 'Request has already been processed');
 
-    // Apply allocation — default to requestedQty unless admin overrode it
-    for (const item of request.items) {
+    // Validate every allocation up front — before touching any stock — so a
+    // bad value on one line can't leave earlier lines partially applied.
+    const resolved = request.items.map(item => {
       const override = items?.find(i => String(i.product) === String(item.product));
-      const allocatedQty = override?.allocatedQty ?? item.requestedQty;
-      item.allocatedQty = allocatedQty;
+      return { item, allocatedQty: override?.allocatedQty ?? item.requestedQty };
+    });
+    for (const { allocatedQty } of resolved) {
+      if (!Number.isFinite(Number(allocatedQty)) || Number(allocatedQty) < 0) {
+        return fail(res, 400, 'Invalid allocated quantity for one of the items');
+      }
+    }
 
+    // Apply allocation — default to requestedQty unless admin overrode it
+    for (const { item, allocatedQty } of resolved) {
+      item.allocatedQty = allocatedQty;
       await ExpressStoreProduct.findOneAndUpdate(
         { store: request.store, product: item.product },
         { $inc: { stockQty: allocatedQty }, $setOnInsert: { store: request.store, product: item.product } },
@@ -510,7 +555,7 @@ module.exports = {
   listStores, createStore, updateStore, toggleStoreActive, archiveStore,
   listStoreManagers, createStoreManager, updateStoreManager,
   listPOSUsers, createPOSUser, updatePOSUser,
-  listProducts, createProduct, updateProduct, deleteProduct, previewPrice,
+  listProducts, createProduct, updateProduct, deleteProduct, previewPrice, searchKoyambeduCatalog,
   listStoreProducts, upsertStoreProduct,
   getMarginConfig, updateMarginConfig, toggleExpressEnabled, recomputeLogisticsCost,
   listInventoryRequests, approveInventoryRequest, rejectInventoryRequest,

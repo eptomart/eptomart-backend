@@ -97,21 +97,31 @@ const getCatalogue = async (req, res) => {
 
     const config = await getMarginConfig();
     const storeProducts = await ExpressStoreProduct.find({ store: storeId, isAvailable: true, stockQty: { $gt: 0 } })
-      .populate({ path: 'product', match: { isActive: true } })
+      .populate({
+        path: 'product', match: { isActive: true },
+        populate: { path: 'koyambeduProduct', select: 'name description images category' },
+      })
       .lean();
 
+    // Name/description/image always come live from the linked Koyambedu
+    // Daily product — Express never stores its own copy of these (see
+    // ExpressProduct.js). Drop any store-product whose link is broken
+    // (product deactivated/deleted, or the underlying Koyambedu product
+    // itself was removed) rather than showing a blank/broken card.
     const catalogue = storeProducts
-      .filter(sp => sp.product) // drop entries whose product got deactivated/deleted
+      .filter(sp => sp.product?.koyambeduProduct)
       .map(sp => {
         const pricing = computeSellingPrice(sp.product, config, 1);
+        const kb = sp.product.koyambeduProduct;
         return {
           storeProductId: sp._id,
           product: {
             _id: sp.product._id,
-            name: sp.product.name,
-            category: sp.product.category,
+            name: kb.name,
+            description: kb.description,
+            category: kb.category,
             unit: sp.product.unit,
-            image: sp.product.image,
+            image: kb.images?.find(i => i.isPrimary)?.url || kb.images?.[0]?.url || null,
           },
           stockQty: sp.stockQty,
           pricePerUnit: pricing.sellingPricePerUnit,
@@ -172,9 +182,11 @@ const addToCart = async (req, res) => {
   try {
     const { storeId, productId, quantity = 1 } = req.body;
     if (!storeId || !productId) return fail(res, 400, 'storeId and productId are required');
+    if (!Number.isFinite(Number(quantity)) || Number(quantity) <= 0) return fail(res, 400, 'quantity must be a positive number');
 
-    const storeProduct = await ExpressStoreProduct.findOne({ store: storeId, product: productId, isAvailable: true }).populate('product');
-    if (!storeProduct || !storeProduct.product) return fail(res, 404, 'Product not available at this store');
+    const storeProduct = await ExpressStoreProduct.findOne({ store: storeId, product: productId, isAvailable: true })
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } });
+    if (!storeProduct || !storeProduct.product?.koyambeduProduct) return fail(res, 404, 'Product not available at this store');
     if (storeProduct.stockQty < quantity) return fail(res, 400, 'Not enough stock available');
 
     const config = await getMarginConfig();
@@ -200,7 +212,7 @@ const addToCart = async (req, res) => {
     } else {
       cart.items.push({
         product: productId,
-        name: storeProduct.product.name,
+        name: storeProduct.product.koyambeduProduct.name,
         unit: storeProduct.product.unit,
         price: pricing.sellingPricePerUnit,
         quantity: Number(quantity),
@@ -219,6 +231,7 @@ const updateCartItem = async (req, res) => {
   try {
     const { productId, quantity } = req.body;
     if (!productId || quantity == null) return fail(res, 400, 'productId and quantity are required');
+    if (!Number.isFinite(Number(quantity))) return fail(res, 400, 'quantity must be a number');
 
     const cart = await ExpressCart.findOne({ user: req.user._id });
     if (!cart) return fail(res, 404, 'Cart not found');
@@ -291,7 +304,10 @@ async function priceCart(userId, deliveryAddress) {
     totalWeightKg += toKgEquivalent(sp.product, line.quantity);
 
     items.push({
-      product: sp.product._id, name: sp.product.name, unit: sp.product.unit,
+      // Name comes from the cart line's own snapshot (captured from the
+      // linked Koyambedu product at add-to-cart time) — sp.product itself
+      // no longer carries a name field, see ExpressProduct.js.
+      product: sp.product._id, name: line.name, unit: sp.product.unit,
       unitPrice: pricing.sellingPricePerUnit, quantity: line.quantity, lineTotal,
     });
   }
@@ -399,12 +415,27 @@ const verifyPayment = async (req, res) => {
     order.timeline.push({ status: 'confirmed', note: 'Payment received' });
     await order.save();
 
-    // Deduct stock now that payment is confirmed
+    // Deduct stock now that payment is confirmed. Money has already
+    // changed hands at this point, so a stock shortfall (e.g. a POS sale at
+    // the same store sold the last unit between checkout and payment
+    // confirmation) must not block the order — clamp to zero and flag it
+    // for the Store Manager to reconcile, rather than silently going
+    // negative (which $inc alone would allow, bypassing the schema's
+    // min: 0 validator).
+    let stockShortfall = false;
     for (const item of order.items) {
-      await ExpressStoreProduct.findOneAndUpdate(
-        { store: order.store, product: item.product },
+      const updated = await ExpressStoreProduct.findOneAndUpdate(
+        { store: order.store, product: item.product, stockQty: { $gte: item.quantity } },
         { $inc: { stockQty: -item.quantity } }
       );
+      if (!updated) {
+        await ExpressStoreProduct.findOneAndUpdate({ store: order.store, product: item.product }, { stockQty: 0 });
+        stockShortfall = true;
+      }
+    }
+    if (stockShortfall) {
+      order.notes = (order.notes ? order.notes + ' | ' : '') + 'Stock shortfall at payment time — verify before fulfilling.';
+      await order.save();
     }
 
     // Clear the cart that was just checked out

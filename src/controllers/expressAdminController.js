@@ -377,6 +377,26 @@ const upsertStoreProduct = async (req, res) => {
   }
 };
 
+// Fully remove a product's allocation at a store — distinct from setting
+// isAvailable:false (which just hides it from customers/POS while keeping
+// the stock record); this deletes the ExpressStoreProduct row entirely, for
+// when admin wants to un-stock a product at a store completely.
+const removeStoreProduct = async (req, res) => {
+  try {
+    const { storeId, productId } = req.params;
+    const removed = await ExpressStoreProduct.findOneAndDelete({ store: storeId, product: productId });
+    if (!removed) return fail(res, 404, 'This product is not allocated to that store');
+    await logAudit({
+      actorType: 'admin', actorName: req.user?.name || 'Admin',
+      action: 'store-product.remove', store: storeId, meta: { productId },
+    });
+    res.json({ success: true, message: 'Product removed from store inventory' });
+  } catch (err) {
+    console.error('[express.removeStoreProduct]', err);
+    fail(res, 500, 'Failed to remove product from store');
+  }
+};
+
 // ── Margin Config ────────────────────────────────────────────────────────
 
 async function getOrCreateMarginConfig() {
@@ -556,7 +576,7 @@ module.exports = {
   listStoreManagers, createStoreManager, updateStoreManager,
   listPOSUsers, createPOSUser, updatePOSUser,
   listProducts, createProduct, updateProduct, deleteProduct, previewPrice, searchKoyambeduCatalog,
-  listStoreProducts, upsertStoreProduct,
+  listStoreProducts, upsertStoreProduct, removeStoreProduct,
   getMarginConfig, updateMarginConfig, toggleExpressEnabled, recomputeLogisticsCost,
   listInventoryRequests, approveInventoryRequest, rejectInventoryRequest,
   listAuditLog,

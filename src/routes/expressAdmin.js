@@ -34,8 +34,9 @@ router.delete('/products/:productId',       protectSuperAdmin, ctrl.deleteProduc
 router.get   ('/products/:productId/price-preview', protectSuperAdmin, ctrl.previewPrice);
 
 // Store Products (per-store availability + stock)
-router.get ('/stores/:storeId/products',    protectSuperAdmin, ctrl.listStoreProducts);
-router.post('/stores/:storeId/products',    protectSuperAdmin, ctrl.upsertStoreProduct);
+router.get   ('/stores/:storeId/products',              protectSuperAdmin, ctrl.listStoreProducts);
+router.post  ('/stores/:storeId/products',              protectSuperAdmin, ctrl.upsertStoreProduct);
+router.delete('/stores/:storeId/products/:productId',   protectSuperAdmin, ctrl.removeStoreProduct);
 
 // Margin Config
 router.get ('/margin-config',               protectSuperAdmin, ctrl.getMarginConfig);

@@ -5,14 +5,23 @@
 // checkout/payment yet — that's a later phase once the POS/fulfilment
 // side exists. Fully isolated from every other vertical's controllers.
 // ============================================
+const crypto       = require('crypto');
+const Razorpay     = require('razorpay');
 const ExpressStore        = require('../models/ExpressStore');
 const ExpressProduct      = require('../models/ExpressProduct');
 const ExpressStoreProduct = require('../models/ExpressStoreProduct');
 const ExpressMarginConfig = require('../models/ExpressMarginConfig');
 const ExpressCart         = require('../models/ExpressCart');
+const ExpressOrder        = require('../models/ExpressOrder');
 const { computeSellingPrice, toKgEquivalent, distanceKm } = require('../services/expressPricingService');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
+
+const getRazorpay = () => {
+  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return null;
+  return new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
+};
+const genOrderId = () => 'EX-' + crypto.randomBytes(4).toString('hex').toUpperCase();
 
 async function getMarginConfig() {
   let config = await ExpressMarginConfig.findOne({ key: 'default' });
@@ -241,7 +250,229 @@ const clearCart = async (req, res) => {
   }
 };
 
+// ── Checkout (Phase 3) ───────────────────────────────────────────────────
+
+/**
+ * Shared pricing/validation helper — the cart is always re-priced and
+ * re-validated server-side against the live catalogue + current stock, so
+ * what the customer confirms at checkout is always accurate (same pattern
+ * as fruitBasketController.priceOrderRequest).
+ */
+async function priceCart(userId, deliveryAddress) {
+  const cart = await ExpressCart.findOne({ user: userId });
+  if (!cart || cart.items.length === 0) {
+    const err = new Error('Your cart is empty.'); err.statusCode = 400; throw err;
+  }
+  if (!deliveryAddress || !deliveryAddress.addressLine || !deliveryAddress.phone) {
+    const err = new Error('Delivery address, name and phone are required.'); err.statusCode = 400; throw err;
+  }
+
+  const config = await getMarginConfig();
+  if (!config.isEnabled) {
+    const err = new Error('Eptomart Express is currently unavailable.'); err.statusCode = 503; throw err;
+  }
+
+  const storeProducts = await ExpressStoreProduct.find({ store: cart.store, isAvailable: true })
+    .populate('product')
+    .lean();
+  const byProductId = new Map(storeProducts.map(sp => [String(sp.product?._id), sp]));
+
+  const items = [];
+  let subtotal = 0;
+  let totalWeightKg = 0;
+  for (const line of cart.items) {
+    const sp = byProductId.get(String(line.product));
+    if (!sp || !sp.product) { const err = new Error(`"${line.name}" is no longer available.`); err.statusCode = 400; throw err; }
+    if (sp.stockQty < line.quantity) { const err = new Error(`Only ${sp.stockQty} of "${line.name}" left in stock.`); err.statusCode = 400; throw err; }
+
+    const pricing = computeSellingPrice(sp.product, config, 1);
+    const lineTotal = Math.round(pricing.sellingPricePerUnit * line.quantity * 100) / 100;
+    subtotal += lineTotal;
+    totalWeightKg += toKgEquivalent(sp.product, line.quantity);
+
+    items.push({
+      product: sp.product._id, name: sp.product.name, unit: sp.product.unit,
+      unitPrice: pricing.sellingPricePerUnit, quantity: line.quantity, lineTotal,
+    });
+  }
+  totalWeightKg = Math.round(totalWeightKg * 100) / 100;
+
+  const threshold = config.largeOrderThresholdKg || 12;
+  if (totalWeightKg > threshold && config.largeOrderAction === 'block') {
+    const err = new Error(`Orders above ${threshold} kg aren't supported on Eptomart Express — please use Koyambedu Daily instead.`);
+    err.statusCode = 400; throw err;
+  }
+
+  const total = Math.round(subtotal * 100) / 100;
+  return { cart, items, subtotal, total, totalWeightKg, largeOrderWarning: totalWeightKg > threshold };
+}
+
+/** POST /express/quote */
+const getQuote = async (req, res) => {
+  try {
+    const { deliveryAddress } = req.body;
+    const priced = await priceCart(req.user._id, deliveryAddress);
+    res.json({ success: true, items: priced.items, subtotal: priced.subtotal, total: priced.total, totalWeightKg: priced.totalWeightKg, largeOrderWarning: priced.largeOrderWarning });
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    console.error('[express.getQuote]', err);
+    fail(res, 500, 'Failed to price your order');
+  }
+};
+
+/** POST /express/orders/create-razorpay */
+const createRazorpayOrder = async (req, res) => {
+  try {
+    const { deliveryAddress, notes } = req.body;
+    const priced = await priceCart(req.user._id, deliveryAddress);
+
+    const isDemo = !!req.user.isDemoAccount;
+    const razorpay = isDemo ? null : getRazorpay();
+    if (!isDemo && !razorpay) return fail(res, 500, 'Payment gateway not configured');
+
+    const orderId = genOrderId();
+    const rzpOrder = isDemo
+      ? { id: `demo_${orderId}` }
+      : await razorpay.orders.create({
+          amount: Math.round(priced.total * 100),
+          currency: 'INR',
+          receipt: orderId,
+          notes: { expressOrderId: orderId, type: 'express_order' },
+        });
+
+    const order = await ExpressOrder.create({
+      orderId,
+      buyer: req.user._id,
+      store: priced.cart.store,
+      items: priced.items,
+      deliveryAddress: {
+        name: deliveryAddress.name, phone: deliveryAddress.phone,
+        addressLine: deliveryAddress.addressLine, city: deliveryAddress.city || '',
+        pincode: deliveryAddress.pincode || '',
+        lat: deliveryAddress.lat, lng: deliveryAddress.lng,
+      },
+      pricing: { subtotal: priced.subtotal, total: priced.total },
+      totalWeightKg: priced.totalWeightKg,
+      razorpayOrderId: rzpOrder.id,
+      isDemoOrder: isDemo,
+      notes: notes || '',
+      timeline: [{ status: 'placed', note: 'Order created, awaiting payment' }],
+    });
+
+    res.json({
+      success: true, demoMode: isDemo, rzpOrderId: rzpOrder.id, amount: priced.total, currency: 'INR',
+      orderId: order._id, keyId: isDemo ? null : process.env.RAZORPAY_KEY_ID,
+    });
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    console.error('[express.createRazorpayOrder]', err);
+    fail(res, 500, 'Failed to start checkout');
+  }
+};
+
+/** POST /express/orders/verify-payment */
+const verifyPayment = async (req, res) => {
+  try {
+    const { orderId, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
+    const order = await ExpressOrder.findOne({ _id: orderId, buyer: req.user._id });
+    if (!order) return fail(res, 404, 'Order not found');
+
+    if (order.paymentStatus === 'paid') {
+      return res.json({ success: true, message: 'Payment already confirmed', orderId: order.orderId });
+    }
+
+    if (!order.isDemoOrder) {
+      const secret = process.env.RAZORPAY_KEY_SECRET;
+      const body = `${razorpayOrderId}|${razorpayPaymentId}`;
+      const expectedSig = crypto.createHmac('sha256', secret).update(body).digest('hex');
+      if (expectedSig !== razorpaySignature) {
+        order.paymentStatus = 'failed';
+        await order.save();
+        return fail(res, 400, 'Payment verification failed');
+      }
+    }
+
+    order.paymentStatus = 'paid';
+    order.razorpayPaymentId = razorpayPaymentId;
+    order.razorpaySignature = razorpaySignature;
+    order.orderStatus = 'confirmed';
+    order.timeline.push({ status: 'confirmed', note: 'Payment received' });
+    await order.save();
+
+    // Deduct stock now that payment is confirmed
+    for (const item of order.items) {
+      await ExpressStoreProduct.findOneAndUpdate(
+        { store: order.store, product: item.product },
+        { $inc: { stockQty: -item.quantity } }
+      );
+    }
+
+    // Clear the cart that was just checked out
+    await ExpressCart.findOneAndUpdate({ user: req.user._id }, { items: [] });
+
+    res.json({ success: true, message: 'Payment confirmed', orderId: order.orderId, id: order._id });
+  } catch (err) {
+    console.error('[express.verifyPayment]', err);
+    fail(res, 500, 'Failed to verify payment');
+  }
+};
+
+// ── My Orders ────────────────────────────────────────────────────────────
+
+const getMyOrders = async (req, res) => {
+  try {
+    const orders = await ExpressOrder.find({ buyer: req.user._id }).sort({ createdAt: -1 }).lean();
+    res.json({ success: true, orders });
+  } catch (err) {
+    console.error('[express.getMyOrders]', err);
+    fail(res, 500, 'Failed to load your orders');
+  }
+};
+
+const getMyOrder = async (req, res) => {
+  try {
+    const order = await ExpressOrder.findOne({ _id: req.params.orderId, buyer: req.user._id }).lean();
+    if (!order) return fail(res, 404, 'Order not found');
+    res.json({ success: true, order });
+  } catch (err) {
+    console.error('[express.getMyOrder]', err);
+    fail(res, 500, 'Failed to load order');
+  }
+};
+
+const cancelMyOrder = async (req, res) => {
+  try {
+    const order = await ExpressOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
+    if (!order) return fail(res, 404, 'Order not found');
+    if (['out_for_delivery', 'delivered', 'cancelled'].includes(order.orderStatus)) {
+      return fail(res, 400, `Order can no longer be cancelled (status: ${order.orderStatus})`);
+    }
+    const wasPaid = order.paymentStatus === 'paid';
+    order.orderStatus = 'cancelled';
+    order.cancelReason = req.body?.reason || 'Cancelled by customer';
+    order.timeline.push({ status: 'cancelled', note: order.cancelReason });
+    await order.save();
+
+    // Restock if payment had already gone through and stock was deducted
+    if (wasPaid) {
+      for (const item of order.items) {
+        await ExpressStoreProduct.findOneAndUpdate(
+          { store: order.store, product: item.product },
+          { $inc: { stockQty: item.quantity } }
+        );
+      }
+    }
+
+    res.json({ success: true, message: 'Order cancelled' });
+  } catch (err) {
+    console.error('[express.cancelMyOrder]', err);
+    fail(res, 500, 'Failed to cancel order');
+  }
+};
+
 module.exports = {
   getStatus, findNearestStore, getCatalogue,
   getCart, addToCart, updateCartItem, clearCart,
+  getQuote, createRazorpayOrder, verifyPayment,
+  getMyOrders, getMyOrder, cancelMyOrder,
 };

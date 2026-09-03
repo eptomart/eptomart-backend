@@ -18,4 +18,11 @@ router.post  ('/cart',       protect, ctrl.addToCart);
 router.put   ('/cart',       protect, ctrl.updateCartItem);
 router.delete('/cart/clear', protect, ctrl.clearCart);
 
+router.post('/quote',                       protect, ctrl.getQuote);
+router.post('/orders/create-razorpay',      protect, ctrl.createRazorpayOrder);
+router.post('/orders/verify-payment',       protect, ctrl.verifyPayment);
+router.get ('/my-orders',                   protect, ctrl.getMyOrders);
+router.get ('/my-orders/:orderId',          protect, ctrl.getMyOrder);
+router.post('/orders/:orderId/cancel',      protect, ctrl.cancelMyOrder);
+
 module.exports = router;

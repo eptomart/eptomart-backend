@@ -52,6 +52,7 @@ const couponRoutes        = require('./src/routes/coupon');
 const v2OrderRoutes       = require('./src/routes/v2Orders');   // Unified Orders API (all verticals)
 const webhookRoutes       = require('./src/routes/webhook');     // Meta WhatsApp webhook (public)
 const searchRoutes        = require('./src/routes/search');      // Unified ecosystem-wide product search
+const expressAdminRoutes  = require('./src/routes/expressAdmin'); // Eptomart Express (same-day delivery) — Phase 1: admin only, fully isolated
 
 const app = express();
 
@@ -252,6 +253,7 @@ app.use('/api/coupon',       couponRoutes);
 app.use('/api/v2/orders',    v2OrderRoutes);   // Unified Orders API (all verticals)
 app.use('/api/webhooks',     webhookRoutes);   // Meta WhatsApp inbound webhook (public, no auth)
 app.use('/api/search',       searchRoutes);    // Unified ecosystem-wide product search
+app.use('/api/express/admin', expressAdminRoutes); // Eptomart Express — Phase 1 admin API
 app.use('/',             sitemapRoutes);  // /sitemap.xml and /robots.txt
 
 // ─── Health Check ────────────────────────────

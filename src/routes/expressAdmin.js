@@ -1,0 +1,52 @@
+// ============================================
+// EPTOMART EXPRESS — Admin Routes (Phase 1)
+// Mounted at /api/express/admin, SuperAdmin-only. Entirely separate from
+// every other vertical's routes.
+// ============================================
+const express = require('express');
+const router = express.Router();
+const ctrl = require('../controllers/expressAdminController');
+const { protectSuperAdmin } = require('../middleware/adminAuth');
+
+// Stores
+router.get   ('/stores',                    protectSuperAdmin, ctrl.listStores);
+router.post  ('/stores',                    protectSuperAdmin, ctrl.createStore);
+router.put   ('/stores/:storeId',           protectSuperAdmin, ctrl.updateStore);
+router.patch ('/stores/:storeId/toggle',    protectSuperAdmin, ctrl.toggleStoreActive);
+router.delete('/stores/:storeId',           protectSuperAdmin, ctrl.archiveStore);
+
+// Store Managers
+router.get ('/managers',              protectSuperAdmin, ctrl.listStoreManagers);
+router.post('/managers',              protectSuperAdmin, ctrl.createStoreManager);
+router.put ('/managers/:managerId',   protectSuperAdmin, ctrl.updateStoreManager);
+
+// POS Users
+router.get ('/pos-users',             protectSuperAdmin, ctrl.listPOSUsers);
+router.post('/pos-users',             protectSuperAdmin, ctrl.createPOSUser);
+router.put ('/pos-users/:posUserId',  protectSuperAdmin, ctrl.updatePOSUser);
+
+// Products (master catalogue)
+router.get   ('/products',                  protectSuperAdmin, ctrl.listProducts);
+router.post  ('/products',                  protectSuperAdmin, ctrl.createProduct);
+router.put   ('/products/:productId',       protectSuperAdmin, ctrl.updateProduct);
+router.delete('/products/:productId',       protectSuperAdmin, ctrl.deleteProduct);
+router.get   ('/products/:productId/price-preview', protectSuperAdmin, ctrl.previewPrice);
+
+// Store Products (per-store availability + stock)
+router.get ('/stores/:storeId/products',    protectSuperAdmin, ctrl.listStoreProducts);
+router.post('/stores/:storeId/products',    protectSuperAdmin, ctrl.upsertStoreProduct);
+
+// Margin Config
+router.get ('/margin-config',               protectSuperAdmin, ctrl.getMarginConfig);
+router.put ('/margin-config',               protectSuperAdmin, ctrl.updateMarginConfig);
+router.post('/margin-config/logistics',     protectSuperAdmin, ctrl.recomputeLogisticsCost);
+
+// Inventory Requests
+router.get  ('/inventory-requests',                    protectSuperAdmin, ctrl.listInventoryRequests);
+router.patch('/inventory-requests/:requestId/approve',  protectSuperAdmin, ctrl.approveInventoryRequest);
+router.patch('/inventory-requests/:requestId/reject',   protectSuperAdmin, ctrl.rejectInventoryRequest);
+
+// Audit Log
+router.get('/audit-log', protectSuperAdmin, ctrl.listAuditLog);
+
+module.exports = router;

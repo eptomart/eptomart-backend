@@ -13,7 +13,13 @@ const ExpressStoreProduct    = require('../models/ExpressStoreProduct');
 const ExpressMarginConfig    = require('../models/ExpressMarginConfig');
 const ExpressInventoryRequest = require('../models/ExpressInventoryRequest');
 const ExpressAuditLog        = require('../models/ExpressAuditLog');
+const ExpressStockLog        = require('../models/ExpressStockLog');
+const ExpressExpense         = require('../models/ExpressExpense');
+const ExpressOrder           = require('../models/ExpressOrder');
+const ExpressCart            = require('../models/ExpressCart');
+const ExpressBill            = require('../models/ExpressBill');
 const KoyambeduProduct       = require('../models/KoyambeduProduct');
+const Analytics              = require('../models/Analytics');
 const { computeLogisticsCostPerKg, computeSellingPrice } = require('../services/expressPricingService');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
@@ -397,6 +403,66 @@ const removeStoreProduct = async (req, res) => {
   }
 };
 
+// Add stock — ADDS to whatever the store already has (procurement arriving),
+// rather than overwriting it, so repeated deliveries accumulate correctly.
+// Distinct from upsertStoreProduct (which still exists for direct
+// availability toggling / one-off corrections to an exact quantity).
+const addStock = async (req, res) => {
+  try {
+    const { storeId, productId } = req.params;
+    const { qty, note } = req.body;
+    const delta = Number(qty);
+    if (!Number.isFinite(delta) || delta <= 0) return fail(res, 400, 'qty must be a positive number');
+
+    const existing = await ExpressStoreProduct.findOne({ store: storeId, product: productId }).lean();
+    const previousQty = existing?.stockQty || 0;
+
+    const storeProduct = await ExpressStoreProduct.findOneAndUpdate(
+      { store: storeId, product: productId },
+      { $inc: { stockQty: delta }, $setOnInsert: { store: storeId, product: productId, isAvailable: true } },
+      { new: true, upsert: true, runValidators: true }
+    );
+
+    await ExpressStockLog.create({
+      store: storeId, product: productId, type: 'addition',
+      qty: delta, previousQty, newQty: storeProduct.stockQty,
+      reason: note || null, actorType: 'admin', actorName: req.user?.name || 'Admin',
+    });
+    await logAudit({
+      actorType: 'admin', actorName: req.user?.name || 'Admin', action: 'stock.add',
+      store: storeId, meta: { productId, qty: delta, newQty: storeProduct.stockQty },
+    });
+
+    res.json({ success: true, storeProduct });
+  } catch (err) {
+    console.error('[express.addStock]', err);
+    fail(res, 500, 'Failed to add stock');
+  }
+};
+
+// Report of every manual stock movement (admin additions + store manager
+// losses) — the "report" the admin asked for alongside stock allocation.
+const listStockLogs = async (req, res) => {
+  try {
+    const { storeId, productId, type, limit = 100 } = req.query;
+    const filter = {};
+    if (storeId) filter.store = storeId;
+    if (productId) filter.product = productId;
+    if (type) filter.type = type;
+
+    const logs = await ExpressStockLog.find(filter)
+      .populate('store', 'name code')
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } })
+      .sort({ createdAt: -1 })
+      .limit(Math.min(Number(limit) || 100, 500))
+      .lean();
+    res.json({ success: true, logs });
+  } catch (err) {
+    console.error('[express.listStockLogs]', err);
+    fail(res, 500, 'Failed to load stock report');
+  }
+};
+
 // ── Margin Config ────────────────────────────────────────────────────────
 
 async function getOrCreateMarginConfig() {
@@ -571,13 +637,228 @@ const listAuditLog = async (req, res) => {
   }
 };
 
+// ── Expenses ─────────────────────────────────────────────────────────────
+
+const listExpenses = async (req, res) => {
+  try {
+    const { storeId, from, to, limit = 200 } = req.query;
+    const filter = {};
+    if (storeId) filter.store = storeId;
+    if (from || to) {
+      filter.date = {};
+      if (from) filter.date.$gte = new Date(from);
+      if (to) filter.date.$lte = new Date(to);
+    }
+    const expenses = await ExpressExpense.find(filter)
+      .populate('store', 'name code')
+      .sort({ date: -1 })
+      .limit(Math.min(Number(limit) || 200, 1000))
+      .lean();
+    res.json({ success: true, expenses });
+  } catch (err) {
+    console.error('[express.listExpenses]', err);
+    fail(res, 500, 'Failed to load expenses');
+  }
+};
+
+const createExpense = async (req, res) => {
+  try {
+    const { storeId, category, amount, note, date } = req.body;
+    if (amount == null || !Number.isFinite(Number(amount)) || Number(amount) < 0) {
+      return fail(res, 400, 'A valid amount is required');
+    }
+    const expense = await ExpressExpense.create({
+      store: storeId || null,
+      category: category || 'other',
+      amount: Number(amount),
+      note: note || '',
+      date: date ? new Date(date) : new Date(),
+      enteredByName: req.user?.name || 'Admin',
+    });
+    await logAudit({ actorType: 'admin', actorName: req.user?.name || 'Admin', action: 'expense.create', store: storeId || null, meta: { category, amount } });
+    res.status(201).json({ success: true, expense });
+  } catch (err) {
+    console.error('[express.createExpense]', err);
+    fail(res, 500, 'Failed to record expense');
+  }
+};
+
+const deleteExpense = async (req, res) => {
+  try {
+    const { expenseId } = req.params;
+    const expense = await ExpressExpense.findByIdAndDelete(expenseId);
+    if (!expense) return fail(res, 404, 'Expense not found');
+    res.json({ success: true, message: 'Expense deleted' });
+  } catch (err) {
+    console.error('[express.deleteExpense]', err);
+    fail(res, 500, 'Failed to delete expense');
+  }
+};
+
+// ── Finance Dashboard (profit / loss) ────────────────────────────────────
+// Revenue = paid online orders + completed POS bills, in range.
+// COGS = current procurement+logistics cost per unit (from the pricing
+// engine) x quantity sold — an approximation since it uses today's cost
+// rather than a historical snapshot, same tradeoff every other part of this
+// vertical already makes (prices aren't versioned either).
+// Loss value = same per-unit cost basis x quantity reported as wastage.
+// Profit = Revenue - COGS - Loss value - Other expenses.
+const getFinanceDashboard = async (req, res) => {
+  try {
+    const { from, to, storeId } = req.query;
+    const dateFilter = {};
+    if (from) dateFilter.$gte = new Date(from);
+    if (to) dateFilter.$lte = new Date(to);
+    const hasRange = from || to;
+
+    const marginConfig = await getOrCreateMarginConfig();
+
+    const orderFilter = { paymentStatus: 'paid', isDemoOrder: { $ne: true } };
+    if (storeId) orderFilter.store = storeId;
+    if (hasRange) orderFilter.createdAt = dateFilter;
+
+    const billFilter = { status: 'completed' };
+    if (storeId) billFilter.store = storeId;
+    if (hasRange) billFilter.completedAt = dateFilter;
+
+    const lossFilter = { type: 'loss' };
+    if (storeId) lossFilter.store = storeId;
+    if (hasRange) lossFilter.createdAt = dateFilter;
+
+    const expenseFilter = {};
+    if (storeId) expenseFilter.store = storeId;
+    if (hasRange) expenseFilter.date = dateFilter;
+
+    const [orders, bills, lossLogs, expenses] = await Promise.all([
+      ExpressOrder.find(orderFilter).populate('items.product').lean(),
+      ExpressBill.find(billFilter).populate('items.product').lean(),
+      ExpressStockLog.find(lossFilter).populate('product').lean(),
+      ExpressExpense.find(expenseFilter).lean(),
+    ]);
+
+    const costPerUnit = (product, qty) => {
+      if (!product) return 0;
+      return computeSellingPrice(product, marginConfig, qty || 1).baseCostPerUnit;
+    };
+
+    let onlineRevenue = 0, posRevenue = 0, cogs = 0;
+    for (const o of orders) {
+      onlineRevenue += o.pricing?.total || 0;
+      for (const it of o.items || []) cogs += costPerUnit(it.product, 1) * (it.quantity || 0);
+    }
+    for (const b of bills) {
+      posRevenue += b.total || 0;
+      for (const it of b.items || []) cogs += costPerUnit(it.product, 1) * (it.quantity || 0);
+    }
+
+    let lossValue = 0;
+    for (const l of lossLogs) lossValue += costPerUnit(l.product, 1) * (l.qty || 0);
+
+    const otherExpenses = expenses.reduce((s, e) => s + (e.amount || 0), 0);
+
+    const revenue = Math.round((onlineRevenue + posRevenue) * 100) / 100;
+    cogs = Math.round(cogs * 100) / 100;
+    lossValue = Math.round(lossValue * 100) / 100;
+    const netProfit = Math.round((revenue - cogs - lossValue - otherExpenses) * 100) / 100;
+
+    res.json({ success: true, finance: {
+      onlineRevenue: Math.round(onlineRevenue * 100) / 100,
+      posRevenue: Math.round(posRevenue * 100) / 100,
+      revenue, cogs, lossValue, otherExpenses,
+      netProfit,
+      onlineOrderCount: orders.length,
+      posBillCount: bills.length,
+      lossEntryCount: lossLogs.length,
+    }});
+  } catch (err) {
+    console.error('[express.getFinanceDashboard]', err);
+    fail(res, 500, 'Failed to load finance dashboard');
+  }
+};
+
+// ── Visitors + Carts (mirrors fruitBasketController's adminGetVisitors /
+// adminGetUserCarts patterns — same shared Analytics collection, same
+// per-vertical path-prefix filter, same cart-value aggregation shape) ────
+
+const adminGetVisitors = async (req, res) => {
+  try {
+    const { limit = 50 } = req.query;
+    const visits = await Analytics.find({ page: { $regex: '^/express', $options: 'i' }, isBot: { $ne: true } })
+      .populate('userId', 'name phone email')
+      .sort({ timestamp: -1 })
+      .limit(Math.min(200, Number(limit) || 50))
+      .lean();
+
+    res.json({ success: true, visits: visits.map(v => ({
+      _id: v._id,
+      page: v.page,
+      device: v.device || null,
+      browser: v.browser || null,
+      city: v.city || null,
+      country: v.country || null,
+      user: v.userId ? { name: v.userId.name, phone: v.userId.phone, email: v.userId.email } : null,
+      timestamp: v.timestamp,
+    })) });
+  } catch (err) {
+    console.error('[express.adminGetVisitors]', err);
+    fail(res, 500, 'Failed to load visitors');
+  }
+};
+
+const adminGetCarts = async (req, res) => {
+  try {
+    const { search } = req.query;
+
+    const carts = await ExpressCart.find({ 'items.0': { $exists: true } })
+      .populate('user', 'name email phone')
+      .populate('store', 'name code')
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    let result = carts
+      .filter(c => c.user)
+      .map(c => {
+        const items = (c.items || []).filter(it => (it.quantity || 0) > 0);
+        const cartValue = items.reduce((s, it) => s + (it.price || 0) * (it.quantity || 0), 0);
+        return {
+          _id: c._id,
+          customerName: c.user?.name || 'Unknown',
+          phone: c.user?.phone || '—',
+          email: c.user?.email || '—',
+          store: c.store?.name || 'Unknown store',
+          itemCount: items.length,
+          cartValue: Math.round(cartValue * 100) / 100,
+          updatedAt: c.updatedAt,
+          items: items.map(it => ({ name: it.name, unit: it.unit, quantity: it.quantity, price: it.price })),
+        };
+      })
+      .filter(c => c.itemCount > 0);
+
+    if (search) {
+      const q = String(search).toLowerCase();
+      result = result.filter(c =>
+        c.customerName.toLowerCase().includes(q) ||
+        c.phone.toLowerCase().includes(q) ||
+        c.email.toLowerCase().includes(q)
+      );
+    }
+
+    res.json({ success: true, carts: result, count: result.length });
+  } catch (err) {
+    console.error('[express.adminGetCarts]', err);
+    fail(res, 500, 'Failed to load carts');
+  }
+};
+
 module.exports = {
   listStores, createStore, updateStore, toggleStoreActive, archiveStore,
   listStoreManagers, createStoreManager, updateStoreManager,
   listPOSUsers, createPOSUser, updatePOSUser,
   listProducts, createProduct, updateProduct, deleteProduct, previewPrice, searchKoyambeduCatalog,
-  listStoreProducts, upsertStoreProduct, removeStoreProduct,
+  listStoreProducts, upsertStoreProduct, removeStoreProduct, addStock, listStockLogs,
   getMarginConfig, updateMarginConfig, toggleExpressEnabled, recomputeLogisticsCost,
   listInventoryRequests, approveInventoryRequest, rejectInventoryRequest,
   listAuditLog,
+  listExpenses, createExpense, deleteExpense,
+  getFinanceDashboard, adminGetVisitors, adminGetCarts,
 };

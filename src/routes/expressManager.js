@@ -18,6 +18,8 @@ router.patch('/store/toggle',   protectExpressManager, ctrl.toggleMyStore);
 
 router.get  ('/products',                          protectExpressManager, ctrl.listMyStoreProducts);
 router.patch('/products/:storeProductId/toggle',   protectExpressManager, ctrl.toggleProductAvailability);
+router.post ('/products/:storeProductId/loss',     protectExpressManager, ctrl.recordLoss);
+router.get  ('/stock-logs',                        protectExpressManager, ctrl.listMyStockLogs);
 
 router.get ('/inventory-requests',  protectExpressManager, ctrl.listMyInventoryRequests);
 router.post('/inventory-requests',  protectExpressManager, ctrl.createInventoryRequest);

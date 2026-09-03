@@ -11,6 +11,7 @@ const ExpressStoreProduct     = require('../models/ExpressStoreProduct');
 const ExpressOrder            = require('../models/ExpressOrder');
 const ExpressInventoryRequest = require('../models/ExpressInventoryRequest');
 const ExpressAuditLog         = require('../models/ExpressAuditLog');
+const ExpressStockLog         = require('../models/ExpressStockLog');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
 
@@ -103,6 +104,60 @@ const toggleProductAvailability = async (req, res) => {
   } catch (err) {
     console.error('[expressManager.toggleProductAvailability]', err);
     fail(res, 500, 'Failed to update product availability');
+  }
+};
+
+// Report a loss (wastage/spoilage/damage) for a product at this manager's
+// store — atomically deducts stock (floored at 0 so a mis-entered qty larger
+// than what's on hand can't drive it negative) and writes an ExpressStockLog
+// entry the admin's finance dashboard reads to factor loss value into P&L.
+const recordLoss = async (req, res) => {
+  try {
+    const { storeProductId } = req.params;
+    const { qty, reason } = req.body;
+    const lossQty = Number(qty);
+    if (!Number.isFinite(lossQty) || lossQty <= 0) return fail(res, 400, 'qty must be a positive number');
+    if (!reason || !reason.trim()) return fail(res, 400, 'A reason is required for a loss entry');
+
+    const sp = await ExpressStoreProduct.findOne({ _id: storeProductId, store: req.manager.store })
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } });
+    if (!sp) return fail(res, 404, 'Product not found at your store');
+
+    const previousQty = sp.stockQty;
+    const actualLoss = Math.min(lossQty, previousQty); // never go below 0
+    sp.stockQty = Math.max(0, previousQty - lossQty);
+    await sp.save();
+
+    await ExpressStockLog.create({
+      store: req.manager.store, product: sp.product?._id, type: 'loss',
+      qty: actualLoss, previousQty, newQty: sp.stockQty,
+      reason: reason.trim(), actorType: 'store_manager', actorName: req.manager.name,
+    });
+    await logAudit({
+      actorName: req.manager.name, action: 'stock.loss', store: req.manager.store,
+      meta: { productId: sp.product?._id, productName: sp.product?.koyambeduProduct?.name, qty: actualLoss, reason: reason.trim() },
+    });
+
+    res.json({ success: true, storeProduct: sp });
+  } catch (err) {
+    console.error('[expressManager.recordLoss]', err);
+    fail(res, 500, 'Failed to record loss');
+  }
+};
+
+// This manager's own loss/addition history, for their own visibility into
+// what's been reported at their store.
+const listMyStockLogs = async (req, res) => {
+  try {
+    const logs = await ExpressStockLog.find({ store: req.manager.store })
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } })
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .lean();
+    res.json({ success: true, logs });
+  } catch (err) {
+    console.error('[expressManager.listMyStockLogs]', err);
+    fail(res, 500, 'Failed to load stock report');
   }
 };
 
@@ -213,6 +268,7 @@ const recordDeliveryExpense = async (req, res) => {
 module.exports = {
   getDashboard, getMyStore, toggleMyStore,
   listMyStoreProducts, toggleProductAvailability,
+  recordLoss, listMyStockLogs,
   listMyInventoryRequests, createInventoryRequest,
   listMyOrders, updateOrderStatus, recordDeliveryExpense,
 };

@@ -37,6 +37,22 @@ router.get   ('/products/:productId/price-preview', protectSuperAdmin, ctrl.prev
 router.get   ('/stores/:storeId/products',              protectSuperAdmin, ctrl.listStoreProducts);
 router.post  ('/stores/:storeId/products',              protectSuperAdmin, ctrl.upsertStoreProduct);
 router.delete('/stores/:storeId/products/:productId',   protectSuperAdmin, ctrl.removeStoreProduct);
+router.post  ('/stores/:storeId/products/:productId/add-stock', protectSuperAdmin, ctrl.addStock);
+
+// Stock Report (admin additions + store-manager losses, all in one report)
+router.get('/stock-logs', protectSuperAdmin, ctrl.listStockLogs);
+
+// Expenses
+router.get   ('/expenses',            protectSuperAdmin, ctrl.listExpenses);
+router.post  ('/expenses',            protectSuperAdmin, ctrl.createExpense);
+router.delete('/expenses/:expenseId', protectSuperAdmin, ctrl.deleteExpense);
+
+// Finance Dashboard (profit / loss)
+router.get('/finance-dashboard', protectSuperAdmin, ctrl.getFinanceDashboard);
+
+// Visitors + Carts
+router.get('/visitors', protectSuperAdmin, ctrl.adminGetVisitors);
+router.get('/carts',    protectSuperAdmin, ctrl.adminGetCarts);
 
 // Margin Config
 router.get ('/margin-config',               protectSuperAdmin, ctrl.getMarginConfig);

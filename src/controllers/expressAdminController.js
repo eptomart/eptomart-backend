@@ -252,17 +252,26 @@ const listProducts = async (req, res) => {
   }
 };
 
-/** Search Koyambedu Daily's catalogue for products to link into Express — proxies the existing public search so no duplicate index/logic is needed. */
+/**
+ * Search Koyambedu Daily's catalogue for products to link into Express —
+ * proxies the existing public search so no duplicate index/logic is needed.
+ * Intentionally does NOT filter by isActive: a product disabled in
+ * Koyambedu Daily should still be linkable/visible here, since Express's
+ * own availability (ExpressStoreProduct.isAvailable) is managed
+ * independently — admin may want to sell it via Express even while it's
+ * paused on the Koyambedu Daily storefront. isActive is returned so the UI
+ * can badge it.
+ */
 const searchKoyambeduCatalog = async (req, res) => {
   try {
     const { search = '' } = req.query;
-    const filter = { isActive: true };
+    const filter = {};
     if (search.trim()) {
       const re = new RegExp(search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
       filter.$or = [{ name: re }, { nameTamil: re }];
     }
     const products = await KoyambeduProduct.find(filter)
-      .select('name description images unit category')
+      .select('name description images unit category isActive')
       .limit(20)
       .lean();
     res.json({ success: true, products });

@@ -54,6 +54,14 @@ const expressOrderSchema = new Schema({
   cancelReason: String,
   notes: String,
 
+  // Section 15 — delivery expense recorded by the Store Manager per order
+  deliveryExpense: {
+    partner: String,
+    amount: { type: Number, default: null },
+    recordedByName: String,
+    recordedAt: Date,
+  },
+
   timeline: [{
     status: String,
     note: String,

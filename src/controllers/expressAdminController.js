@@ -380,6 +380,21 @@ const updateMarginConfig = async (req, res) => {
   }
 };
 
+// Section 19 — master ON/OFF switch for the whole Express vertical
+const toggleExpressEnabled = async (req, res) => {
+  try {
+    const config = await getOrCreateMarginConfig();
+    config.isEnabled = !config.isEnabled;
+    config.updatedBy = req.user?.name || 'Admin';
+    await config.save();
+    await logAudit({ actorType: 'admin', actorName: req.user?.name || 'Admin', action: config.isEnabled ? 'express.enable' : 'express.disable' });
+    res.json({ success: true, config });
+  } catch (err) {
+    console.error('[express.toggleExpressEnabled]', err);
+    fail(res, 500, 'Failed to toggle Eptomart Express');
+  }
+};
+
 // Recompute logistics ₹/kg from the latest per-store shipment costs (section 2)
 const recomputeLogisticsCost = async (req, res) => {
   try {
@@ -497,7 +512,7 @@ module.exports = {
   listPOSUsers, createPOSUser, updatePOSUser,
   listProducts, createProduct, updateProduct, deleteProduct, previewPrice,
   listStoreProducts, upsertStoreProduct,
-  getMarginConfig, updateMarginConfig, recomputeLogisticsCost,
+  getMarginConfig, updateMarginConfig, toggleExpressEnabled, recomputeLogisticsCost,
   listInventoryRequests, approveInventoryRequest, rejectInventoryRequest,
   listAuditLog,
 };

@@ -40,6 +40,7 @@ router.post('/stores/:storeId/products',    protectSuperAdmin, ctrl.upsertStoreP
 router.get ('/margin-config',               protectSuperAdmin, ctrl.getMarginConfig);
 router.put ('/margin-config',               protectSuperAdmin, ctrl.updateMarginConfig);
 router.post('/margin-config/logistics',     protectSuperAdmin, ctrl.recomputeLogisticsCost);
+router.patch('/margin-config/toggle-enabled', protectSuperAdmin, ctrl.toggleExpressEnabled);
 
 // Inventory Requests
 router.get  ('/inventory-requests',                    protectSuperAdmin, ctrl.listInventoryRequests);

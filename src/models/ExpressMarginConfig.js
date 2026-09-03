@@ -11,6 +11,9 @@ const expressMarginConfigSchema = new mongoose.Schema({
   // Singleton lock key — always 'default', unique index enforces one row
   key: { type: String, default: 'default', unique: true },
 
+  // Section 19 — master ON/OFF switch for the whole Express vertical
+  isEnabled: { type: Boolean, default: false },
+
   // Section 2 — logistics cost per kg, recomputed whenever admin re-enters
   // the latest shipment costs across stores. Stored so it doesn't need to
   // be recalculated on every price lookup.

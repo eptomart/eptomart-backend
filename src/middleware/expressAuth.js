@@ -46,6 +46,10 @@ const protectExpressPOS = async (req, res, next) => {
     if (!posUser.isActive) return res.status(401).json({ success: false, message: 'Account suspended. Contact Admin.' });
 
     req.posUser = posUser;
+    // Session boundary — bills created before this login are invisible to
+    // the POS user (spec section 6: "only see bills created during their
+    // current session"), even though the underlying data isn't deleted.
+    req.posSessionAt = decoded.sessionAt ? new Date(decoded.sessionAt) : new Date(0);
     next();
   } catch (_) {
     return res.status(401).json({ success: false, message: 'Invalid or expired session' });

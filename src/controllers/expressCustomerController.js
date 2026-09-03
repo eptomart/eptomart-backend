@@ -339,7 +339,7 @@ const getQuote = async (req, res) => {
 /** POST /express/orders/create-razorpay */
 const createRazorpayOrder = async (req, res) => {
   try {
-    const { deliveryAddress, notes } = req.body;
+    const { deliveryAddress, notes, deliverySlot } = req.body;
     const priced = await priceCart(req.user._id, deliveryAddress);
 
     const isDemo = !!req.user.isDemoAccount;
@@ -369,6 +369,11 @@ const createRazorpayOrder = async (req, res) => {
       },
       pricing: { subtotal: priced.subtotal, total: priced.total },
       totalWeightKg: priced.totalWeightKg,
+      deliverySlot: deliverySlot ? {
+        date: deliverySlot.date || null,
+        label: deliverySlot.label || null,
+        isNextDay: !!deliverySlot.isNextDay,
+      } : undefined,
       razorpayOrderId: rzpOrder.id,
       isDemoOrder: isDemo,
       notes: notes || '',

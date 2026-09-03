@@ -55,14 +55,16 @@ function computeSellingPrice(product, marginConfig, quantity = 1) {
 
   const baseCostPerUnit = round2(procurementCost + logisticsCostPerUnit);
 
-  // Product-specific override REPLACES the platform charge % (spec section
-  // 3's drumstick example: 40% instead of the default 20%). Salesman +
-  // packing charges still apply on top at their configured defaults.
-  const platformPct = (product.customMarginPct != null)
-    ? Number(product.customMarginPct)
-    : Number(marginConfig.platformChargePct ?? 20);
-  const salesmanPct = Number(marginConfig.salesmanChargePct ?? 20);
-  const packingPct  = Number(marginConfig.packingChargePct ?? 20);
+  // A product-specific custom margin REPLACES the entire default charge
+  // stack (platform + salesman + packing) with just this one percentage —
+  // it is not layered on top of or alongside the defaults. This is for
+  // low-cost produce where the full 20/20/20 stack would price the item
+  // out of the market (spec section 3). When no override is set, the
+  // normal platform/salesman/packing stack applies as usual.
+  const hasCustomMargin = product.customMarginPct != null;
+  const platformPct = hasCustomMargin ? Number(product.customMarginPct) : Number(marginConfig.platformChargePct ?? 20);
+  const salesmanPct = hasCustomMargin ? 0 : Number(marginConfig.salesmanChargePct ?? 20);
+  const packingPct  = hasCustomMargin ? 0 : Number(marginConfig.packingChargePct ?? 20);
 
   const platformCharge = round2(baseCostPerUnit * (platformPct / 100));
   const salesmanCharge = round2(baseCostPerUnit * (salesmanPct / 100));

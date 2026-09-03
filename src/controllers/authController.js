@@ -471,13 +471,48 @@ const addAddress = async (req, res) => {
 
   if (isDefault) user.addresses.forEach(a => { a.isDefault = false; });
 
+  const { lat, lng } = req.body;
   user.addresses.push({
     label: label || 'Home',
     fullName, phone,
     addressLine1, addressLine2: addressLine2 || '',
     city, state: state || '', pincode,
     isDefault: !!isDefault || user.addresses.length === 0,
+    lat: lat != null ? Number(lat) : null,
+    lng: lng != null ? Number(lng) : null,
   });
+  await user.save();
+  res.json({ success: true, addresses: user.addresses });
+};
+
+/**
+ * PUT /api/auth/address/:addressId
+ * Edit an existing saved address's details in place (no separate
+ * delete+recreate needed for a simple correction). lat/lng can also be
+ * updated here if a caller wants to re-pin without changing text fields.
+ */
+const updateAddress = async (req, res) => {
+  const user = await User.findById(req.user._id);
+  const address = user.addresses.id(req.params.addressId);
+  if (!address) return res.status(404).json({ success: false, message: 'Address not found' });
+
+  const { label, fullName, phone, addressLine1, addressLine2, city, state, pincode, isDefault, lat, lng } = req.body;
+  if (phone && !/^[6-9]\d{9}$/.test(phone)) {
+    return res.status(400).json({ success: false, message: 'Enter a valid 10-digit Indian mobile number' });
+  }
+
+  if (label != null) address.label = label;
+  if (fullName != null) address.fullName = fullName;
+  if (phone != null) address.phone = phone;
+  if (addressLine1 != null) address.addressLine1 = addressLine1;
+  if (addressLine2 != null) address.addressLine2 = addressLine2;
+  if (city != null) address.city = city;
+  if (state != null) address.state = state;
+  if (pincode != null) address.pincode = pincode;
+  if (lat != null) address.lat = Number(lat);
+  if (lng != null) address.lng = Number(lng);
+  if (isDefault) user.addresses.forEach(a => { a.isDefault = a._id.toString() === req.params.addressId; });
+
   await user.save();
   res.json({ success: true, addresses: user.addresses });
 };
@@ -555,4 +590,4 @@ const deleteAccount = async (req, res) => {
   res.json({ success: true, message: 'Your account has been permanently deleted.' });
 };
 
-module.exports = { sendOtp, verifyOtp, register, getMe, updateProfile, logout, verifyFirebasePhone, addAddress, deleteAddress, setDefaultAddress, deleteAccount };
+module.exports = { sendOtp, verifyOtp, register, getMe, updateProfile, logout, verifyFirebasePhone, addAddress, updateAddress, deleteAddress, setDefaultAddress, deleteAccount };

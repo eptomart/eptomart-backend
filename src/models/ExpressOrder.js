@@ -39,6 +39,15 @@ const expressOrderSchema = new Schema({
 
   totalWeightKg: { type: Number, default: 0 },
 
+  // Which delivery window the customer picked at checkout — same-day slots
+  // (only future ones are offered) or a next-day slot. Optional/nullable so
+  // existing orders placed before this field existed remain valid.
+  deliverySlot: {
+    date:  { type: String, default: null }, // 'YYYY-MM-DD'
+    label: { type: String, default: null }, // e.g. '4:00 PM - 6:00 PM'
+    isNextDay: { type: Boolean, default: false },
+  },
+
   paymentStatus: { type: String, enum: ['pending', 'paid', 'failed'], default: 'pending' },
   orderStatus: {
     type: String,

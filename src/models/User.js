@@ -23,6 +23,12 @@ const addressSchema = new mongoose.Schema({
   state: String,
   pincode: String,
   isDefault: { type: Boolean, default: false },
+  // Optional geo-coordinates — populated when an address is captured via a
+  // map-pin flow (e.g. Eptomart Express's location picker, which needs
+  // precise lat/lng to find the nearest store). Addresses added the
+  // traditional text-only way simply leave these null.
+  lat: { type: Number, default: null },
+  lng: { type: Number, default: null },
 }, { _id: true });
 
 const userSchema = new mongoose.Schema({

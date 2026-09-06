@@ -41,8 +41,18 @@ const expressProductSchema = new mongoose.Schema({
   // product only. Null = use the global default.
   customMarginPct: { type: Number, default: null, min: 0, max: 500 },
   isActive: { type: Boolean, default: true },
+
+  // Quick-entry code for the POS terminal — a 3-digit PLU-style code so the
+  // POS operator can type a number instead of searching by name. Auto-
+  // assigned when the product is linked into Express, based on the linked
+  // KoyambeduProduct's category: 100-199 for Vegetables, 200-299 for
+  // Fruits. Products in any other category (or where the category can't be
+  // confidently matched) get no code and can have one assigned manually
+  // by admin later (see adminSetProductPlu). Null = no code assigned.
+  plu: { type: Number, default: null, min: 100, max: 299 },
 }, { timestamps: true });
 
 expressProductSchema.index({ isActive: 1 });
+expressProductSchema.index({ plu: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('ExpressProduct', expressProductSchema);

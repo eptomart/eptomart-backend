@@ -12,6 +12,14 @@ const expressStoreProductSchema = new mongoose.Schema({
   isAvailable: { type: Boolean, default: true },
   // Current stock balance at this store, in the product's base unit
   stockQty: { type: Number, default: 0, min: 0 },
+  // Optional per-store selling price override, in ₹ per base unit. When
+  // set, this replaces the globally-computed margin price (see
+  // expressPricingService.computeSellingPrice) for THIS store only —
+  // other stores selling the same ExpressProduct keep using the global
+  // margin calculation unless they also have their own override. Null
+  // means "use the global computed price", which is the default and
+  // preserves all existing pricing behavior.
+  priceOverride: { type: Number, default: null, min: 0 },
   // Audit trail for the last ON/OFF flip (section 11 requires who/when)
   lastToggle: {
     isAvailable: { type: Boolean, default: null },

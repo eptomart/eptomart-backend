@@ -19,6 +19,7 @@ const ExpressOrder           = require('../models/ExpressOrder');
 const ExpressCart            = require('../models/ExpressCart');
 const ExpressBill            = require('../models/ExpressBill');
 const KoyambeduProduct       = require('../models/KoyambeduProduct');
+const KoyambeduCategory      = require('../models/KoyambeduCategory');
 const Analytics              = require('../models/Analytics');
 const { computeLogisticsCostPerKg, computeSellingPrice } = require('../services/expressPricingService');
 
@@ -281,6 +282,49 @@ const searchKoyambeduCatalog = async (req, res) => {
   }
 };
 
+// ── PLU quick-entry codes for the POS terminal ──────────────────────────
+// Vegetables get 100-199, Fruits get 200-299 (section requested: "every
+// fruit should have a three digit code ... 200 series and vegetables ...
+// 100 series"). Category matching is name-based since KoyambeduCategory
+// documents are admin-created (no fixed enum) — anything whose category
+// name doesn't clearly say "fruit" or "vegetable" is left uncoded and can
+// be assigned manually via adminSetProductPlu.
+const PLU_SERIES = { vegetable: [100, 199], fruit: [200, 299] };
+
+async function detectPluSeries(koyambeduProduct) {
+  try {
+    if (!koyambeduProduct?.category) return null;
+    const category = await KoyambeduCategory.findById(koyambeduProduct.category).select('name parent').lean();
+    if (!category) return null;
+    // Walk up to the root category if this is a sub-category, so e.g.
+    // "Leafy Vegetables" (child of "Vegetables") still resolves correctly.
+    let current = category;
+    const seen = new Set();
+    while (current?.parent && !seen.has(String(current._id))) {
+      seen.add(String(current._id));
+      const parent = await KoyambeduCategory.findById(current.parent).select('name parent').lean();
+      if (!parent) break;
+      current = parent;
+    }
+    const name = (current?.name || '').toLowerCase();
+    if (name.includes('fruit')) return 'fruit';
+    if (name.includes('vegetable') || name.includes('veg')) return 'vegetable';
+    return null;
+  } catch (_) {
+    return null; // never let PLU detection block a product create
+  }
+}
+
+/** Finds the next free 3-digit code in the given series' range. Returns null if the series is full. */
+async function nextFreePlu(series) {
+  const [min, max] = PLU_SERIES[series];
+  const used = new Set((await ExpressProduct.find({ plu: { $gte: min, $lte: max } }).select('plu').lean()).map(p => p.plu));
+  for (let code = min + 1; code <= max; code++) { // +1: reserve xx0 (e.g. 100, 200) as "unassigned" for readability
+    if (!used.has(code)) return code;
+  }
+  return null;
+}
+
 const createProduct = async (req, res) => {
   try {
     const { koyambeduProductId, unit, isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct } = req.body;
@@ -290,10 +334,16 @@ const createProduct = async (req, res) => {
     const koyambeduProduct = await KoyambeduProduct.findById(koyambeduProductId).lean();
     if (!koyambeduProduct) return fail(res, 404, 'Koyambedu product not found');
 
+    // Auto-assign a PLU code based on category — best-effort, never blocks
+    // creation if detection fails or the series is full.
+    let plu = null;
+    const series = await detectPluSeries(koyambeduProduct);
+    if (series) plu = await nextFreePlu(series);
+
     const product = await ExpressProduct.create({
       koyambeduProduct: koyambeduProductId,
       unit: unit || koyambeduProduct.unit || 'kg',
-      isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct,
+      isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct, plu,
     });
     const populated = await product.populate('koyambeduProduct', KOYAMBEDU_PRODUCT_FIELDS);
     res.status(201).json({ success: true, product: populated });
@@ -301,6 +351,100 @@ const createProduct = async (req, res) => {
     if (err.code === 11000) return fail(res, 409, 'This Koyambedu product is already linked to Express');
     console.error('[express.createProduct]', err);
     fail(res, 500, 'Failed to create product');
+  }
+};
+
+// Manually set/change a product's PLU code — validates it's a 3-digit code
+// in the correct series (100s vegetables / 200s fruit) and unique.
+const adminSetProductPlu = async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const { plu } = req.body;
+    if (plu === null || plu === '') {
+      const product = await ExpressProduct.findByIdAndUpdate(productId, { plu: null }, { new: true });
+      if (!product) return fail(res, 404, 'Product not found');
+      return res.json({ success: true, product });
+    }
+    const code = Number(plu);
+    if (!Number.isInteger(code) || code < 100 || code > 299) {
+      return fail(res, 400, 'Code must be a 3-digit number: 100-199 (vegetables) or 200-299 (fruits)');
+    }
+    const product = await ExpressProduct.findByIdAndUpdate(productId, { plu: code }, { new: true, runValidators: true })
+      .populate('koyambeduProduct', KOYAMBEDU_PRODUCT_FIELDS);
+    if (!product) return fail(res, 404, 'Product not found');
+    res.json({ success: true, product });
+  } catch (err) {
+    if (err.code === 11000) return fail(res, 409, 'That code is already assigned to another product');
+    console.error('[express.adminSetProductPlu]', err);
+    fail(res, 500, 'Failed to update code');
+  }
+};
+
+// Combined "pick a Koyambedu product, assign it to a store with stock and
+// price" action — the single-screen flow requested, instead of the
+// separate link-into-Express + allocate-to-store steps. If the Koyambedu
+// product isn't linked into Express yet, this links it first (same as
+// createProduct, including PLU auto-assignment); if it's already linked,
+// the existing ExpressProduct is reused. Either way, stock is ADDED
+// (procurement arriving) and logged to ExpressStockLog exactly like
+// addStock does — including the acknowledgement fields, so this shows up
+// in the store manager's "pending acknowledgement" list automatically.
+const adminAssignProductToStore = async (req, res) => {
+  try {
+    const {
+      storeId, koyambeduProductId, unit, isWeightBased, unitsPerKg,
+      procurementBaseCost, customMarginPct, stockQty, priceOverride, note,
+    } = req.body;
+    if (!storeId || !koyambeduProductId) return fail(res, 400, 'storeId and koyambeduProductId are required');
+
+    let product = await ExpressProduct.findOne({ koyambeduProduct: koyambeduProductId });
+    if (!product) {
+      if (procurementBaseCost == null) return fail(res, 400, 'procurementBaseCost is required to link this product into Express for the first time');
+      const koyambeduProduct = await KoyambeduProduct.findById(koyambeduProductId).lean();
+      if (!koyambeduProduct) return fail(res, 404, 'Koyambedu product not found');
+      let plu = null;
+      const series = await detectPluSeries(koyambeduProduct);
+      if (series) plu = await nextFreePlu(series);
+      product = await ExpressProduct.create({
+        koyambeduProduct: koyambeduProductId,
+        unit: unit || koyambeduProduct.unit || 'kg',
+        isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct, plu,
+      });
+    }
+
+    const delta = Number(stockQty) || 0;
+    if (delta < 0) return fail(res, 400, 'stockQty cannot be negative');
+
+    const existing = await ExpressStoreProduct.findOne({ store: storeId, product: product._id }).lean();
+    const previousQty = existing?.stockQty || 0;
+
+    const update = { $setOnInsert: { store: storeId, product: product._id, isAvailable: true } };
+    if (delta > 0) update.$inc = { stockQty: delta };
+    if (priceOverride !== undefined) update.$set = { priceOverride: priceOverride === '' ? null : Number(priceOverride) };
+
+    const storeProduct = await ExpressStoreProduct.findOneAndUpdate(
+      { store: storeId, product: product._id },
+      update,
+      { new: true, upsert: true, runValidators: true }
+    );
+
+    if (delta > 0) {
+      await ExpressStockLog.create({
+        store: storeId, product: product._id, type: 'addition',
+        qty: delta, previousQty, newQty: storeProduct.stockQty,
+        reason: note || null, actorType: 'admin', actorName: req.user?.name || 'Admin',
+      });
+    }
+    await logAudit({
+      actorType: 'admin', actorName: req.user?.name || 'Admin', action: 'store-product.assign',
+      store: storeId, meta: { productId: product._id, stockQty: delta, priceOverride },
+    });
+
+    const populatedProduct = await product.populate('koyambeduProduct', KOYAMBEDU_PRODUCT_FIELDS);
+    res.json({ success: true, product: populatedProduct, storeProduct });
+  } catch (err) {
+    console.error('[express.adminAssignProductToStore]', err);
+    fail(res, 500, 'Failed to assign product to store');
   }
 };
 
@@ -864,6 +1008,7 @@ module.exports = {
   listStoreManagers, createStoreManager, updateStoreManager,
   listPOSUsers, createPOSUser, updatePOSUser,
   listProducts, createProduct, updateProduct, deleteProduct, previewPrice, searchKoyambeduCatalog,
+  adminSetProductPlu, adminAssignProductToStore,
   listStoreProducts, upsertStoreProduct, removeStoreProduct, addStock, listStockLogs,
   getMarginConfig, updateMarginConfig, toggleExpressEnabled, recomputeLogisticsCost,
   listInventoryRequests, approveInventoryRequest, rejectInventoryRequest,

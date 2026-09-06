@@ -20,6 +20,8 @@ router.get  ('/products',                          protectExpressManager, ctrl.l
 router.patch('/products/:storeProductId/toggle',   protectExpressManager, ctrl.toggleProductAvailability);
 router.post ('/products/:storeProductId/loss',     protectExpressManager, ctrl.recordLoss);
 router.get  ('/stock-logs',                        protectExpressManager, ctrl.listMyStockLogs);
+router.get  ('/stock-logs/pending-ack',            protectExpressManager, ctrl.listPendingAcknowledgements);
+router.post ('/stock-logs/:logId/acknowledge',     protectExpressManager, ctrl.acknowledgeStock);
 
 router.get ('/inventory-requests',  protectExpressManager, ctrl.listMyInventoryRequests);
 router.post('/inventory-requests',  protectExpressManager, ctrl.createInventoryRequest);

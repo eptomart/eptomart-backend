@@ -32,12 +32,16 @@ router.post  ('/products',                  protectSuperAdmin, ctrl.createProduc
 router.put   ('/products/:productId',       protectSuperAdmin, ctrl.updateProduct);
 router.delete('/products/:productId',       protectSuperAdmin, ctrl.deleteProduct);
 router.get   ('/products/:productId/price-preview', protectSuperAdmin, ctrl.previewPrice);
+router.patch ('/products/:productId/plu',            protectSuperAdmin, ctrl.adminSetProductPlu);
 
 // Store Products (per-store availability + stock)
 router.get   ('/stores/:storeId/products',              protectSuperAdmin, ctrl.listStoreProducts);
 router.post  ('/stores/:storeId/products',              protectSuperAdmin, ctrl.upsertStoreProduct);
 router.delete('/stores/:storeId/products/:productId',   protectSuperAdmin, ctrl.removeStoreProduct);
 router.post  ('/stores/:storeId/products/:productId/add-stock', protectSuperAdmin, ctrl.addStock);
+
+// Combined "pick Koyambedu product → assign to store with stock + price" flow
+router.post  ('/products/assign-to-store', protectSuperAdmin, ctrl.adminAssignProductToStore);
 
 // Stock Report (admin additions + store-manager losses, all in one report)
 router.get('/stock-logs', protectSuperAdmin, ctrl.listStockLogs);

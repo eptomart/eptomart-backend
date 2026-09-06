@@ -39,7 +39,11 @@ const listProducts = async (req, res) => {
         name: sp.product.koyambeduProduct.name,
         unit: sp.product.unit,
         stockQty: sp.stockQty,
-        price: computeSellingPrice(sp.product, config, 1).sellingPricePerUnit,
+        plu: sp.product.plu ?? null,
+        // A per-store price override (set by admin when assigning this
+        // product to this store) replaces the globally-computed margin
+        // price for this store only — see ExpressStoreProduct.priceOverride.
+        price: sp.priceOverride ?? computeSellingPrice(sp.product, config, 1).sellingPricePerUnit,
       }));
     res.json({ success: true, products });
   } catch (err) {
@@ -125,7 +129,7 @@ const updateBillItem = async (req, res) => {
     } else {
       if (storeProduct.stockQty < quantity) return fail(res, 400, `Only ${storeProduct.stockQty} of "${productName}" left in stock`);
       const config = await getMarginConfig();
-      const price = computeSellingPrice(storeProduct.product, config, 1).sellingPricePerUnit;
+      const price = storeProduct.priceOverride ?? computeSellingPrice(storeProduct.product, config, 1).sellingPricePerUnit;
       if (existing) {
         existing.quantity = Number(quantity);
         existing.price = price;

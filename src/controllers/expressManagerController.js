@@ -161,6 +161,47 @@ const listMyStockLogs = async (req, res) => {
   }
 };
 
+// Stock additions admin has credited to this store that the manager hasn't
+// yet confirmed physically receiving/counting. Purely a confirmation step —
+// the stock is already live in ExpressStoreProduct.stockQty the moment
+// admin adds it (unchanged behavior); this just lets the manager mark
+// "yes, I've checked this delivery against what's shown" for their own
+// records, at any time, with no deadline.
+const listPendingAcknowledgements = async (req, res) => {
+  try {
+    const logs = await ExpressStockLog.find({
+      store: req.manager.store, type: 'addition', actorType: 'admin', acknowledged: false,
+    })
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } })
+      .sort({ createdAt: -1 })
+      .lean();
+    res.json({ success: true, logs });
+  } catch (err) {
+    console.error('[expressManager.listPendingAcknowledgements]', err);
+    fail(res, 500, 'Failed to load pending stock');
+  }
+};
+
+const acknowledgeStock = async (req, res) => {
+  try {
+    const { logId } = req.params;
+    const log = await ExpressStockLog.findOneAndUpdate(
+      { _id: logId, store: req.manager.store, type: 'addition', actorType: 'admin' },
+      { acknowledged: true, acknowledgedBy: req.manager._id, acknowledgedByName: req.manager.name, acknowledgedAt: new Date() },
+      { new: true }
+    );
+    if (!log) return fail(res, 404, 'Stock entry not found at your store');
+    await logAudit({
+      actorName: req.manager.name, action: 'stock.acknowledge', store: req.manager.store,
+      meta: { logId, productId: log.product },
+    });
+    res.json({ success: true, log });
+  } catch (err) {
+    console.error('[expressManager.acknowledgeStock]', err);
+    fail(res, 500, 'Failed to acknowledge stock');
+  }
+};
+
 // ── Inventory requests (section 5) ───────────────────────────────────────
 
 const listMyInventoryRequests = async (req, res) => {
@@ -269,6 +310,7 @@ module.exports = {
   getDashboard, getMyStore, toggleMyStore,
   listMyStoreProducts, toggleProductAvailability,
   recordLoss, listMyStockLogs,
+  listPendingAcknowledgements, acknowledgeStock,
   listMyInventoryRequests, createInventoryRequest,
   listMyOrders, updateOrderStatus, recordDeliveryExpense,
 };

@@ -124,7 +124,10 @@ const getCatalogue = async (req, res) => {
             image: kb.images?.find(i => i.isPrimary)?.url || kb.images?.[0]?.url || null,
           },
           stockQty: sp.stockQty,
-          pricePerUnit: pricing.sellingPricePerUnit,
+          // A per-store price override (admin-set when assigning this
+          // product to this store) wins over the globally-computed margin
+          // price — see ExpressStoreProduct.priceOverride.
+          pricePerUnit: sp.priceOverride ?? pricing.sellingPricePerUnit,
         };
       });
 
@@ -214,7 +217,7 @@ const addToCart = async (req, res) => {
         product: productId,
         name: storeProduct.product.koyambeduProduct.name,
         unit: storeProduct.product.unit,
-        price: pricing.sellingPricePerUnit,
+        price: storeProduct.priceOverride ?? pricing.sellingPricePerUnit,
         quantity: Number(quantity),
       });
     }
@@ -299,7 +302,8 @@ async function priceCart(userId, deliveryAddress) {
     if (sp.stockQty < line.quantity) { const err = new Error(`Only ${sp.stockQty} of "${line.name}" left in stock.`); err.statusCode = 400; throw err; }
 
     const pricing = computeSellingPrice(sp.product, config, 1);
-    const lineTotal = Math.round(pricing.sellingPricePerUnit * line.quantity * 100) / 100;
+    const unitPrice = sp.priceOverride ?? pricing.sellingPricePerUnit;
+    const lineTotal = Math.round(unitPrice * line.quantity * 100) / 100;
     subtotal += lineTotal;
     totalWeightKg += toKgEquivalent(sp.product, line.quantity);
 
@@ -308,7 +312,7 @@ async function priceCart(userId, deliveryAddress) {
       // linked Koyambedu product at add-to-cart time) — sp.product itself
       // no longer carries a name field, see ExpressProduct.js.
       product: sp.product._id, name: line.name, unit: sp.product.unit,
-      unitPrice: pricing.sellingPricePerUnit, quantity: line.quantity, lineTotal,
+      unitPrice, quantity: line.quantity, lineTotal,
     });
   }
   totalWeightKg = Math.round(totalWeightKg * 100) / 100;

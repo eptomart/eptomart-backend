@@ -513,6 +513,32 @@ const listStoreProducts = async (req, res) => {
   }
 };
 
+// Printable "PLU cheat sheet" for a store — same name/unit/plu/price shape
+// and same price computation (priceOverride, else the margin engine) that
+// the POS terminal itself uses, so what's printed always matches what the
+// POS screen shows. Used by ExpressAdmin.jsx's "Print PLU List" button.
+const listStoreProductsForPrint = async (req, res) => {
+  try {
+    const { storeId } = req.params;
+    const marginConfig = await getOrCreateMarginConfig();
+    const storeProducts = await ExpressStoreProduct.find({ store: storeId })
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } })
+      .lean();
+    const products = storeProducts
+      .filter(sp => sp.product?.koyambeduProduct)
+      .map(sp => ({
+        name: sp.product.koyambeduProduct.name,
+        unit: sp.product.unit,
+        plu: sp.product.plu ?? null,
+        price: sp.priceOverride ?? computeSellingPrice(sp.product, marginConfig, 1).sellingPricePerUnit,
+      }));
+    res.json({ success: true, products });
+  } catch (err) {
+    console.error('[express.listStoreProductsForPrint]', err);
+    fail(res, 500, 'Failed to load print list');
+  }
+};
+
 // Upsert — link a product to a store (or update its stock/availability)
 const upsertStoreProduct = async (req, res) => {
   try {
@@ -1009,7 +1035,7 @@ module.exports = {
   listPOSUsers, createPOSUser, updatePOSUser,
   listProducts, createProduct, updateProduct, deleteProduct, previewPrice, searchKoyambeduCatalog,
   adminSetProductPlu, adminAssignProductToStore,
-  listStoreProducts, upsertStoreProduct, removeStoreProduct, addStock, listStockLogs,
+  listStoreProducts, listStoreProductsForPrint, upsertStoreProduct, removeStoreProduct, addStock, listStockLogs,
   getMarginConfig, updateMarginConfig, toggleExpressEnabled, recomputeLogisticsCost,
   listInventoryRequests, approveInventoryRequest, rejectInventoryRequest,
   listAuditLog,

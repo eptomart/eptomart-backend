@@ -12,8 +12,16 @@ const ExpressOrder            = require('../models/ExpressOrder');
 const ExpressInventoryRequest = require('../models/ExpressInventoryRequest');
 const ExpressAuditLog         = require('../models/ExpressAuditLog');
 const ExpressStockLog         = require('../models/ExpressStockLog');
+const ExpressMarginConfig     = require('../models/ExpressMarginConfig');
+const { computeSellingPrice } = require('../services/expressPricingService');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
+
+async function getMarginConfig() {
+  let config = await ExpressMarginConfig.findOne({ key: 'default' });
+  if (!config) config = await ExpressMarginConfig.create({ key: 'default' });
+  return config;
+}
 
 async function logAudit({ actorName, action, store, meta = {} }) {
   try {
@@ -82,6 +90,31 @@ const listMyStoreProducts = async (req, res) => {
   } catch (err) {
     console.error('[expressManager.listMyStoreProducts]', err);
     fail(res, 500, 'Failed to load products');
+  }
+};
+
+// Printable "PLU cheat sheet" for the manager's own store — same
+// name/unit/plu/price shape and price computation the POS terminal itself
+// uses (priceOverride, else the margin engine), so the printed sheet always
+// matches what POS staff see on screen.
+const listMyStoreProductsForPrint = async (req, res) => {
+  try {
+    const marginConfig = await getMarginConfig();
+    const storeProducts = await ExpressStoreProduct.find({ store: req.manager.store })
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } })
+      .lean();
+    const products = storeProducts
+      .filter(sp => sp.product?.koyambeduProduct)
+      .map(sp => ({
+        name: sp.product.koyambeduProduct.name,
+        unit: sp.product.unit,
+        plu: sp.product.plu ?? null,
+        price: sp.priceOverride ?? computeSellingPrice(sp.product, marginConfig, 1).sellingPricePerUnit,
+      }));
+    res.json({ success: true, products });
+  } catch (err) {
+    console.error('[expressManager.listMyStoreProductsForPrint]', err);
+    fail(res, 500, 'Failed to load print list');
   }
 };
 
@@ -308,7 +341,7 @@ const recordDeliveryExpense = async (req, res) => {
 
 module.exports = {
   getDashboard, getMyStore, toggleMyStore,
-  listMyStoreProducts, toggleProductAvailability,
+  listMyStoreProducts, listMyStoreProductsForPrint, toggleProductAvailability,
   recordLoss, listMyStockLogs,
   listPendingAcknowledgements, acknowledgeStock,
   listMyInventoryRequests, createInventoryRequest,

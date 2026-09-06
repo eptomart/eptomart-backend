@@ -17,6 +17,7 @@ router.get  ('/store',          protectExpressManager, ctrl.getMyStore);
 router.patch('/store/toggle',   protectExpressManager, ctrl.toggleMyStore);
 
 router.get  ('/products',                          protectExpressManager, ctrl.listMyStoreProducts);
+router.get  ('/products/print-list',               protectExpressManager, ctrl.listMyStoreProductsForPrint);
 router.patch('/products/:storeProductId/toggle',   protectExpressManager, ctrl.toggleProductAvailability);
 router.post ('/products/:storeProductId/loss',     protectExpressManager, ctrl.recordLoss);
 router.get  ('/stock-logs',                        protectExpressManager, ctrl.listMyStockLogs);

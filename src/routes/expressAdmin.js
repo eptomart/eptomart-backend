@@ -36,6 +36,7 @@ router.patch ('/products/:productId/plu',            protectSuperAdmin, ctrl.adm
 
 // Store Products (per-store availability + stock)
 router.get   ('/stores/:storeId/products',              protectSuperAdmin, ctrl.listStoreProducts);
+router.get   ('/stores/:storeId/products/print-list',   protectSuperAdmin, ctrl.listStoreProductsForPrint);
 router.post  ('/stores/:storeId/products',              protectSuperAdmin, ctrl.upsertStoreProduct);
 router.delete('/stores/:storeId/products/:productId',   protectSuperAdmin, ctrl.removeStoreProduct);
 router.post  ('/stores/:storeId/products/:productId/add-stock', protectSuperAdmin, ctrl.addStock);

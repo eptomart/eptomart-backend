@@ -660,9 +660,17 @@ const updateCart = async (req, res) => {
   if (Number(quantity) <= 0) {
     let cart = await KoyambeduCart.findOne({ user: req.user._id });
     if (cart) {
+      // Match on gradeKey unconditionally (not just when gradeKey is
+      // truthy) — a customer with more than one grade of the same product
+      // in their cart would otherwise have an arbitrary line deleted
+      // (whichever came first in the array) whenever the request omitted
+      // gradeKey, instead of the specific line they clicked "remove" on.
+      // Ungraded products always have gradeKey === null on both sides, so
+      // this is a no-op for the common case and only tightens matching for
+      // graded products.
       const idx = cart.items.findIndex(i =>
         String(i.product) === String(productId) &&
-        (gradeKey ? (i.gradeKey || null) === (gradeKey || null) : true)
+        (i.gradeKey || null) === (gradeKey || null)
       );
       if (idx > -1) {
         cart.items.splice(idx, 1);

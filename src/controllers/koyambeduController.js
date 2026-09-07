@@ -5853,6 +5853,170 @@ const getOrderInvoice = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════
+// ADMIN — BULK-BUYER PRICE QUOTATION PDF
+// ══════════════════════════════════════════════
+
+/**
+ * For a product, collects every price point that actually exists on it
+ * (each quantity-tier variant's finalPrice, across whichever grades are
+ * active when grading is enabled — root-level variants otherwise) and
+ * returns either the lowest or highest of them. This is what "highest
+ * price / lowest price" means for a quotation: since Koyambedu Daily prices
+ * bulk quantities cheaper per unit than small quantities via the variant
+ * tiers, "lowest" surfaces the best bulk rate and "highest" surfaces the
+ * small-quantity/retail rate — there is no multi-seller price comparison to
+ * make, since product names are unique per seller across the whole catalog.
+ * Falls back to currentPrice if a product has no variant pricing at all.
+ */
+function _koyambeduQuotePricePoints(product) {
+  const points = [];
+  if (product.gradesEnabled && Array.isArray(product.grades) && product.grades.length) {
+    product.grades.filter(g => g.isActive).forEach(g => {
+      (g.variants || []).forEach(v => { if (v.finalPrice > 0) points.push(v.finalPrice); });
+    });
+  } else if (Array.isArray(product.variants) && product.variants.length) {
+    product.variants.forEach(v => { if (v.finalPrice > 0) points.push(v.finalPrice); });
+  }
+  if (points.length === 0 && Number(product.currentPrice) > 0) points.push(Number(product.currentPrice));
+  return points;
+}
+
+/**
+ * GET /api/koyambedu/admin/quotation/pdf
+ * Query params:
+ *   scope       'all' | 'category' | 'items'  (default 'all')
+ *   categoryIds comma-separated KoyambeduCategory ids — required when scope='category'
+ *   productIds  comma-separated KoyambeduProduct ids  — required when scope='items'
+ *   priceMode   'lowest' | 'highest'  (default 'lowest')
+ * Generates a bulk-buyer price quotation PDF, grouped by category, with a
+ * date/time stamp, each product's minimum order quantity, and the chosen
+ * price point per product. Read-only — never touches product/order data.
+ */
+const adminGenerateQuotationPDF = async (req, res) => {
+  const PDFDocument = require('pdfkit');
+  const { scope = 'all', categoryIds = '', productIds = '', priceMode = 'lowest' } = req.query;
+
+  const filter = { isActive: true };
+  if (scope === 'category') {
+    const ids = categoryIds.split(',').map(s => s.trim()).filter(Boolean);
+    if (ids.length === 0) return res.status(400).json({ success: false, message: 'Select at least one category' });
+    filter.category = { $in: ids };
+  } else if (scope === 'items') {
+    const ids = productIds.split(',').map(s => s.trim()).filter(Boolean);
+    if (ids.length === 0) return res.status(400).json({ success: false, message: 'Select at least one product' });
+    filter._id = { $in: ids };
+  }
+
+  const products = await KoyambeduProduct.find(filter)
+    .populate('category', 'name')
+    .lean();
+  if (products.length === 0) return res.status(404).json({ success: false, message: 'No products matched — nothing to quote' });
+
+  // Group by category name, each product priced by the chosen mode.
+  const groups = {};
+  for (const p of products) {
+    const catName = p.category?.name || 'Uncategorised';
+    const points = _koyambeduQuotePricePoints(p);
+    if (points.length === 0) continue; // no priceable data — skip rather than show ₹0
+    const price = priceMode === 'highest' ? Math.max(...points) : Math.min(...points);
+    (groups[catName] = groups[catName] || []).push({ name: p.name, unit: p.unit, minQty: p.minQty, price });
+  }
+  Object.values(groups).forEach(list => list.sort((a, b) => a.name.localeCompare(b.name)));
+  const categoryNames = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+
+  const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+  const fmtAmt = n => `Rs. ${r2(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const now = new Date();
+  const stamp = now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) +
+    ', ' + now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  const fileStamp = now.toISOString().slice(0, 10);
+
+  const scopeLabel = scope === 'category' ? 'Selected Categories'
+    : scope === 'items' ? 'Selected Items'
+    : 'All Products';
+  const priceModeLabel = priceMode === 'highest' ? 'Highest Price (small-quantity rate)' : 'Lowest Price (bulk rate)';
+
+  const doc = new PDFDocument({ size: 'A4', margin: 45, info: { Title: 'Koyambedu Daily — Price Quotation', Author: 'Eptomart' } });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="Koyambedu-Quotation-${fileStamp}.pdf"`);
+  doc.pipe(res);
+
+  const L = 45, R = 550, W = R - L;
+  const ROW_H = 18;
+  const C = { sno: L, name: L + 28, unit: L + 268, minqty: L + 330, price: L + 418 };
+  const CW = { sno: 26, name: 236, unit: 58, minqty: 84, price: 87 };
+
+  let rowY = 45;
+
+  const drawDocHeader = () => {
+    doc.fontSize(22).font('Helvetica-Bold').fillColor('#065f46').text('EPTOMART', L, 45, { width: 300 });
+    doc.fontSize(10).font('Helvetica').fillColor('#374151').text('Koyambedu Daily — Fresh from the Market', L, 72);
+    doc.fontSize(18).font('Helvetica-Bold').fillColor('#065f46')
+      .text('PRICE QUOTATION', L + 200, 45, { width: 305, align: 'right' });
+    doc.fontSize(9).font('Helvetica').fillColor('#374151')
+      .text(`Generated: ${stamp}`, L + 200, 68, { width: 305, align: 'right' })
+      .text(`Scope: ${scopeLabel}`, L + 200, 80, { width: 305, align: 'right' })
+      .text(`Pricing: ${priceModeLabel}`, L + 200, 92, { width: 305, align: 'right' });
+    doc.moveTo(L, 108).lineTo(R, 108).strokeColor('#065f46').lineWidth(1.5).stroke();
+    doc.fontSize(8).font('Helvetica').fillColor('#92400e')
+      .text('This is an indicative price quotation for bulk buyers, valid on the date shown above — prices are updated daily and subject to change.',
+        L, 114, { width: W });
+    rowY = 136;
+  };
+
+  const drawTableHeader = () => {
+    doc.rect(L, rowY, W, ROW_H).fill('#065f46');
+    doc.fontSize(8).font('Helvetica-Bold').fillColor('#ffffff');
+    doc.text('S.No',   C.sno,    rowY + 5, { width: CW.sno, align: 'center' });
+    doc.text('Product',C.name,   rowY + 5, { width: CW.name });
+    doc.text('Unit',   C.unit,   rowY + 5, { width: CW.unit, align: 'center' });
+    doc.text('Min Order', C.minqty, rowY + 5, { width: CW.minqty, align: 'center' });
+    doc.text('Price',  C.price,  rowY + 5, { width: CW.price, align: 'right' });
+    rowY += ROW_H;
+  };
+
+  const ensureSpace = (needed) => {
+    if (rowY + needed > 790) {
+      doc.addPage();
+      rowY = 45;
+      drawTableHeader();
+    }
+  };
+
+  drawDocHeader();
+
+  let sno = 0;
+  for (const catName of categoryNames) {
+    ensureSpace(ROW_H * 2);
+    doc.fontSize(9.5).font('Helvetica-Bold').fillColor('#065f46').text(catName.toUpperCase(), L, rowY);
+    rowY += 14;
+    drawTableHeader();
+    groups[catName].forEach((item, idx) => {
+      ensureSpace(ROW_H);
+      sno += 1;
+      doc.rect(L, rowY, W, ROW_H).fill(idx % 2 === 0 ? '#f9fafb' : '#ffffff');
+      doc.fontSize(8).font('Helvetica').fillColor('#6b7280')
+        .text(String(sno), C.sno, rowY + 5, { width: CW.sno, align: 'center' });
+      doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#111827')
+        .text(item.name, C.name, rowY + 5, { width: CW.name });
+      doc.fontSize(8.5).font('Helvetica').fillColor('#374151')
+        .text(item.unit || '', C.unit, rowY + 5, { width: CW.unit, align: 'center' })
+        .text(`${item.minQty} ${item.unit || ''}`, C.minqty, rowY + 5, { width: CW.minqty, align: 'center' })
+        .text(fmtAmt(item.price), C.price, rowY + 5, { width: CW.price, align: 'right' });
+      rowY += ROW_H;
+    });
+    rowY += 10;
+  }
+
+  // ── FOOTER (last page only) ────────────────────────────────
+  doc.fontSize(7.5).font('Helvetica').fillColor('#9ca3af')
+    .text('For bulk orders and delivery scheduling, please contact Eptomart directly. | eptomart.com',
+      L, Math.min(rowY + 6, 800), { width: W, align: 'center' });
+
+  doc.end();
+};
+
+// ══════════════════════════════════════════════
 // NOTIFICATION HELPERS — WhatsApp via Twilio WABA
 // ══════════════════════════════════════════════
 
@@ -7481,6 +7645,7 @@ module.exports = {
   // Buyer orders
   placeOrder, createRazorpayOrder, verifyPayment, testPayment,
   getMyOrders, getMyOrder, cancelPendingOrder, approveRevision, cancelOrder, getOrderInvoice,
+  adminGenerateQuotationPDF,
   // Buyer — order amendment ("Add More Items")
   getAmendEligibility, getAmendQuote, createAmendmentPayment, verifyAmendmentPayment,
   // Seller

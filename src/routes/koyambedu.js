@@ -279,6 +279,7 @@ router.put  ('/admin/categories/:catId',          protectAdmin, ctrl.adminEditCa
 router.patch('/admin/categories/:catId/approve',  protectAdmin, ctrl.adminApproveCategory);
 router.get  ('/admin/analytics',                  protectAdmin, ctrl.adminAnalytics);
 router.get  ('/admin/products',                              protectAdmin,      ctrl.adminGetAllProducts);
+router.get  ('/admin/quotation/pdf',                         protectAdmin,      ctrl.adminGenerateQuotationPDF);
 router.get  ('/admin/products/pending',                      protectSuperAdmin, ctrl.adminGetPendingProducts);
 router.post ('/admin/products/:productId/approve',           protectSuperAdmin, ctrl.adminApproveProduct);
 router.post ('/admin/products/:productId/reject',            protectSuperAdmin, ctrl.adminRejectProduct);

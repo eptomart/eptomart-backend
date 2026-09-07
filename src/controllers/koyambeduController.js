@@ -5884,19 +5884,28 @@ function _koyambeduQuotePricePoints(product) {
 /**
  * GET /api/koyambedu/admin/quotation/pdf
  * Query params:
- *   scope       'all' | 'category' | 'items'  (default 'all')
- *   categoryIds comma-separated KoyambeduCategory ids — required when scope='category'
- *   productIds  comma-separated KoyambeduProduct ids  — required when scope='items'
- *   priceMode   'lowest' | 'highest'  (default 'lowest')
+ *   scope        'all' | 'category' | 'items'  (default 'all')
+ *   categoryIds  comma-separated KoyambeduCategory ids — required when scope='category'
+ *   productIds   comma-separated KoyambeduProduct ids  — required when scope='items'
+ *   priceMode    'lowest' | 'highest'  (default 'lowest')
+ *   statusFilter 'active' | 'disabled' | 'all'  (default 'active') — which
+ *                products (by isActive) to include. This is an internal
+ *                filtering knob only: the PDF itself never prints an
+ *                active/disabled label on any line, regardless of which
+ *                value is chosen, since a quotation handed to a bulk buyer
+ *                has no business surfacing internal catalog status.
  * Generates a bulk-buyer price quotation PDF, grouped by category, with a
  * date/time stamp, each product's minimum order quantity, and the chosen
  * price point per product. Read-only — never touches product/order data.
  */
 const adminGenerateQuotationPDF = async (req, res) => {
   const PDFDocument = require('pdfkit');
-  const { scope = 'all', categoryIds = '', productIds = '', priceMode = 'lowest' } = req.query;
+  const { scope = 'all', categoryIds = '', productIds = '', priceMode = 'lowest', statusFilter = 'active' } = req.query;
 
-  const filter = { isActive: true };
+  const filter = {};
+  if (statusFilter === 'active') filter.isActive = true;
+  else if (statusFilter === 'disabled') filter.isActive = false;
+  // statusFilter === 'all' → no isActive filter, include both
   if (scope === 'category') {
     const ids = categoryIds.split(',').map(s => s.trim()).filter(Boolean);
     if (ids.length === 0) return res.status(400).json({ success: false, message: 'Select at least one category' });

@@ -5902,10 +5902,18 @@ const adminGenerateQuotationPDF = async (req, res) => {
   const PDFDocument = require('pdfkit');
   const { scope = 'all', categoryIds = '', productIds = '', priceMode = 'lowest', statusFilter = 'active' } = req.query;
 
+  // "Active"/"Disabled" here means the same thing the Products tab's
+  // Enable/Disable button controls — isAvailable — not the separate
+  // isActive flag (that one is only ever flipped by admin delete /
+  // approval-rejection, not the everyday Enable/Disable toggle). A product
+  // is only truly "active" for a quotation when BOTH are true; either one
+  // being false counts as "disabled". Bug fix: the previous version only
+  // checked isActive, so a product the admin had disabled (isAvailable:
+  // false, isActive left untouched) still passed the "Active Only" filter.
   const filter = {};
-  if (statusFilter === 'active') filter.isActive = true;
-  else if (statusFilter === 'disabled') filter.isActive = false;
-  // statusFilter === 'all' → no isActive filter, include both
+  if (statusFilter === 'active') { filter.isActive = true; filter.isAvailable = true; }
+  else if (statusFilter === 'disabled') filter.$or = [{ isActive: false }, { isAvailable: false }];
+  // statusFilter === 'all' → no status filter, include everything
   if (scope === 'category') {
     const ids = categoryIds.split(',').map(s => s.trim()).filter(Boolean);
     if (ids.length === 0) return res.status(400).json({ success: false, message: 'Select at least one category' });

@@ -5960,8 +5960,12 @@ const adminGenerateQuotationPDF = async (req, res) => {
 
   const L = 45, R = 550, W = R - L;
   const ROW_H = 18;
-  const C = { sno: L, name: L + 28, unit: L + 268, minqty: L + 330, price: L + 418 };
-  const CW = { sno: 26, name: 236, unit: 58, minqty: 84, price: 87 };
+  // Price now carries its own "/unit" suffix (e.g. "Rs. 45.00 / kg") so bulk
+  // buyers never have to cross-reference a separate Unit column to know what
+  // the price is quoted per. Min Order is relabelled "Min Order Qty" and kept
+  // visually far from the price column so the two numbers are never confused.
+  const C = { sno: L, name: L + 30, minqty: L + 290, price: L + 395 };
+  const CW = { sno: 26, name: 250, minqty: 95, price: 110 };
 
   let rowY = 45;
 
@@ -5986,9 +5990,8 @@ const adminGenerateQuotationPDF = async (req, res) => {
     doc.fontSize(8).font('Helvetica-Bold').fillColor('#ffffff');
     doc.text('S.No',   C.sno,    rowY + 5, { width: CW.sno, align: 'center' });
     doc.text('Product',C.name,   rowY + 5, { width: CW.name });
-    doc.text('Unit',   C.unit,   rowY + 5, { width: CW.unit, align: 'center' });
-    doc.text('Min Order', C.minqty, rowY + 5, { width: CW.minqty, align: 'center' });
-    doc.text('Price',  C.price,  rowY + 5, { width: CW.price, align: 'right' });
+    doc.text('Min Order Qty', C.minqty, rowY + 5, { width: CW.minqty, align: 'center' });
+    doc.text('Price (per unit)',  C.price,  rowY + 5, { width: CW.price, align: 'right' });
     rowY += ROW_H;
   };
 
@@ -6017,9 +6020,8 @@ const adminGenerateQuotationPDF = async (req, res) => {
       doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#111827')
         .text(item.name, C.name, rowY + 5, { width: CW.name });
       doc.fontSize(8.5).font('Helvetica').fillColor('#374151')
-        .text(item.unit || '', C.unit, rowY + 5, { width: CW.unit, align: 'center' })
         .text(`${item.minQty} ${item.unit || ''}`, C.minqty, rowY + 5, { width: CW.minqty, align: 'center' })
-        .text(fmtAmt(item.price), C.price, rowY + 5, { width: CW.price, align: 'right' });
+        .text(`${fmtAmt(item.price)} / ${item.unit || 'unit'}`, C.price, rowY + 5, { width: CW.price, align: 'right' });
       rowY += ROW_H;
     });
     rowY += 10;

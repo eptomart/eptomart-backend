@@ -187,6 +187,51 @@ exports.replyToMessage = async (req, res) => {
   res.json({ success: true, message: 'Reply sent' });
 };
 
+// ── GET /api/koyambedu/admin/whatsapp/messages/:id/media ─────────────────────
+// Proxies the actual binary for image/audio/video/document/sticker messages so
+// the admin inbox can display/play it instead of just a placeholder label.
+// Meta's media URLs require a Bearer token and expire after a few minutes, so
+// we always resolve a fresh one from the stored mediaId rather than caching it.
+exports.getMedia = async (req, res) => {
+  try {
+    const msg = await WhatsAppInboundMessage.findById(req.params.id).lean();
+    if (!msg || !msg.mediaId) {
+      return res.status(404).json({ success: false, message: 'No media on this message' });
+    }
+
+    const token = process.env.META_WHATSAPP_TOKEN;
+    if (!token) {
+      return res.status(503).json({ success: false, message: 'WhatsApp is not configured on the server' });
+    }
+
+    // Step 1 — resolve the temporary CDN URL for this media ID
+    const metaRes = await fetch(`https://graph.facebook.com/v21.0/${msg.mediaId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!metaRes.ok) {
+      return res.status(502).json({ success: false, message: 'Could not resolve media from WhatsApp (link may have expired)' });
+    }
+    const meta = await metaRes.json();
+    if (!meta.url) {
+      return res.status(502).json({ success: false, message: 'WhatsApp did not return a media URL' });
+    }
+
+    // Step 2 — download the actual binary (also requires the same Bearer token)
+    const fileRes = await fetch(meta.url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!fileRes.ok) {
+      return res.status(502).json({ success: false, message: 'Could not download media from WhatsApp' });
+    }
+
+    res.setHeader('Content-Type', meta.mime_type || msg.mediaMime || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    const buf = Buffer.from(await fileRes.arrayBuffer());
+    res.send(buf);
+  } catch (err) {
+    console.error('[WhatsApp Media] Error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch media' });
+  }
+};
+
 // ── DELETE /api/koyambedu/admin/whatsapp/messages (bulk mark-read) ───────────
 exports.markAllRead = async (req, res) => {
   await WhatsAppInboundMessage.updateMany({ isRead: false }, {

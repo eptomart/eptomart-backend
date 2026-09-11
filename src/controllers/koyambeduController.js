@@ -1522,6 +1522,107 @@ const adminManualVerifyPayment = async (req, res) => {
   res.json({ success: true, message: 'Payment verified with Razorpay and order confirmed!', orderId: order.orderId });
 };
 
+// ── POST /api/koyambedu/admin/orders/create-manual ──────────────────────────
+// For a customer whose payment was genuinely captured by Razorpay but whose
+// order was lost before it could be saved (e.g. the checkout dismiss/verify
+// race condition fixed alongside this) — lets admin place the order for
+// them using their CURRENT cart, reusing the exact same validated pricing/
+// slot/minQty/pincode logic the customer's own checkout uses (by calling
+// placeOrder internally), then confirms it paid only after independently
+// verifying the given Razorpay payment ID is captured and its amount
+// matches the built order's total. If the amount doesn't match, the
+// half-built order is rolled back rather than left in a confusing state.
+const adminCreateManualOrder = async (req, res) => {
+  const {
+    customerPhone, buyerId, shippingAddress, buyerLocation,
+    deliverySlotKey, deliveryDate, razorpayPaymentId, couponCode, adminNote,
+  } = req.body;
+
+  if (!razorpayPaymentId?.trim()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Razorpay Payment ID is required — this tool is only for orders where payment was already collected outside the normal checkout flow.',
+    });
+  }
+
+  let buyer = null;
+  if (buyerId) {
+    buyer = await User.findById(buyerId);
+  } else if (customerPhone?.trim()) {
+    buyer = await User.findOne({ phone: customerPhone.trim() });
+  }
+  if (!buyer) {
+    return res.status(404).json({ success: false, message: 'Customer not found — check the phone number, or that they have an account with us' });
+  }
+
+  // Verify the payment BEFORE touching anything, so a typo'd payment ID
+  // never results in a "paid" order being created.
+  const razorpay = getRazorpay();
+  if (!razorpay) return res.status(503).json({ success: false, message: 'Payment gateway not configured' });
+  let payment;
+  try {
+    payment = await razorpay.payments.fetch(razorpayPaymentId.trim());
+  } catch (err) {
+    return res.status(400).json({ success: false, message: `Razorpay could not find that payment ID: ${err.message}` });
+  }
+  if (payment.status !== 'captured') {
+    return res.status(400).json({ success: false, message: `Razorpay reports this payment as "${payment.status}", not captured — refusing to create a paid order` });
+  }
+
+  // Build the order from this customer's CURRENT cart using the real
+  // placeOrder logic (pricing, weight/minQty/pincode/slot validation, coupon)
+  // — called directly rather than duplicated, by constructing the same
+  // req/res shape placeOrder expects (it only ever reads req.user/req.body
+  // and calls res.status().json()).
+  let placeResult = null;
+  const fakeRes = {
+    status(code) { this.statusCode = code; return this; },
+    json(payload) { placeResult = { statusCode: this.statusCode || 200, payload }; },
+  };
+  await placeOrder({
+    user: buyer,
+    body: {
+      shippingAddress, buyerLocation, deliverySlotKey, deliveryDate, couponCode,
+      paymentMethod: 'razorpay',
+      notes: adminNote
+        ? `[Manually placed by admin] ${adminNote}`
+        : '[Manually placed by admin — payment collected outside normal checkout]',
+    },
+  }, fakeRes);
+
+  if (!placeResult?.payload?.success) {
+    return res.status(placeResult?.statusCode || 400).json(
+      placeResult?.payload || { success: false, message: "Could not build the order from this customer's cart" }
+    );
+  }
+
+  const order = await KoyambeduOrder.findById(placeResult.payload.order._id);
+  if (!order) {
+    return res.status(500).json({ success: false, message: 'Order was created but could not be reloaded — check the Orders tab directly' });
+  }
+
+  const expectedPaise = Math.round((order.pricing?.total || 0) * 100);
+  if (payment.amount !== expectedPaise) {
+    // Roll back — an unpaid, half-created order with the wrong amount
+    // attached is more confusing than nothing at all.
+    await KoyambeduOrder.deleteOne({ _id: order._id });
+    return res.status(400).json({
+      success: false,
+      message: `Amount mismatch — this customer's current cart totals ₹${order.pricing?.total}, but the Razorpay payment is ₹${(payment.amount / 100).toFixed(2)}. Nothing was created — the cart may have changed since the payment was made; double-check before retrying.`,
+    });
+  }
+
+  await confirmKoyambeduPayment(order, {
+    razorpayOrderId:   payment.order_id,
+    razorpayPaymentId: payment.id,
+    razorpaySignature: null, // admin-verified via direct Razorpay API lookup instead
+  });
+
+  console.log('[KBD] Admin', req.user?._id, 'manually created + paid order', order.orderId, 'for buyer', buyer._id, 'with Razorpay payment', payment.id);
+
+  res.json({ success: true, message: 'Order created and marked paid!', orderId: order.orderId });
+};
+
 // ═══════════════════════════════════════════════════════════════
 // ORDER AMENDMENT — "Add More Items" on an already-paid Koyambedu order,
 // up until the same same-day cutoff used at checkout. Additive only: this
@@ -7792,7 +7893,7 @@ module.exports = {
   adminPreviewOfferAudience, adminBroadcastOffer, adminGetOfferBroadcasts,
   // Buyer orders
   placeOrder, createRazorpayOrder, verifyPayment, testPayment,
-  koyambeduRazorpayWebhook, adminManualVerifyPayment,
+  koyambeduRazorpayWebhook, adminManualVerifyPayment, adminCreateManualOrder,
   getMyOrders, getMyOrder, cancelPendingOrder, approveRevision, cancelOrder, getOrderInvoice,
   adminGenerateQuotationPDF,
   // Buyer — order amendment ("Add More Items")

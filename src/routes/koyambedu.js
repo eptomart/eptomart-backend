@@ -128,6 +128,7 @@ router.post  ('/orders/verify-payment',     protect, ctrl.verifyPayment);
 // authenticity is verified inside via the RAZORPAY_WEBHOOK_SECRET HMAC signature.
 router.post  ('/webhooks/razorpay',         ctrl.koyambeduRazorpayWebhook);
 router.post  ('/admin/orders/:id/manual-verify-payment', protectAdmin, ctrl.adminManualVerifyPayment);
+router.post  ('/admin/orders/create-manual', protectAdmin, ctrl.adminCreateManualOrder);
 // "Add More Items" order amendment — add-only, increase-only, gated by same cutoff as checkout
 router.get   ('/orders/:orderId/amend/eligibility', protect, ctrl.getAmendEligibility);
 router.post  ('/orders/:orderId/amend/quote',       protect, ctrl.getAmendQuote);

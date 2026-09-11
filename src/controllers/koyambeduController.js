@@ -1304,40 +1304,15 @@ const createRazorpayOrder = async (req, res) => {
   res.json({ success: true, rzpOrderId: rzpOrder.id, amount: order.pricing.total, currency: 'INR', orderId: order._id, keyId: process.env.RAZORPAY_KEY_ID });
 };
 
-/** POST /api/koyambedu/orders/verify-payment */
-const verifyPayment = async (req, res) => {
-  const { orderId, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
-  const order = await KoyambeduOrder.findOne({ _id: orderId, buyer: req.user._id });
-  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-  // ── Idempotency guard ───────────────────────────────────────────────────────
-  // Razorpay may fire the success callback more than once (user refreshes, webhook
-  // retry, etc.). If the order is already marked paid we skip all side-effects and
-  // return success so the frontend can safely proceed to the confirmation page.
-  // We still make a best-effort cart-clear attempt here (idempotent — clearing an
-  // already-empty cart is a no-op): if the FIRST verify-payment call marked the
-  // order paid but then failed/timed out before it could clear the cart, this is
-  // the only chance a retry gets to actually finish the job — the block below
-  // would otherwise never run again for this order.
-  if (order.paymentStatus === 'paid') {
-    KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [] })
-      .catch(e => console.error('[KBD] Retry cart-clear failed for', order.orderId, ':', e.message));
-    return res.json({ success: true, message: 'Payment already confirmed', orderId: order.orderId });
-  }
-
-  // Demo/review account — skip real signature verification. Only reachable
-  // when createRazorpayOrder above already set isDemoOrder=true, which only
-  // ever happens for req.user.isDemoAccount — a real order can't take this
-  // branch. Everything below (invoices, timeline, etc.) runs unchanged.
-  if (!order.isDemoOrder) {
-    const secret = process.env.RAZORPAY_KEY_SECRET;
-    const body   = `${razorpayOrderId}|${razorpayPaymentId}`;
-    const expectedSig = crypto.createHmac('sha256', secret).update(body).digest('hex');
-    if (expectedSig !== razorpaySignature) {
-      return res.status(400).json({ success: false, message: 'Payment verification failed' });
-    }
-  }
-
+// ── Shared post-payment confirmation ────────────────────────────────────────
+// Everything that needs to happen once a Koyambedu Razorpay payment is known
+// to be genuinely captured — used by verifyPayment (the normal client-side
+// callback) AND by the Razorpay webhook / admin manual-reconciliation path
+// below, so an order can be pushed to "paid" from more than one place without
+// duplicating (or drifting) this logic. Caller is responsible for having
+// already established the payment is legitimate (signature check, webhook
+// HMAC, or an admin-verified Razorpay payment lookup) before calling this.
+const confirmKoyambeduPayment = async (order, { razorpayOrderId, razorpayPaymentId, razorpaySignature }) => {
   order.paymentStatus = 'paid';
   order.orderStatus   = 'pending_confirmation';
   order.paymentDetails.razorpayOrderId   = razorpayOrderId;
@@ -1413,8 +1388,138 @@ const verifyPayment = async (req, res) => {
   }
 
   setImmediate(() => _notifySellerNewOrder(order).catch(() => {}));
+};
+
+/** POST /api/koyambedu/orders/verify-payment */
+const verifyPayment = async (req, res) => {
+  const { orderId, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
+  const order = await KoyambeduOrder.findOne({ _id: orderId, buyer: req.user._id });
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  // ── Idempotency guard ───────────────────────────────────────────────────────
+  // Razorpay may fire the success callback more than once (user refreshes, webhook
+  // retry, etc.). If the order is already marked paid we skip all side-effects and
+  // return success so the frontend can safely proceed to the confirmation page.
+  // We still make a best-effort cart-clear attempt here (idempotent — clearing an
+  // already-empty cart is a no-op): if the FIRST verify-payment call marked the
+  // order paid but then failed/timed out before it could clear the cart, this is
+  // the only chance a retry gets to actually finish the job — the block below
+  // would otherwise never run again for this order.
+  if (order.paymentStatus === 'paid') {
+    KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [] })
+      .catch(e => console.error('[KBD] Retry cart-clear failed for', order.orderId, ':', e.message));
+    return res.json({ success: true, message: 'Payment already confirmed', orderId: order.orderId });
+  }
+
+  // Demo/review account — skip real signature verification. Only reachable
+  // when createRazorpayOrder above already set isDemoOrder=true, which only
+  // ever happens for req.user.isDemoAccount — a real order can't take this
+  // branch. Everything below (invoices, timeline, etc.) runs unchanged.
+  if (!order.isDemoOrder) {
+    const secret = process.env.RAZORPAY_KEY_SECRET;
+    const body   = `${razorpayOrderId}|${razorpayPaymentId}`;
+    const expectedSig = crypto.createHmac('sha256', secret).update(body).digest('hex');
+    if (expectedSig !== razorpaySignature) {
+      return res.status(400).json({ success: false, message: 'Payment verification failed' });
+    }
+  }
+
+  await confirmKoyambeduPayment(order, { razorpayOrderId, razorpayPaymentId, razorpaySignature });
 
   res.json({ success: true, message: 'Payment confirmed!', orderId: order.orderId });
+};
+
+// ── POST /api/koyambedu/webhooks/razorpay ───────────────────────────────────
+// Server-to-server safety net: if the customer's browser/app never completes
+// the verify-payment call above (closed the tab, lost network, app crashed
+// right after Razorpay's checkout succeeded), the order would otherwise sit
+// at orderStatus="payment_pending" forever even though Razorpay actually
+// captured the money — invisible to the customer's order history and easy
+// for admin to miss. Razorpay calls this URL directly from its own servers
+// whenever a payment is captured, independent of the customer's device, so
+// it reconciles those cases automatically.
+const koyambeduRazorpayWebhook = async (req, res) => {
+  try {
+    const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    if (secret) {
+      const sig = req.headers['x-razorpay-signature'];
+      const expected = crypto.createHmac('sha256', secret).update(JSON.stringify(req.body)).digest('hex');
+      if (sig !== expected) return res.status(400).json({ error: 'Invalid signature' });
+    }
+    if (req.body.event === 'payment.captured') {
+      const payment = req.body.payload?.payment?.entity;
+      const order = payment && await KoyambeduOrder.findOne({ 'paymentDetails.razorpayOrderId': payment.order_id });
+      if (order && order.paymentStatus !== 'paid') {
+        console.log('[KBD Webhook] Reconciling stuck order', order.orderId, 'via payment.captured webhook');
+        await confirmKoyambeduPayment(order, {
+          razorpayOrderId:   payment.order_id,
+          razorpayPaymentId: payment.id,
+          razorpaySignature: null, // webhook HMAC above already authenticates this event
+        });
+      }
+    }
+  } catch (err) {
+    console.error('[KBD Webhook] Error:', err.message);
+  }
+  res.status(200).json({ received: true });
+};
+
+// ── POST /api/koyambedu/admin/orders/:id/manual-verify-payment ─────────────
+// For the rare straggler that predates the webhook above (or if the webhook
+// itself was never delivered) — lets an admin reconcile a stuck
+// payment_pending order by pasting in the Razorpay Payment ID from the
+// Razorpay Dashboard. This does NOT trust the admin's word: it fetches the
+// payment from Razorpay's API and only proceeds if Razorpay confirms it was
+// actually captured, for this exact order, for the exact amount owed.
+const adminManualVerifyPayment = async (req, res) => {
+  const { razorpayPaymentId } = req.body;
+  if (!razorpayPaymentId?.trim()) {
+    return res.status(400).json({ success: false, message: 'Razorpay Payment ID is required' });
+  }
+
+  const order = await KoyambeduOrder.findById(req.params.id);
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+  if (order.paymentStatus === 'paid') {
+    return res.json({ success: true, message: 'Order is already marked paid', orderId: order.orderId });
+  }
+  if (!order.paymentDetails?.razorpayOrderId) {
+    return res.status(400).json({ success: false, message: 'This order never had a Razorpay order created for it — nothing to reconcile' });
+  }
+
+  const razorpay = getRazorpay();
+  if (!razorpay) return res.status(503).json({ success: false, message: 'Payment gateway not configured' });
+
+  let payment;
+  try {
+    payment = await razorpay.payments.fetch(razorpayPaymentId.trim());
+  } catch (err) {
+    return res.status(400).json({ success: false, message: `Razorpay could not find that payment ID: ${err.message}` });
+  }
+
+  if (payment.status !== 'captured') {
+    return res.status(400).json({ success: false, message: `Razorpay reports this payment as "${payment.status}", not captured — refusing to mark paid` });
+  }
+  if (payment.order_id !== order.paymentDetails.razorpayOrderId) {
+    return res.status(400).json({ success: false, message: 'This payment belongs to a different Razorpay order — refusing to mark paid' });
+  }
+  const expectedPaise = Math.round((order.pricing?.total || 0) * 100);
+  if (payment.amount !== expectedPaise) {
+    return res.status(400).json({
+      success: false,
+      message: `Amount mismatch — order total is ₹${order.pricing?.total} but Razorpay payment is ₹${payment.amount / 100}. Refusing to mark paid automatically.`,
+    });
+  }
+
+  await confirmKoyambeduPayment(order, {
+    razorpayOrderId:   payment.order_id,
+    razorpayPaymentId: payment.id,
+    razorpaySignature: null, // admin-verified via direct Razorpay API lookup instead
+  });
+
+  console.log('[KBD] Admin', req.user?._id, 'manually reconciled order', order.orderId, 'with Razorpay payment', payment.id);
+
+  res.json({ success: true, message: 'Payment verified with Razorpay and order confirmed!', orderId: order.orderId });
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -7663,6 +7768,7 @@ module.exports = {
   adminPreviewOfferAudience, adminBroadcastOffer, adminGetOfferBroadcasts,
   // Buyer orders
   placeOrder, createRazorpayOrder, verifyPayment, testPayment,
+  koyambeduRazorpayWebhook, adminManualVerifyPayment,
   getMyOrders, getMyOrder, cancelPendingOrder, approveRevision, cancelOrder, getOrderInvoice,
   adminGenerateQuotationPDF,
   // Buyer — order amendment ("Add More Items")

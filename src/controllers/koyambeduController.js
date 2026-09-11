@@ -2424,7 +2424,21 @@ const adminGetOrders = async (req, res) => {
   const filter = {};
   if (status) filter.orderStatus = status;
   if (deliveryType) filter.deliveryType = deliveryType;
-  if (search) filter.orderId = { $regex: search, $options: 'i' };
+  if (search) {
+    // Also match the Razorpay order/payment IDs (visible on the Razorpay
+    // Dashboard for any transaction) — not just our own orderId — so a stuck
+    // or hard-to-find order can be looked up directly from the gateway side
+    // when a customer's name/phone search comes up empty.
+    // Uses $and-of-$or (not a shared top-level $or) so this stays properly
+    // ANDed with customerSearch below if both are used together — each is an
+    // independent set of "match any of these" alternatives.
+    const searchRegex = { $regex: search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+    filter.$and = [...(filter.$and || []), { $or: [
+      { orderId: searchRegex },
+      { 'paymentDetails.razorpayOrderId': searchRegex },
+      { 'paymentDetails.razorpayPaymentId': searchRegex },
+    ] }];
+  }
   if (deliverySlot) filter.deliverySlot = deliverySlot;
   if (itemStatus === 'declined') filter['items.status'] = 'declined';
   if (deliveryDate) {
@@ -2440,12 +2454,11 @@ const adminGetOrders = async (req, res) => {
     // making a real order look "missing" even though it exists.
     const regex = { $regex: customerSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
     const matchingBuyers = await User.find({ $or: [{ name: regex }, { phone: regex }] }).select('_id').lean();
-    filter.$or = [
-      ...(filter.$or || []),
+    filter.$and = [...(filter.$and || []), { $or: [
       { buyer: { $in: matchingBuyers.map(u => u._id) } },
       { 'shippingAddress.phone': regex },
       { 'shippingAddress.fullName': regex },
-    ];
+    ] }];
   }
   if (sellerAdmin) {
     // Get all sellers under this SA

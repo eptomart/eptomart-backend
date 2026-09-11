@@ -16,6 +16,15 @@ const koyambeduProcurementShareSchema = new Schema({
   lastSharedBy:  { type: Schema.Types.ObjectId, ref: 'User' },
   lastSharedByName: { type: String },
   lastSharedVia: { type: String, default: '' }, // e.g. 'whatsapp', 'copy'
+  // Snapshot of qty shared per product line, so the admin's product list can
+  // strike through items that have already been communicated to the supplier
+  // in full. Keyed by productKey; overwritten (not accumulated) on each share
+  // so it always reflects the latest quantity actually sent.
+  items: [{
+    productKey: { type: String, required: true },
+    qty:        { type: Number, default: 0 },
+    _id: false,
+  }],
 }, { timestamps: true });
 
 module.exports = mongoose.model('KoyambeduProcurementShare', koyambeduProcurementShareSchema);

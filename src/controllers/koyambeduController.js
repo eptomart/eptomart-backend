@@ -7586,8 +7586,12 @@ const adminProcurementReport = async (req, res) => {
       : [];
     const checklistMap = Object.fromEntries(checklist.map(c => [c.productKey, c]));
 
+    const shareLog = await KoyambeduProcurementShare.findOne({ cycle }).lean();
+    const sharedQtyMap = Object.fromEntries((shareLog?.items || []).map(i => [i.productKey, i.qty]));
+
     const products = rows.map(r => {
       const c = checklistMap[r.productKey];
+      const sharedQty = sharedQtyMap[r.productKey] || 0;
       return {
         ...r,
         purchased:       c?.purchased || false,
@@ -7599,10 +7603,13 @@ const adminProcurementReport = async (req, res) => {
         packingNote:       c?.packingNote || '',
         packingNoteByName: c?.packingNoteByName || null,
         packingNoteAt:     c?.packingNoteAt || null,
+        // Fully shared = the supplier was already told about at least the
+        // current total quantity for this product — lets the UI strike it
+        // through instead of re-listing it as still needing to be shared.
+        sharedQty,
+        alreadyShared: sharedQty >= r.totalQty && r.totalQty > 0,
       };
     });
-
-    const shareLog = await KoyambeduProcurementShare.findOne({ cycle }).lean();
 
     res.json({
       success: true,
@@ -7674,14 +7681,27 @@ const adminUpdateProcurementItem = async (req, res) => {
 };
 
 // POST /koyambedu/admin/reports/procurement-confirmed/share
-// Body: { cycle, via? } — marks the supplier-facing list for this cycle as
-// shared (increments a counter, records who/when/how). Does not block or
-// gate anything — purely so the admin sees "already shared" if they come
-// back to this date later. Does not touch order/pricing/customer data.
+// Body: { cycle, via?, items? } — marks the supplier-facing list for this
+// cycle as shared (increments a counter, records who/when/how). `items` is
+// the list of { productKey, qty } lines that were actually included in this
+// share — it's merged into the saved snapshot (overwriting per-key, not
+// accumulating) so the product list can strike through items already fully
+// communicated to the supplier. Does not block or gate anything — purely so
+// the admin sees "already shared" if they come back to this date later.
+// Does not touch order/pricing/customer data.
 const adminShareProcurement = async (req, res) => {
   try {
-    const { cycle, via } = req.body;
+    const { cycle, via, items } = req.body;
     if (!cycle) return res.status(400).json({ success: false, message: 'cycle is required' });
+
+    const existing = await KoyambeduProcurementShare.findOne({ cycle }).lean();
+    const itemMap = new Map((existing?.items || []).map(i => [i.productKey, i.qty]));
+    if (Array.isArray(items)) {
+      for (const it of items) {
+        if (!it?.productKey) continue;
+        itemMap.set(it.productKey, Number(it.qty) || 0);
+      }
+    }
 
     const doc = await KoyambeduProcurementShare.findOneAndUpdate(
       { cycle },
@@ -7691,6 +7711,7 @@ const adminShareProcurement = async (req, res) => {
         lastSharedBy:     req.user._id,
         lastSharedByName: req.user.name || req.user.email,
         lastSharedVia:    via || 'copy',
+        items: Array.from(itemMap, ([productKey, qty]) => ({ productKey, qty })),
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );

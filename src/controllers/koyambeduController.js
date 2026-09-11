@@ -2432,9 +2432,20 @@ const adminGetOrders = async (req, res) => {
     filter.deliveryDate = { $gte: d, $lt: new Date(d.getTime() + 86400000) };
   }
   if (customerSearch) {
+    // Match on the account holder's name/phone AND the delivery contact
+    // details captured at checkout (shippingAddress.phone/fullName) — those
+    // can legitimately differ (ordering for someone else, a second number
+    // used just for delivery, etc.), and previously a search here would
+    // silently return zero orders if only the shipping-time phone matched,
+    // making a real order look "missing" even though it exists.
     const regex = { $regex: customerSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
     const matchingBuyers = await User.find({ $or: [{ name: regex }, { phone: regex }] }).select('_id').lean();
-    filter.buyer = { $in: matchingBuyers.map(u => u._id) };
+    filter.$or = [
+      ...(filter.$or || []),
+      { buyer: { $in: matchingBuyers.map(u => u._id) } },
+      { 'shippingAddress.phone': regex },
+      { 'shippingAddress.fullName': regex },
+    ];
   }
   if (sellerAdmin) {
     // Get all sellers under this SA

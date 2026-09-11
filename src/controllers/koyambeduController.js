@@ -2827,9 +2827,13 @@ const adminRescheduleOrder = async (req, res) => {
     const order = await KoyambeduOrder.findById(req.params.orderId).populate('buyer', 'phone name');
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
-    const BLOCKED_STATUSES = ['delivered', 'cancelled', 'closed', 'refund_initiated'];
-    if (BLOCKED_STATUSES.includes(order.orderStatus)) {
-      return res.status(400).json({ success: false, message: `Cannot reschedule an order that is already ${order.orderStatus}` });
+    // Reschedule is only allowed before the order is confirmed — once admin has
+    // confirmed it, procurement/packing may already be underway against the
+    // original delivery date, so the delivery date/slot is locked. Allowed
+    // regardless of whether the delivery date itself is in the past or future.
+    const RESCHEDULABLE_STATUSES = ['payment_pending', 'pending_confirmation'];
+    if (!RESCHEDULABLE_STATUSES.includes(order.orderStatus)) {
+      return res.status(400).json({ success: false, message: `Cannot reschedule — order is already ${order.orderStatus}. Only orders awaiting confirmation can be rescheduled.` });
     }
 
     const oldDateStr = order.deliveryDate ? new Date(order.deliveryDate).toISOString().slice(0, 10) : null;
@@ -7467,9 +7471,13 @@ const adminGetUserCarts = async (req, res) => {
 // ══════════════════════════════════════════════
 // SUPER ADMIN — Procurement Report (confirmed orders only)
 // GET /koyambedu/admin/reports/procurement-confirmed?date=2026-06-22&gradeKey=
-// Aggregates products/quantities needed from CONFIRMED_REPORT_STATUSES orders
-// for the given cutoffCycle date, merged with any saved purchase-checklist
+// Aggregates products/quantities needed from orders still in the 'confirmed'
+// status for the given cutoffCycle date, merged with any saved purchase-checklist
 // state (purchased flag + comment) for that same date/product.
+// NOTE: intentionally narrower than CONFIRMED_REPORT_STATUSES (which also
+// includes packing/dispatched/delivered/reported/closed) — once an order moves
+// past 'confirmed' into packing, procurement has already been done for it, so
+// it should drop off this list instead of cluttering it as still-needed.
 // ══════════════════════════════════════════════
 const adminProcurementReport = async (req, res) => {
   try {
@@ -7478,7 +7486,7 @@ const adminProcurementReport = async (req, res) => {
 
     const orders = await KoyambeduOrder.find({
       cutoffCycle: cycle,
-      orderStatus: { $in: CONFIRMED_REPORT_STATUSES },
+      orderStatus: 'confirmed',
     }).populate({
       path: 'items.product',
       select: 'name unit category isCombo comboContents',

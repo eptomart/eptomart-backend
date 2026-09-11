@@ -215,6 +215,15 @@ const getRazorpay = () => {
   return new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
 };
 
+// The razorpay npm SDK rejects API errors with a plain object shaped like
+// { statusCode, error: { code, description } } — NOT a normal Error — so
+// `err.message` is always undefined for these. This pulls out the actual
+// human-readable reason (e.g. "The id provided does not exist", or an auth
+// failure) so admin-facing error messages are actually useful instead of
+// literally showing the word "undefined".
+const razorpayErrMsg = (err) =>
+  err?.error?.description || err?.error?.code || err?.message || 'Unknown error';
+
 // ── WhatsApp helpers (fire-and-forget) ──────
 const waSend = (phone, params) => {
   const tpl = process.env.META_WHATSAPP_STATUS_TEMPLATE;
@@ -1494,7 +1503,7 @@ const adminManualVerifyPayment = async (req, res) => {
   try {
     payment = await razorpay.payments.fetch(razorpayPaymentId.trim());
   } catch (err) {
-    return res.status(400).json({ success: false, message: `Razorpay could not find that payment ID: ${err.message}` });
+    return res.status(400).json({ success: false, message: `Razorpay could not find that payment ID: ${razorpayErrMsg(err)}` });
   }
 
   if (payment.status !== 'captured') {
@@ -1563,7 +1572,7 @@ const adminCreateManualOrder = async (req, res) => {
   try {
     payment = await razorpay.payments.fetch(razorpayPaymentId.trim());
   } catch (err) {
-    return res.status(400).json({ success: false, message: `Razorpay could not find that payment ID: ${err.message}` });
+    return res.status(400).json({ success: false, message: `Razorpay could not find that payment ID: ${razorpayErrMsg(err)}` });
   }
   if (payment.status !== 'captured') {
     return res.status(400).json({ success: false, message: `Razorpay reports this payment as "${payment.status}", not captured — refusing to create a paid order` });

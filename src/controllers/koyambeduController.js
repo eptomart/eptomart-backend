@@ -2873,14 +2873,19 @@ const adminRescheduleOrder = async (req, res) => {
 // read or touch its filters, pagination, or response shape.
 // ══════════════════════════════════════════════════════════════════
 
-// Shared date-range filter + row-shaping helper for the fulfillment tab
-async function _koyambeduFulfillmentRows({ from, to }) {
+// Shared date-range + status filter + row-shaping helper for the fulfillment tab
+async function _koyambeduFulfillmentRows({ from, to, statuses }) {
   const filter = {};
   if (from || to) {
     filter.createdAt = {};
     if (from) filter.createdAt.$gte = new Date(`${from}T00:00:00.000Z`);
     if (to)   filter.createdAt.$lte = new Date(`${to}T23:59:59.999Z`);
   }
+  // statuses: comma-separated orderStatus values (e.g. "confirmed,packing").
+  // Empty/absent = no status filter, matches every status (unchanged behaviour).
+  const statusList = (typeof statuses === 'string' ? statuses : '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  if (statusList.length) filter.orderStatus = { $in: statusList };
 
   const orders = await KoyambeduOrder.find(filter)
     .populate('buyer', 'name phone')
@@ -2939,8 +2944,8 @@ const adminSetFulfilledBy = async (req, res) => {
 // GET /koyambedu/admin/orders/fulfillment/export?from=&to=&format=excel|pdf
 const adminExportFulfillment = async (req, res) => {
   try {
-    const { from, to, format } = req.query;
-    const rows = await _koyambeduFulfillmentRows({ from, to });
+    const { from, to, format, statuses } = req.query;
+    const rows = await _koyambeduFulfillmentRows({ from, to, statuses });
 
     if (format === 'pdf') {
       return _renderFulfillmentPDF(res, rows, { from, to });

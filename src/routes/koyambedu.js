@@ -224,6 +224,7 @@ router.get  ('/admin/orders',                               protectAdmin,      c
 router.get  ('/admin/orders/print-list',                    protectAdmin,      ctrl.getOrdersForPrinting); // Thermal-printer tab — separate from adminGetOrders above, does not affect it
 router.get  ('/admin/orders/fulfillment',                   protectAdmin,      ctrl.adminFulfillmentList); // Fulfillment tab — separate from adminGetOrders above, does not affect it
 router.get  ('/admin/orders/fulfillment/export',            protectAdmin,      ctrl.adminExportFulfillment);
+router.get  ('/admin/orders/fulfillment/:id',                protectAdmin,      ctrl.adminFulfillmentOrderDetail);
 router.patch('/admin/orders/:id/fulfilled-by',              protectAdmin,      ctrl.adminSetFulfilledBy);
 router.post ('/admin/orders/:orderId/packing/mark-printed', protectAdmin,      ctrl.markItemsPrinted);
 router.post ('/admin/orders/:orderId/packing/reset',        protectAdmin,      ctrl.resetPackingProgress);

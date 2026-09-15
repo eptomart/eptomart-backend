@@ -2941,6 +2941,42 @@ const adminSetFulfilledBy = async (req, res) => {
   }
 };
 
+// GET /koyambedu/admin/orders/fulfillment/:id — full item + price breakdown
+// for one order, fetched lazily when the admin expands a row in the
+// Fulfillment tab. Kept separate from the list endpoint so the list stays
+// light; does not touch adminGetOrders or its response shape.
+const adminFulfillmentOrderDetail = async (req, res) => {
+  try {
+    const order = await KoyambeduOrder.findById(req.params.id)
+      .select('orderId items pricing calculatedPricing deliveryDate deliverySlot orderStatus')
+      .lean();
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    const items = (order.items || [])
+      .filter(i => i.itemStatus !== 'declined')
+      .map(i => ({
+        name:       i.name,
+        gradeName:  i.gradeName || null,
+        unit:       i.unitLabel || i.unit || '',
+        quantity:   i.quantity || i.confirmedQty || i.orderedQty || 0,
+        unitPrice:  i.finalPrice || i.orderedPrice || 0,
+        lineTotal:  (i.finalPrice || i.orderedPrice || 0) * (i.quantity || i.confirmedQty || i.orderedQty || 0),
+        isAmendment: !!i.isAmendment,
+      }));
+
+    res.json({
+      success: true,
+      orderId: order.orderId,
+      items,
+      pricing: order.pricing || {},
+      calculatedPricing: order.calculatedPricing || null,
+    });
+  } catch (err) {
+    console.error('[adminFulfillmentOrderDetail] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch order detail' });
+  }
+};
+
 // GET /koyambedu/admin/orders/fulfillment/export?from=&to=&format=excel|pdf
 const adminExportFulfillment = async (req, res) => {
   try {
@@ -8116,7 +8152,7 @@ module.exports = {
   adminDashboard, adminGetOrders, getOrdersForPrinting, markItemsPrinted, resetPackingProgress, adminGetOrderWalletHistory, adminUpdateOrderStatus, adminRescheduleOrder, adminEditOrderItemQty, adminDeclineOrderItem,
 
   // Order Fulfillment tab
-  adminFulfillmentList, adminSetFulfilledBy, adminExportFulfillment,
+  adminFulfillmentList, adminSetFulfilledBy, adminExportFulfillment, adminFulfillmentOrderDetail,
   // Settings / last update time
   getLastProductUpdateTime,
   // Procurement invoice

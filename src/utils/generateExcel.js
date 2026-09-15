@@ -108,4 +108,69 @@ const generateExpenseExcel = async (expenses, filters = {}) => {
   return wb.xlsx.writeBuffer();
 };
 
-module.exports = { generateExpenseExcel };
+// ── Koyambedu Daily — Order Fulfillment export ─────────────
+const generateFulfillmentExcel = async (rows, filters = {}) => {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Eptomart';
+  wb.created = new Date();
+
+  const ws = wb.addWorksheet('Order Fulfillment', {
+    pageSetup: { paperSize: 9, orientation: 'landscape' },
+  });
+
+  ws.mergeCells('A1:I1');
+  ws.getCell('A1').value = 'Eptomart — Koyambedu Daily Order Fulfillment';
+  ws.getCell('A1').font  = { bold: true, size: 14, color: { argb: 'FF065F46' } };
+  ws.getCell('A1').alignment = { horizontal: 'center' };
+
+  ws.mergeCells('A2:I2');
+  const period = filters.from && filters.to
+    ? `Period: ${filters.from} to ${filters.to}`
+    : `Generated: ${new Date().toLocaleDateString('en-IN')}`;
+  ws.getCell('A2').value     = period;
+  ws.getCell('A2').font      = { size: 9, color: { argb: 'FF666666' } };
+  ws.getCell('A2').alignment = { horizontal: 'center' };
+
+  ws.addRow([]);
+
+  const headers = ['#', 'Order ID', 'Customer', 'Phone', 'Order Date', 'Delivery Date', 'Status', 'Items', 'Total (₹)', 'Fulfilled By'];
+  const hRow = ws.addRow(headers);
+  hRow.eachCell(cell => {
+    cell.font      = { bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF065F46' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+  });
+  hRow.height = 22;
+
+  rows.forEach((r, idx) => {
+    const row = ws.addRow([
+      idx + 1,
+      r.orderId || '—',
+      r.customerName,
+      r.customerPhone,
+      r.createdAt ? new Date(r.createdAt).toLocaleDateString('en-IN') : '—',
+      r.deliveryDate ? new Date(r.deliveryDate).toLocaleDateString('en-IN') : '—',
+      r.orderStatus,
+      r.itemCount,
+      r.total,
+      r.fulfilledBy || '',
+    ]);
+    if (idx % 2 === 0) {
+      row.eachCell(cell => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0FDF4' } };
+      });
+    }
+    row.getCell(9).numFmt    = '₹#,##0.00';
+    row.getCell(9).alignment = { horizontal: 'right' };
+  });
+
+  ws.columns = [
+    { width: 5  }, { width: 16 }, { width: 22 }, { width: 15 },
+    { width: 14 }, { width: 14 }, { width: 16 }, { width: 8  },
+    { width: 14 }, { width: 22 },
+  ];
+
+  return wb.xlsx.writeBuffer();
+};
+
+module.exports = { generateExpenseExcel, generateFulfillmentExcel };

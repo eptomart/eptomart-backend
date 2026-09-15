@@ -2866,6 +2866,172 @@ const adminRescheduleOrder = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════════════════════════
+// ADMIN — Order Fulfillment tab
+// Standalone list + "who fulfilled this order" tracking, with date-range
+// filter and Excel/PDF export. Independent of adminGetOrders — does not
+// read or touch its filters, pagination, or response shape.
+// ══════════════════════════════════════════════════════════════════
+
+// Shared date-range filter + row-shaping helper for the fulfillment tab
+async function _koyambeduFulfillmentRows({ from, to }) {
+  const filter = {};
+  if (from || to) {
+    filter.createdAt = {};
+    if (from) filter.createdAt.$gte = new Date(`${from}T00:00:00.000Z`);
+    if (to)   filter.createdAt.$lte = new Date(`${to}T23:59:59.999Z`);
+  }
+
+  const orders = await KoyambeduOrder.find(filter)
+    .populate('buyer', 'name phone')
+    .select('orderId buyer shippingAddress createdAt deliveryDate deliverySlot orderStatus items pricing fulfilledBy fulfilledByUpdatedAt')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  return orders.map(o => ({
+    _id:           o._id,
+    orderId:       o.orderId,
+    customerName:  o.shippingAddress?.fullName || o.buyer?.name || '—',
+    customerPhone: o.shippingAddress?.phone || o.buyer?.phone || '—',
+    createdAt:     o.createdAt,
+    deliveryDate:  o.deliveryDate,
+    deliverySlot:  o.deliverySlot,
+    orderStatus:   o.orderStatus,
+    itemCount:     (o.items || []).filter(i => i.itemStatus !== 'declined').length,
+    total:         o.pricing?.total || 0,
+    fulfilledBy:   o.fulfilledBy || '',
+  }));
+}
+
+// GET /koyambedu/admin/orders/fulfillment?from=YYYY-MM-DD&to=YYYY-MM-DD
+const adminFulfillmentList = async (req, res) => {
+  try {
+    const rows = await _koyambeduFulfillmentRows(req.query);
+    res.json({ success: true, count: rows.length, orders: rows });
+  } catch (err) {
+    console.error('[adminFulfillmentList] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch orders' });
+  }
+};
+
+// PATCH /koyambedu/admin/orders/:id/fulfilled-by
+// Body: { fulfilledBy } — free text only, does not touch order status/timeline.
+const adminSetFulfilledBy = async (req, res) => {
+  try {
+    const { fulfilledBy } = req.body;
+    const order = await KoyambeduOrder.findByIdAndUpdate(
+      req.params.id,
+      {
+        fulfilledBy:          String(fulfilledBy || '').slice(0, 200),
+        fulfilledByUpdatedAt: new Date(),
+        fulfilledByUpdatedBy: req.user._id,
+      },
+      { new: true }
+    ).select('_id orderId fulfilledBy fulfilledByUpdatedAt');
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    res.json({ success: true, order });
+  } catch (err) {
+    console.error('[adminSetFulfilledBy] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to update' });
+  }
+};
+
+// GET /koyambedu/admin/orders/fulfillment/export?from=&to=&format=excel|pdf
+const adminExportFulfillment = async (req, res) => {
+  try {
+    const { from, to, format } = req.query;
+    const rows = await _koyambeduFulfillmentRows({ from, to });
+
+    if (format === 'pdf') {
+      return _renderFulfillmentPDF(res, rows, { from, to });
+    }
+
+    const { generateFulfillmentExcel } = require('../utils/generateExcel');
+    const buffer = await generateFulfillmentExcel(rows, { from, to });
+    const filename = `koyambedu-fulfillment-${from || 'all'}-to-${to || 'now'}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (err) {
+    console.error('[adminExportFulfillment] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to export' });
+  }
+};
+
+// PDF rendering for the fulfillment export — landscape table, paginated.
+function _renderFulfillmentPDF(res, rows, { from, to }) {
+  const PDFDocument = require('pdfkit');
+  const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 35, info: { Title: 'Koyambedu Daily — Order Fulfillment', Author: 'Eptomart' } });
+  const fileStamp = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="Koyambedu-Fulfillment-${fileStamp}.pdf"`);
+  doc.pipe(res);
+
+  const L = 35, pageW = doc.page.width - L * 2;
+  const cols = [
+    { key: 'orderId',       label: 'Order ID',    w: 90 },
+    { key: 'customerName',  label: 'Customer',    w: 120 },
+    { key: 'customerPhone', label: 'Phone',        w: 90 },
+    { key: 'createdAt',     label: 'Order Date',  w: 85 },
+    { key: 'deliveryDate',  label: 'Delivery',    w: 85 },
+    { key: 'orderStatus',   label: 'Status',      w: 85 },
+    { key: 'itemCount',     label: 'Items',       w: 40 },
+    { key: 'total',         label: 'Total (Rs)',  w: 65 },
+    { key: 'fulfilledBy',   label: 'Fulfilled By', w: pageW - (90+120+90+85+85+85+40+65) },
+  ];
+
+  const rowH = 20;
+  let y = 35;
+
+  const drawHeader = () => {
+    doc.fontSize(16).font('Helvetica-Bold').fillColor('#065f46').text('EPTOMART — Koyambedu Daily', L, y);
+    doc.fontSize(10).font('Helvetica').fillColor('#374151')
+      .text(`Order Fulfillment Report${from || to ? `  (${from || '…'} to ${to || '…'})` : ''}`, L, y + 20);
+    y += 42;
+
+    let x = L;
+    doc.rect(L, y, pageW, rowH).fill('#065f46');
+    cols.forEach(c => {
+      doc.fillColor('#ffffff').fontSize(8).font('Helvetica-Bold').text(c.label, x + 3, y + 6, { width: c.w - 6 });
+      x += c.w;
+    });
+    y += rowH;
+  };
+
+  drawHeader();
+
+  rows.forEach((r, idx) => {
+    if (y + rowH > doc.page.height - 35) {
+      doc.addPage();
+      y = 35;
+      drawHeader();
+    }
+    if (idx % 2 === 0) doc.rect(L, y, pageW, rowH).fill('#f9fafb');
+
+    let x = L;
+    const vals = {
+      orderId:       r.orderId || '—',
+      customerName:  r.customerName,
+      customerPhone: r.customerPhone,
+      createdAt:     r.createdAt ? new Date(r.createdAt).toLocaleDateString('en-IN') : '—',
+      deliveryDate:  r.deliveryDate ? new Date(r.deliveryDate).toLocaleDateString('en-IN') : '—',
+      orderStatus:   r.orderStatus,
+      itemCount:     String(r.itemCount),
+      total:         r.total.toFixed(2),
+      fulfilledBy:   r.fulfilledBy || '—',
+    };
+    cols.forEach(c => {
+      doc.fillColor('#111827').fontSize(8).font('Helvetica').text(vals[c.key], x + 3, y + 6, { width: c.w - 6, ellipsis: true });
+      x += c.w;
+    });
+    y += rowH;
+  });
+
+  doc.fontSize(8).fillColor('#9ca3af').text(`Total orders: ${rows.length}`, L, y + 10);
+
+  doc.end();
+}
+
 /** PATCH /api/koyambedu/admin/orders/:orderId/items/:itemIndex/qty — edit item quantity */
 const adminEditOrderItemQty = async (req, res) => {
   const { newQty } = req.body;
@@ -7943,6 +8109,9 @@ module.exports = {
   getSellerOrders, confirmStock, requestPriceRevision, createSellerCategory,
   // Admin — sellers
   adminDashboard, adminGetOrders, getOrdersForPrinting, markItemsPrinted, resetPackingProgress, adminGetOrderWalletHistory, adminUpdateOrderStatus, adminRescheduleOrder, adminEditOrderItemQty, adminDeclineOrderItem,
+
+  // Order Fulfillment tab
+  adminFulfillmentList, adminSetFulfilledBy, adminExportFulfillment,
   // Settings / last update time
   getLastProductUpdateTime,
   // Procurement invoice

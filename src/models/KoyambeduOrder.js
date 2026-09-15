@@ -340,6 +340,13 @@ const koyambeduOrderSchema = new Schema({
   cancelReason: String,
   closeComments: String,   // Super Admin's comments when manually closing
 
+  // Who fulfilled this order (free text, e.g. staff/packer name) — set from
+  // the admin Fulfillment tab. Purely informational/reporting, does not
+  // affect order status or any business logic.
+  fulfilledBy:          { type: String, default: '' },
+  fulfilledByUpdatedAt: Date,
+  fulfilledByUpdatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+
   // ── CUSTOMER DELIVERY ACKNOWLEDGEMENT ─────────
   // After delivery the customer confirms what actually arrived.
   deliveryAck: {

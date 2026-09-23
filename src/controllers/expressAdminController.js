@@ -506,7 +506,15 @@ const listStoreProducts = async (req, res) => {
       .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: KOYAMBEDU_PRODUCT_FIELDS } })
       .sort({ createdAt: -1 })
       .lean();
-    res.json({ success: true, storeProducts });
+    // autoPrice = what the margin engine alone would charge, shown alongside
+    // priceOverride so admin can see both when deciding whether/how to round
+    // off the selling price manually.
+    const marginConfig = await getOrCreateMarginConfig();
+    const withAutoPrice = storeProducts.map(sp => ({
+      ...sp,
+      autoPrice: sp.product ? computeSellingPrice(sp.product, marginConfig, 1).sellingPricePerUnit : null,
+    }));
+    res.json({ success: true, storeProducts: withAutoPrice });
   } catch (err) {
     console.error('[express.listStoreProducts]', err);
     fail(res, 500, 'Failed to load store products');
@@ -543,12 +551,18 @@ const listStoreProductsForPrint = async (req, res) => {
 const upsertStoreProduct = async (req, res) => {
   try {
     const { storeId } = req.params;
-    const { productId, isAvailable, stockQty } = req.body;
+    const { productId, isAvailable, stockQty, priceOverride } = req.body;
     if (!productId) return fail(res, 400, 'productId is required');
 
     const update = {};
     if (isAvailable != null) update.isAvailable = isAvailable;
     if (stockQty != null) update.stockQty = stockQty;
+    // priceOverride: manually round off the selling price for this product at
+    // this store, overriding the margin-engine-computed price. Sending ''
+    // (empty string) clears it back to automatic. Sending null/undefined
+    // (the field simply omitted) leaves whatever is already saved untouched
+    // — same "only touch what's provided" behaviour as isAvailable/stockQty.
+    if (priceOverride !== undefined) update.priceOverride = priceOverride === '' ? null : Number(priceOverride);
 
     const storeProduct = await ExpressStoreProduct.findOneAndUpdate(
       { store: storeId, product: productId },

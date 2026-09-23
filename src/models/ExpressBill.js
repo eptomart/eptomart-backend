@@ -27,6 +27,12 @@ const expressBillSchema = new Schema({
   }],
 
   subtotal: { type: Number, default: 0 },
+  // Offer/discount applied as a % of the order's subtotal (e.g. a festival
+  // offer or manager-approved discount) — set by the POS user before
+  // completing the sale. discountAmount is stored alongside the % so
+  // receipts and reports show the actual ₹ knocked off without recomputing.
+  discountPercent: { type: Number, default: 0, min: 0, max: 100 },
+  discountAmount:  { type: Number, default: 0 },
   total:    { type: Number, default: 0 },
 
   status: { type: String, enum: ['held', 'completed', 'voided'], default: 'held' },

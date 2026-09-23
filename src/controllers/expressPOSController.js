@@ -69,7 +69,8 @@ const listMyBills = async (req, res) => {
 
 function recalcTotals(bill) {
   bill.subtotal = bill.items.reduce((sum, i) => sum + i.price * i.quantity, 0);
-  bill.total = bill.subtotal;
+  bill.discountAmount = Math.round(bill.subtotal * (bill.discountPercent || 0) / 100 * 100) / 100;
+  bill.total = Math.max(0, Math.round((bill.subtotal - bill.discountAmount) * 100) / 100);
 }
 
 const createBill = async (req, res) => {
@@ -147,6 +148,29 @@ const updateBillItem = async (req, res) => {
   }
 };
 
+// Apply (or clear, with 0) an offer % discount on the bill's subtotal —
+// e.g. a festival offer or a manager-approved discount at the counter.
+// Only allowed while the bill is still held/editable, same as line items.
+const applyDiscount = async (req, res) => {
+  try {
+    const { discountPercent } = req.body;
+    const pct = Number(discountPercent);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) return fail(res, 400, 'discountPercent must be a number between 0 and 100');
+
+    const bill = await ExpressBill.findOne({ _id: req.params.billId, posUser: req.posUser._id, createdAt: { $gte: req.posSessionAt } });
+    if (!bill) return fail(res, 404, 'Bill not found');
+    if (bill.status !== 'held') return fail(res, 400, 'This bill can no longer be edited');
+
+    bill.discountPercent = pct;
+    recalcTotals(bill);
+    await bill.save();
+    res.json({ success: true, bill });
+  } catch (err) {
+    console.error('[expressPOS.applyDiscount]', err);
+    fail(res, 500, 'Failed to apply discount');
+  }
+};
+
 const completeBill = async (req, res) => {
   try {
     const { paymentMethod } = req.body;
@@ -202,5 +226,5 @@ const voidBill = async (req, res) => {
 };
 
 module.exports = {
-  listProducts, listMyBills, createBill, getBill, updateBillItem, completeBill, voidBill,
+  listProducts, listMyBills, createBill, getBill, updateBillItem, applyDiscount, completeBill, voidBill,
 };

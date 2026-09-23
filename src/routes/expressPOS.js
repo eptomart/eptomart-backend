@@ -18,6 +18,7 @@ router.get   ('/bills',              protectExpressPOS, ctrl.listMyBills);
 router.post  ('/bills',              protectExpressPOS, ctrl.createBill);
 router.get   ('/bills/:billId',      protectExpressPOS, ctrl.getBill);
 router.post  ('/bills/:billId/item', protectExpressPOS, ctrl.updateBillItem);
+router.patch ('/bills/:billId/discount', protectExpressPOS, ctrl.applyDiscount);
 router.patch ('/bills/:billId/complete', protectExpressPOS, ctrl.completeBill);
 router.patch ('/bills/:billId/void',     protectExpressPOS, ctrl.voidBill);
 

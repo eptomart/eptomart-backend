@@ -70,7 +70,12 @@ const listMyBills = async (req, res) => {
 function recalcTotals(bill) {
   bill.subtotal = bill.items.reduce((sum, i) => sum + i.price * i.quantity, 0);
   bill.discountAmount = Math.round(bill.subtotal * (bill.discountPercent || 0) / 100 * 100) / 100;
-  bill.total = Math.max(0, Math.round((bill.subtotal - bill.discountAmount) * 100) / 100);
+  const rawTotal = Math.max(0, bill.subtotal - bill.discountAmount);
+  // Final payable amount is rounded to the nearest whole rupee — a cash
+  // counter doesn't deal in paise. roundOff is kept alongside for an
+  // accurate audit trail (e.g. ₹237.45 -> total ₹237, roundOff -0.45).
+  bill.total = Math.round(rawTotal);
+  bill.roundOff = Math.round((bill.total - rawTotal) * 100) / 100;
 }
 
 const createBill = async (req, res) => {

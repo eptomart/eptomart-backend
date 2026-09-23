@@ -33,6 +33,11 @@ const expressBillSchema = new Schema({
   // receipts and reports show the actual ₹ knocked off without recomputing.
   discountPercent: { type: Number, default: 0, min: 0, max: 100 },
   discountAmount:  { type: Number, default: 0 },
+  // The final payable total is rounded off to the nearest whole rupee (cash
+  // counters don't deal in paise); roundOff records the small +/- difference
+  // that rounding introduced, purely for transparency in reports/receipts —
+  // it never changes what's actually owed beyond the rounding itself.
+  roundOff: { type: Number, default: 0 },
   total:    { type: Number, default: 0 },
 
   status: { type: String, enum: ['held', 'completed', 'voided'], default: 'held' },

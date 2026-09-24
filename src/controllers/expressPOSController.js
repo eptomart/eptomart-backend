@@ -80,7 +80,15 @@ function recalcTotals(bill) {
 
 const createBill = async (req, res) => {
   try {
-    const heldCount = await ExpressBill.countDocuments({ posUser: req.posUser._id, status: 'held' });
+    // Scoped to this login session, same as listMyBills below — otherwise a
+    // held bill left over from a PREVIOUS session (e.g. a crashed tab, or a
+    // shift that ended without completing/voiding it) is invisible to this
+    // session's UI (which correctly shows 0 held bills) yet still counted
+    // here, permanently blocking new bills with a "4 held" error the
+    // cashier has no way to see or resolve.
+    const heldCount = await ExpressBill.countDocuments({
+      posUser: req.posUser._id, status: 'held', createdAt: { $gte: req.posSessionAt },
+    });
     if (heldCount >= MAX_HELD_BILLS) {
       return fail(res, 400, `You already have ${MAX_HELD_BILLS} held bills — complete or void one before starting a new bill.`);
     }

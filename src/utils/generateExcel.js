@@ -173,4 +173,57 @@ const generateFulfillmentExcel = async (rows, filters = {}) => {
   return wb.xlsx.writeBuffer();
 };
 
-module.exports = { generateExpenseExcel, generateFulfillmentExcel };
+// ── Koyambedu Daily — P&L summary export (day-by-day over a date range) ─────
+const generatePnLExcel = (days, grandTotal, filters = {}) => {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Eptomart';
+  wb.created = new Date();
+
+  const ws = wb.addWorksheet('P&L Summary', {
+    pageSetup: { paperSize: 9, orientation: 'landscape' },
+  });
+
+  ws.mergeCells('A1:E1');
+  ws.getCell('A1').value = 'Eptomart — Koyambedu Daily Profit & Loss';
+  ws.getCell('A1').font  = { bold: true, size: 14, color: { argb: 'FF991B1B' } };
+  ws.getCell('A1').alignment = { horizontal: 'center' };
+
+  ws.mergeCells('A2:E2');
+  const period = filters.from && filters.to ? `Period: ${filters.from} to ${filters.to}` : `Generated: ${new Date().toLocaleDateString('en-IN')}`;
+  ws.getCell('A2').value     = period;
+  ws.getCell('A2').font      = { size: 9, color: { argb: 'FF666666' } };
+  ws.getCell('A2').alignment = { horizontal: 'center' };
+
+  ws.addRow([]);
+
+  const headers = ['#', 'Date', 'Confirmed Orders', 'Revenue (₹)', 'Cost (₹)', 'Profit / Loss (₹)'];
+  const hRow = ws.addRow(headers);
+  hRow.eachCell(cell => {
+    cell.font      = { bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF991B1B' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+  });
+  hRow.height = 22;
+
+  days.forEach((d, idx) => {
+    const row = ws.addRow([idx + 1, d.cycle, d.orderCount, d.revenue, d.cost, d.profit]);
+    if (idx % 2 === 0) {
+      row.eachCell(cell => { cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF2F2' } }; });
+    }
+    [4, 5, 6].forEach(c => { row.getCell(c).numFmt = '₹#,##0.00'; row.getCell(c).alignment = { horizontal: 'right' }; });
+    if (d.profit < 0) row.getCell(6).font = { color: { argb: 'FFDC2626' }, bold: true };
+    else row.getCell(6).font = { color: { argb: 'FF16A34A' }, bold: true };
+  });
+
+  ws.addRow([]);
+  const totRow = ws.addRow(['', 'GRAND TOTAL', grandTotal.orderCount, grandTotal.revenue, grandTotal.cost, grandTotal.profit]);
+  totRow.eachCell(cell => { cell.font = { bold: true }; });
+  [4, 5, 6].forEach(c => { totRow.getCell(c).numFmt = '₹#,##0.00'; totRow.getCell(c).alignment = { horizontal: 'right' }; });
+  totRow.getCell(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: grandTotal.profit < 0 ? 'FFFEE2E2' : 'FFDCFCE7' } };
+
+  ws.columns = [{ width: 5 }, { width: 14 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 18 }];
+
+  return wb.xlsx.writeBuffer();
+};
+
+module.exports = { generateExpenseExcel, generateFulfillmentExcel, generatePnLExcel };

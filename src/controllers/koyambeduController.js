@@ -21,6 +21,7 @@ const KoyambeduSettings     = require('../models/KoyambeduSettings');
 const KoyambeduDeliverySlot = require('../models/KoyambeduDeliverySlot');
 const KoyambeduProcurementChecklist = require('../models/KoyambeduProcurementChecklist');
 const KoyambeduProcurementShare     = require('../models/KoyambeduProcurementShare');
+const KoyambeduDailyExpense         = require('../models/KoyambeduDailyExpense');
 const KoyambeduOfferBroadcast       = require('../models/KoyambeduOfferBroadcast');
 const { notifyAudience, notifyAll } = require('../utils/pushNotification');
 const User                  = require('../models/User');
@@ -7845,7 +7846,7 @@ const adminProcurementReport = async (req, res) => {
 // and `packingNote` are independent — sending only one leaves the others untouched.
 const adminUpdateProcurementItem = async (req, res) => {
   try {
-    const { cycle, productKey, productName, gradeKey, gradeName, purchased, comment, packingNote } = req.body;
+    const { cycle, productKey, productName, gradeKey, gradeName, purchased, comment, packingNote, purchaseCostPerUnit } = req.body;
     if (!cycle || !productKey) {
       return res.status(400).json({ success: false, message: 'cycle and productKey are required' });
     }
@@ -7854,6 +7855,15 @@ const adminUpdateProcurementItem = async (req, res) => {
     if (productName !== undefined) update.productName = productName;
     if (gradeKey !== undefined)    update.gradeKey    = gradeKey || null;
     if (gradeName !== undefined)   update.gradeName   = gradeName || null;
+
+    // Feeds the daily P&L report (see adminPnLDay) — the supplier cost/unit
+    // for this product on this cycle date. Independent of `purchased`/
+    // `comment` below, same pattern — sending only this leaves the rest untouched.
+    if (purchaseCostPerUnit !== undefined) {
+      update.purchaseCostPerUnit = purchaseCostPerUnit === '' || purchaseCostPerUnit === null
+        ? null
+        : Number(purchaseCostPerUnit);
+    }
 
     if (purchased !== undefined) {
       update.purchased       = !!purchased;
@@ -7933,6 +7943,275 @@ const adminShareProcurement = async (req, res) => {
   } catch (err) {
     console.error('[adminShareProcurement] error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to record share' });
+  }
+};
+
+// ══════════════════════════════════════════════
+// DAILY P&L REPORT
+// Mirrors the business's existing manual Excel P&L: for each confirmed
+// order on a given cutoffCycle date, revenue is what the customer was
+// charged for items; cost is the supplier purchase price (from the
+// Procurement checklist), an allocated share of the day's loadman charge,
+// and the order's platform/transport/packing/Razorpay costs (adminCosts).
+// Profit/loss is computed per order, rolled up per day, per item, and per
+// "procured by" person, and summarizable across a date range (e.g. a
+// quarter). Purely additive — reads existing order/checklist data, only
+// writes to the new KoyambeduDailyExpense collection and the
+// purchaseCostPerUnit/adminCosts fields added alongside this feature.
+// ══════════════════════════════════════════════
+
+// GET /koyambedu/admin/pnl/daily-expense?cycle=2026-09-26
+const adminGetDailyExpense = async (req, res) => {
+  try {
+    const cycle = req.query.cycle || getProcurementCycle();
+    const doc = await KoyambeduDailyExpense.findOne({ cycle }).lean();
+    res.json({ success: true, cycle, loadmanCharge: doc?.loadmanCharge || 0 });
+  } catch (err) {
+    console.error('[adminGetDailyExpense] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch daily expense' });
+  }
+};
+
+// PATCH /koyambedu/admin/pnl/daily-expense — body { cycle, loadmanCharge }
+const adminSetDailyExpense = async (req, res) => {
+  try {
+    const { cycle, loadmanCharge } = req.body;
+    if (!cycle) return res.status(400).json({ success: false, message: 'cycle is required' });
+
+    const doc = await KoyambeduDailyExpense.findOneAndUpdate(
+      { cycle },
+      {
+        loadmanCharge: Number(loadmanCharge) || 0,
+        updatedAt: new Date(),
+        updatedBy: req.user._id,
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    res.json({ success: true, cycle: doc.cycle, loadmanCharge: doc.loadmanCharge });
+  } catch (err) {
+    console.error('[adminSetDailyExpense] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to save daily expense' });
+  }
+};
+
+// Shared computation: full P&L breakdown for one cutoffCycle date.
+// Returns per-order lines, a per-item rollup, a per-"procured by" rollup,
+// and day totals. Used by both adminPnLDay (full drill-down) and
+// adminPnLSummary (lightweight per-day totals over a range).
+async function computeKoyambeduPnLForCycle(cycle) {
+  const orders = await KoyambeduOrder.find({
+    cutoffCycle: cycle,
+    orderStatus: 'confirmed',
+  }).select('orderId buyer shippingAddress items pricing adminCosts createdAt').lean();
+
+  // Loadman charge is split across every confirmed order's total quantity
+  // for the day, same denominator the business already uses this list for
+  // (procurement report is also scoped to orderStatus:'confirmed' for this
+  // same cycle — see adminProcurementReport above).
+  let totalQtyForDay = 0;
+  for (const order of orders) {
+    for (const item of order.items || []) {
+      if (item.itemStatus === 'declined') continue;
+      totalQtyForDay += item.quantity || 0;
+    }
+  }
+
+  const dailyExpense = await KoyambeduDailyExpense.findOne({ cycle }).lean();
+  const loadmanCharge = dailyExpense?.loadmanCharge || 0;
+  const loadmanPerUnitRate = totalQtyForDay > 0 ? loadmanCharge / totalQtyForDay : 0;
+
+  // Purchase cost + "procured by" come from the Procurement checklist,
+  // keyed the same way as adminProcurementReport (productId, or
+  // productId__gradeKey for graded products).
+  const productKeys = new Set();
+  for (const order of orders) {
+    for (const item of order.items || []) {
+      if (item.itemStatus === 'declined') continue;
+      const key = item.gradeKey
+        ? `${item.product?.toString() || item.name}__${item.gradeKey}`
+        : (item.product?.toString() || item.name);
+      productKeys.add(key);
+    }
+  }
+  const checklist = productKeys.size
+    ? await KoyambeduProcurementChecklist.find({ cycle, productKey: { $in: [...productKeys] } }).lean()
+    : [];
+  const checklistMap = Object.fromEntries(checklist.map(c => [c.productKey, c]));
+
+  const itemRollup = {};   // productKey -> { productName, unit, totalQty, purchaseCost, loadmanCost, totalProcurement, procuredBy }
+  const procuredByRollup = {}; // name -> { name, totalQty, purchaseCost, loadmanCost, totalProcurement, products: Set }
+
+  const orderLines = orders.map(order => {
+    let revenue = 0, purchaseCost = 0, loadmanCost = 0;
+    const items = (order.items || []).filter(it => it.itemStatus !== 'declined').map(item => {
+      const unitPrice = item.finalPrice || item.orderedPrice || 0;
+      const qty = item.quantity || 0;
+      const lineRevenue = unitPrice * qty;
+
+      const productKey = item.gradeKey
+        ? `${item.product?.toString() || item.name}__${item.gradeKey}`
+        : (item.product?.toString() || item.name);
+      const c = checklistMap[productKey];
+      const purchaseCostPerUnit = c?.purchaseCostPerUnit ?? null;
+      const lineePurchaseCost = (purchaseCostPerUnit || 0) * qty;
+      const lineLoadmanCost = loadmanPerUnitRate * qty;
+      const procuredByName = c?.purchasedByName || null;
+
+      revenue += lineRevenue;
+      purchaseCost += lineePurchaseCost;
+      loadmanCost += lineLoadmanCost;
+
+      if (!itemRollup[productKey]) {
+        itemRollup[productKey] = {
+          productKey, productName: item.name, unit: item.unit || item.unitLabel || 'kg',
+          gradeKey: item.gradeKey || null, gradeName: item.gradeName || null,
+          totalQty: 0, purchaseCostPerUnit, purchaseCost: 0, loadmanCost: 0, totalProcurement: 0, procuredBy: procuredByName,
+        };
+      }
+      itemRollup[productKey].totalQty += qty;
+      itemRollup[productKey].purchaseCost += lineePurchaseCost;
+      itemRollup[productKey].loadmanCost += lineLoadmanCost;
+      itemRollup[productKey].totalProcurement += lineePurchaseCost + lineLoadmanCost;
+
+      if (procuredByName) {
+        if (!procuredByRollup[procuredByName]) {
+          procuredByRollup[procuredByName] = { name: procuredByName, totalQty: 0, purchaseCost: 0, loadmanCost: 0, totalProcurement: 0, products: new Set() };
+        }
+        procuredByRollup[procuredByName].totalQty += qty;
+        procuredByRollup[procuredByName].purchaseCost += lineePurchaseCost;
+        procuredByRollup[procuredByName].loadmanCost += lineLoadmanCost;
+        procuredByRollup[procuredByName].totalProcurement += lineePurchaseCost + lineLoadmanCost;
+        procuredByRollup[procuredByName].products.add(item.name);
+      }
+
+      return {
+        name: item.name, unit: item.unit || item.unitLabel, quantity: qty,
+        orderPrice: unitPrice, revenue: lineRevenue,
+        purchaseCostPerUnit, purchaseCost: lineePurchaseCost,
+        loadmanCost: lineLoadmanCost,
+        totalProcurement: lineePurchaseCost + lineLoadmanCost,
+        procuredBy: procuredByName,
+      };
+    });
+
+    const platformFeeCost   = order.adminCosts?.platformFeeCost   || 0;
+    const transportCost     = order.adminCosts?.transportCharge   || 0;
+    const packingCost       = order.adminCosts?.packingCharge     || 0;
+    const razorpayDeduction = order.adminCosts?.razorpayDeduction || 0;
+    const totalProcurement  = purchaseCost + loadmanCost;
+    const totalCost         = totalProcurement + platformFeeCost + transportCost + packingCost + razorpayDeduction;
+    const profit            = revenue - totalCost;
+
+    return {
+      orderId: order.orderId, _id: order._id,
+      customerName: order.shippingAddress?.name || order.buyer?.name || '',
+      items, revenue, purchaseCost, loadmanCost, totalProcurement,
+      platformFeeCost, transportCost, packingCost, razorpayDeduction,
+      totalCost, profit,
+    };
+  });
+
+  const dayRevenue = orderLines.reduce((s, o) => s + o.revenue, 0);
+  const dayCost     = orderLines.reduce((s, o) => s + o.totalCost, 0);
+  const dayProfit   = dayRevenue - dayCost;
+
+  return {
+    cycle,
+    orderCount: orders.length,
+    totalQtyForDay,
+    loadmanCharge,
+    loadmanPerUnitRate,
+    orders: orderLines,
+    itemRollup: Object.values(itemRollup).sort((a, b) => a.productName.localeCompare(b.productName)),
+    procuredByRollup: Object.values(procuredByRollup).map(p => ({ ...p, products: [...p.products] })),
+    dayRevenue, dayCost, dayProfit,
+  };
+}
+
+// GET /koyambedu/admin/pnl/day?cycle=2026-09-26
+const adminPnLDay = async (req, res) => {
+  try {
+    const cycle = req.query.cycle || getProcurementCycle();
+    const report = await computeKoyambeduPnLForCycle(cycle);
+    res.json({ success: true, ...report });
+  } catch (err) {
+    console.error('[adminPnLDay] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to build P&L report' });
+  }
+};
+
+// GET /koyambedu/admin/pnl/export?from=&to= — Excel export of the per-day
+// P&L summary over a range (the quarter view), same rows adminPnLSummary
+// returns, streamed as a .xlsx download.
+const adminExportPnL = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) return res.status(400).json({ success: false, message: 'from and to are required (YYYY-MM-DD)' });
+
+    const cycles = await KoyambeduOrder.distinct('cutoffCycle', {
+      cutoffCycle: { $gte: from, $lte: to },
+      orderStatus: 'confirmed',
+    });
+    cycles.sort();
+
+    const days = [];
+    for (const cycle of cycles) {
+      const report = await computeKoyambeduPnLForCycle(cycle);
+      days.push({ cycle, orderCount: report.orderCount, revenue: report.dayRevenue, cost: report.dayCost, profit: report.dayProfit });
+    }
+    const grandTotal = days.reduce((acc, d) => ({
+      revenue: acc.revenue + d.revenue, cost: acc.cost + d.cost, profit: acc.profit + d.profit, orderCount: acc.orderCount + d.orderCount,
+    }), { revenue: 0, cost: 0, profit: 0, orderCount: 0 });
+
+    const { generatePnLExcel } = require('../utils/generateExcel');
+    const buffer = await generatePnLExcel(days, grandTotal, { from, to });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="Koyambedu-PnL-${from}-to-${to}.xlsx"`);
+    res.send(buffer);
+  } catch (err) {
+    console.error('[adminExportPnL] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to export P&L' });
+  }
+};
+
+// GET /koyambedu/admin/pnl/summary?from=2026-07-01&to=2026-09-30
+// Lightweight per-day totals across a date range (e.g. a full quarter),
+// plus a grand total — for the quarter/range view. Does not return
+// per-order or per-item detail (see adminPnLDay for that, one day at a time).
+const adminPnLSummary = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) return res.status(400).json({ success: false, message: 'from and to are required (YYYY-MM-DD)' });
+
+    // Which cycle dates actually have confirmed orders in range — avoids
+    // computing (and returning) a zero row for every calendar day of a
+    // whole quarter when most days may have none.
+    const cycles = await KoyambeduOrder.distinct('cutoffCycle', {
+      cutoffCycle: { $gte: from, $lte: to },
+      orderStatus: 'confirmed',
+    });
+    cycles.sort();
+
+    const days = [];
+    for (const cycle of cycles) {
+      const report = await computeKoyambeduPnLForCycle(cycle);
+      days.push({
+        cycle, orderCount: report.orderCount,
+        revenue: report.dayRevenue, cost: report.dayCost, profit: report.dayProfit,
+      });
+    }
+
+    const grandTotal = days.reduce((acc, d) => ({
+      revenue: acc.revenue + d.revenue,
+      cost:    acc.cost + d.cost,
+      profit:  acc.profit + d.profit,
+      orderCount: acc.orderCount + d.orderCount,
+    }), { revenue: 0, cost: 0, profit: 0, orderCount: 0 });
+
+    res.json({ success: true, from, to, days, grandTotal });
+  } catch (err) {
+    console.error('[adminPnLSummary] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to build P&L summary' });
   }
 };
 
@@ -8134,6 +8413,7 @@ module.exports = {
   adminGetUserCarts,
   // Super Admin — Procurement Report (confirmed orders)
   adminProcurementReport, adminUpdateProcurementItem, adminShareProcurement,
+  adminGetDailyExpense, adminSetDailyExpense, adminPnLDay, adminPnLSummary, adminExportPnL,
   // Super Admin — Offer push notifications
   adminPreviewOfferAudience, adminBroadcastOffer, adminGetOfferBroadcasts,
   // Buyer orders
@@ -8218,7 +8498,7 @@ module.exports = {
 // ══════════════════════════════════════════════════════════════════
 async function adminUpdateOrderCosts(req, res) {
   try {
-    const { actualDeliveryCost, miscExpenses, transportCharge, packingCharge, costNote } = req.body;
+    const { actualDeliveryCost, miscExpenses, transportCharge, packingCharge, platformFeeCost, razorpayDeduction, costNote } = req.body;
     const order = await KoyambeduOrder.findById(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     order.adminCosts = {
@@ -8226,6 +8506,8 @@ async function adminUpdateOrderCosts(req, res) {
       miscExpenses:       Number(miscExpenses)       || 0,
       transportCharge:    Number(transportCharge)    || 0,
       packingCharge:      Number(packingCharge)      || 0,
+      platformFeeCost:    Number(platformFeeCost)    || 0,
+      razorpayDeduction:  Number(razorpayDeduction)  || 0,
       costNote:           costNote || '',
       updatedAt:          new Date(),
       updatedBy:          req.user._id,

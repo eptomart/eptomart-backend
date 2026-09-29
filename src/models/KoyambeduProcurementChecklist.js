@@ -26,6 +26,14 @@ const koyambeduProcurementChecklistSchema = new Schema({
   purchasedByName:{ type: String },
   purchasedAt:    { type: Date },
 
+  // Actual price per unit paid to the supplier for this product on this
+  // cycle date — the one number the daily P&L report needs that nothing
+  // else in the system tracks (order pricing only has the customer-facing
+  // sale price). Entered by admin alongside "purchased", reused across every
+  // confirmed order containing this product that day (one PO price/day,
+  // same convention as the business's existing manual P&L sheet).
+  purchaseCostPerUnit: { type: Number, default: null },
+
   comment:        { type: String, default: '' },
   commentBy:      { type: Schema.Types.ObjectId, ref: 'User' },
   commentByName:  { type: String },

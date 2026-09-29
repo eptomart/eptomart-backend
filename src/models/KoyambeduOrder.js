@@ -422,6 +422,12 @@ const koyambeduOrderSchema = new Schema({
     // Purely additive fields; existing two fields above are untouched.
     transportCharge:    { type: Number, default: 0 },
     packingCharge:       { type: Number, default: 0 },
+    // Added for the daily P&L report (see adminPnLDay in koyambeduController) —
+    // outflow-side platform/aggregator fee and the Razorpay gateway deduction
+    // for this order. Distinct from pricing.platformFee, which is what the
+    // CUSTOMER was charged — these are what Eptomart actually paid out.
+    platformFeeCost:    { type: Number, default: 0 },
+    razorpayDeduction:  { type: Number, default: 0 },
     costNote:           String,
     updatedAt:          Date,
     updatedBy:          { type: Schema.Types.ObjectId, ref: 'User' },

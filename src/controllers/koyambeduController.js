@@ -7999,14 +7999,22 @@ const adminSetDailyExpense = async (req, res) => {
 // and day totals. Used by both adminPnLDay (full drill-down) and
 // adminPnLSummary (lightweight per-day totals over a range).
 async function computeKoyambeduPnLForCycle(cycle) {
+  // P&L is a retrospective report, unlike the same-day Procurement report
+  // (which intentionally narrows to exactly 'confirmed' because it only
+  // cares about orders not yet procured). By the time anyone looks at a
+  // day's P&L, its orders have almost always moved on to packing/dispatched/
+  // delivered/closed — so scoping this to orderStatus:'confirmed' alone
+  // made every past day silently show zero orders. Use the same broader
+  // "reached confirmed and is still a real order" set already used for
+  // sales/revenue reporting elsewhere (adminOrderReport, adminCashflowReport).
   const orders = await KoyambeduOrder.find({
     cutoffCycle: cycle,
-    orderStatus: 'confirmed',
+    orderStatus: { $in: CONFIRMED_REPORT_STATUSES },
   }).select('orderId buyer shippingAddress items pricing adminCosts createdAt')
     .populate('buyer', 'name phone')
     .lean();
 
-  // Loadman charge is split across every confirmed order's total quantity
+  // Loadman charge is split across every confirmed-or-later order's total quantity
   // for the day, same denominator the business already uses this list for
   // (procurement report is also scoped to orderStatus:'confirmed' for this
   // same cycle — see adminProcurementReport above).
@@ -8152,7 +8160,7 @@ const adminExportPnL = async (req, res) => {
 
     const cycles = await KoyambeduOrder.distinct('cutoffCycle', {
       cutoffCycle: { $gte: from, $lte: to },
-      orderStatus: 'confirmed',
+      orderStatus: { $in: CONFIRMED_REPORT_STATUSES },
     });
     cycles.sort();
 
@@ -8190,7 +8198,7 @@ const adminPnLSummary = async (req, res) => {
     // whole quarter when most days may have none.
     const cycles = await KoyambeduOrder.distinct('cutoffCycle', {
       cutoffCycle: { $gte: from, $lte: to },
-      orderStatus: 'confirmed',
+      orderStatus: { $in: CONFIRMED_REPORT_STATUSES },
     });
     cycles.sort();
 

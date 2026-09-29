@@ -7724,13 +7724,22 @@ const adminProcurementReport = async (req, res) => {
             totalValue:   0,
             orderCount:   0,
             fromCombo:    0, // qty contributed purely by combo recipes (see below), not ordered directly
-            orderMap:     {}, // orderId (human-readable) -> quantity — per-order breakdown
+            orderMap:     {}, // orderId (human-readable) -> { quantity, customerName } — per-order breakdown
           };
         }
         summary[productKey].totalQty   += item.quantity || 0;
         summary[productKey].totalValue += (item.finalPrice || item.orderedPrice || 0) * (item.quantity || 0);
         summary[productKey].orderCount += 1;
-        summary[productKey].orderMap[order.orderId] = (summary[productKey].orderMap[order.orderId] || 0) + (item.quantity || 0);
+        {
+          const existingLine = summary[productKey].orderMap[order.orderId];
+          summary[productKey].orderMap[order.orderId] = {
+            quantity: (existingLine?.quantity || 0) + (item.quantity || 0),
+            // Needed so the "Share with Supplier" view can optionally show
+            // the customer name per order line instead of just the raw
+            // order ID (see the includeCustomerNames toggle client-side).
+            customerName: existingLine?.customerName || order.shippingAddress?.fullName || null,
+          };
+        }
 
         // ── Combo raw-material rollup ──────────────────────────────────
         // A combo's comboContents (product + qty per single combo) tells us
@@ -7764,7 +7773,13 @@ const adminProcurementReport = async (req, res) => {
             }
             summary[ingredientKey].totalQty  += neededQty;
             summary[ingredientKey].fromCombo += neededQty;
-            summary[ingredientKey].orderMap[order.orderId] = (summary[ingredientKey].orderMap[order.orderId] || 0) + neededQty;
+            {
+              const existingLine = summary[ingredientKey].orderMap[order.orderId];
+              summary[ingredientKey].orderMap[order.orderId] = {
+                quantity: (existingLine?.quantity || 0) + neededQty,
+                customerName: existingLine?.customerName || order.shippingAddress?.fullName || null,
+              };
+            }
             // orderCount intentionally not incremented here — it counts distinct
             // ordered LINES; combo-derived ingredient quantities aren't a line
             // the customer ordered directly, so counting them would overstate
@@ -7781,7 +7796,7 @@ const adminProcurementReport = async (req, res) => {
           ...rest,
           // Per-order breakdown, e.g. Radish 10kg = Order A 3kg + Order B 4kg + Order C 3kg
           orders: Object.entries(orderMap)
-            .map(([orderId, quantity]) => ({ orderId, quantity }))
+            .map(([orderId, line]) => ({ orderId, quantity: line.quantity, customerName: line.customerName }))
             .sort((a, b) => a.orderId.localeCompare(b.orderId)),
         };
       })

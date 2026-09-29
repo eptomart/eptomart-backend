@@ -8511,14 +8511,19 @@ async function adminUpdateOrderCosts(req, res) {
     const { actualDeliveryCost, miscExpenses, transportCharge, packingCharge, platformFeeCost, razorpayDeduction, costNote } = req.body;
     const order = await KoyambeduOrder.findById(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    // Merge onto the existing sub-document rather than replacing it wholesale —
+    // different callers (Cashflow report vs the P&L tab) each send only the
+    // subset of fields they own, and a field a caller omits must keep its
+    // previously-saved value, not silently reset to 0.
+    const existing = order.adminCosts || {};
     order.adminCosts = {
-      actualDeliveryCost: Number(actualDeliveryCost) || 0,
-      miscExpenses:       Number(miscExpenses)       || 0,
-      transportCharge:    Number(transportCharge)    || 0,
-      packingCharge:      Number(packingCharge)      || 0,
-      platformFeeCost:    Number(platformFeeCost)    || 0,
-      razorpayDeduction:  Number(razorpayDeduction)  || 0,
-      costNote:           costNote || '',
+      actualDeliveryCost: actualDeliveryCost !== undefined ? (Number(actualDeliveryCost) || 0) : (existing.actualDeliveryCost || 0),
+      miscExpenses:       miscExpenses       !== undefined ? (Number(miscExpenses)       || 0) : (existing.miscExpenses       || 0),
+      transportCharge:    transportCharge    !== undefined ? (Number(transportCharge)    || 0) : (existing.transportCharge    || 0),
+      packingCharge:      packingCharge      !== undefined ? (Number(packingCharge)      || 0) : (existing.packingCharge      || 0),
+      platformFeeCost:    platformFeeCost    !== undefined ? (Number(platformFeeCost)    || 0) : (existing.platformFeeCost    || 0),
+      razorpayDeduction:  razorpayDeduction  !== undefined ? (Number(razorpayDeduction)  || 0) : (existing.razorpayDeduction  || 0),
+      costNote:           costNote           !== undefined ? costNote : (existing.costNote || ''),
       updatedAt:          new Date(),
       updatedBy:          req.user._id,
     };

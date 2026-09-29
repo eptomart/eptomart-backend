@@ -8002,7 +8002,9 @@ async function computeKoyambeduPnLForCycle(cycle) {
   const orders = await KoyambeduOrder.find({
     cutoffCycle: cycle,
     orderStatus: 'confirmed',
-  }).select('orderId buyer shippingAddress items pricing adminCosts createdAt').lean();
+  }).select('orderId buyer shippingAddress items pricing adminCosts createdAt')
+    .populate('buyer', 'name phone')
+    .lean();
 
   // Loadman charge is split across every confirmed order's total quantity
   // for the day, same denominator the business already uses this list for
@@ -8104,7 +8106,7 @@ async function computeKoyambeduPnLForCycle(cycle) {
 
     return {
       orderId: order.orderId, _id: order._id,
-      customerName: order.shippingAddress?.name || order.buyer?.name || '',
+      customerName: order.shippingAddress?.fullName || order.buyer?.name || 'Unknown',
       items, revenue, purchaseCost, loadmanCost, totalProcurement,
       platformFeeCost, transportCost, packingCost, razorpayDeduction,
       totalCost, profit,

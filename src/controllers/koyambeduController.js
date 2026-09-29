@@ -7856,12 +7856,12 @@ const adminProcurementReport = async (req, res) => {
 };
 
 // PATCH /koyambedu/admin/reports/procurement-confirmed/item
-// Body: { cycle, productKey, productName?, gradeKey?, gradeName?, purchased?, comment?, packingNote? }
+// Body: { cycle, productKey, productName?, gradeKey?, gradeName?, purchased?, purchasedByName?, comment?, packingNote?, purchaseCostPerUnit? }
 // Upserts the checklist entry for one product line. `purchased`, `comment`,
 // and `packingNote` are independent — sending only one leaves the others untouched.
 const adminUpdateProcurementItem = async (req, res) => {
   try {
-    const { cycle, productKey, productName, gradeKey, gradeName, purchased, comment, packingNote, purchaseCostPerUnit } = req.body;
+    const { cycle, productKey, productName, gradeKey, gradeName, purchased, purchasedByName, comment, packingNote, purchaseCostPerUnit } = req.body;
     if (!cycle || !productKey) {
       return res.status(400).json({ success: false, message: 'cycle and productKey are required' });
     }
@@ -7883,8 +7883,16 @@ const adminUpdateProcurementItem = async (req, res) => {
     if (purchased !== undefined) {
       update.purchased       = !!purchased;
       update.purchasedBy     = req.user._id;
-      update.purchasedByName = req.user.name || req.user.email;
       update.purchasedAt     = new Date();
+      // The Procurement tab's own "mark purchased" checkbox never sends
+      // purchasedByName, so it keeps its existing behavior of crediting
+      // whoever is logged in. The P&L tab's Procurement Cost Entry table
+      // sends purchasedByName explicitly (admin types it in), which — when
+      // present — always wins, even as an empty string (clearing it).
+      if (purchasedByName === undefined) update.purchasedByName = req.user.name || req.user.email;
+    }
+    if (purchasedByName !== undefined) {
+      update.purchasedByName = String(purchasedByName).trim();
     }
     if (comment !== undefined) {
       update.comment       = String(comment).slice(0, 1000);

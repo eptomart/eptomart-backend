@@ -8009,6 +8009,30 @@ const adminSetDailyExpense = async (req, res) => {
   }
 };
 
+// PATCH /koyambedu/admin/orders/:orderId/items/:itemId/procurement-cost
+// Body: { procurementCostPerUnit } — bill-specific supplier cost for one
+// order's line item, entered bill by bill instead of the shared
+// per-product-per-day value in the Procurement checklist. Send null/''  to
+// clear the override and fall back to that shared day-level value again.
+const adminSetItemProcurementCost = async (req, res) => {
+  try {
+    const { procurementCostPerUnit } = req.body;
+    const order = await KoyambeduOrder.findById(req.params.orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const item = order.items.id(req.params.itemId);
+    if (!item) return res.status(404).json({ success: false, message: 'Item not found on this order' });
+
+    item.procurementCostPerUnit = (procurementCostPerUnit === '' || procurementCostPerUnit === null || procurementCostPerUnit === undefined)
+      ? null
+      : Number(procurementCostPerUnit);
+    await order.save();
+    res.json({ success: true, itemId: item._id, procurementCostPerUnit: item.procurementCostPerUnit });
+  } catch (err) {
+    console.error('[adminSetItemProcurementCost] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to save procurement cost' });
+  }
+};
+
 // Shared computation: full P&L breakdown for one cutoffCycle date.
 // Returns per-order lines, a per-item rollup, a per-"procured by" rollup,
 // and day totals. Used by both adminPnLDay (full drill-down) and
@@ -8029,14 +8053,24 @@ async function computeKoyambeduPnLForCycle(cycle) {
     .populate('buyer', 'name phone')
     .lean();
 
-  // Loadman charge is split across every confirmed-or-later order's total quantity
-  // for the day, same denominator the business already uses this list for
-  // (procurement report is also scoped to orderStatus:'confirmed' for this
-  // same cycle — see adminProcurementReport above).
+  // Loadman only carries proper weighed produce — a bunch of coriander or a
+  // small ₹40 box isn't worth a porter charge the same way a 25kg sack of
+  // onions is. Eligible = sold by the kg AND the line is worth at least
+  // ₹200; anything else (bunches, pieces, small low-value lines) gets
+  // loadmanCost 0 and is excluded from the per-unit rate's denominator too.
+  const isLoadmanEligible = (unit, lineRevenue) =>
+    String(unit || '').trim().toLowerCase() === 'kg' && lineRevenue >= 200;
+
+  // Loadman charge is split across every confirmed-or-later order's total
+  // ELIGIBLE quantity for the day (see isLoadmanEligible above) — not every
+  // item, since bunches/small boxes never carry a loadman share.
   let totalQtyForDay = 0;
   for (const order of orders) {
     for (const item of order.items || []) {
       if (item.itemStatus === 'declined') continue;
+      const unit = item.unit || item.unitLabel;
+      const lineRevenue = (item.finalPrice || item.orderedPrice || 0) * (item.quantity || 0);
+      if (!isLoadmanEligible(unit, lineRevenue)) continue;
       totalQtyForDay += item.quantity || 0;
     }
   }
@@ -8077,9 +8111,14 @@ async function computeKoyambeduPnLForCycle(cycle) {
         ? `${item.product?.toString() || item.name}__${item.gradeKey}`
         : (item.product?.toString() || item.name);
       const c = checklistMap[productKey];
-      const purchaseCostPerUnit = c?.purchaseCostPerUnit ?? null;
+      // A bill-specific cost entered directly on this order's line item
+      // (see adminSetItemProcurementCost) takes precedence over the one
+      // shared per-product-per-day value from the Procurement checklist —
+      // lets admin enter procurement cost bill by bill instead of only one
+      // figure applied to every order at once.
+      const purchaseCostPerUnit = item.procurementCostPerUnit ?? c?.purchaseCostPerUnit ?? null;
       const lineePurchaseCost = (purchaseCostPerUnit || 0) * qty;
-      const lineLoadmanCost = loadmanPerUnitRate * qty;
+      const lineLoadmanCost = isLoadmanEligible(item.unit || item.unitLabel, lineRevenue) ? loadmanPerUnitRate * qty : 0;
       const procuredByName = c?.purchasedByName || null;
 
       revenue += lineRevenue;
@@ -8100,20 +8139,31 @@ async function computeKoyambeduPnLForCycle(cycle) {
 
       if (procuredByName) {
         if (!procuredByRollup[procuredByName]) {
-          procuredByRollup[procuredByName] = { name: procuredByName, totalQty: 0, purchaseCost: 0, loadmanCost: 0, totalProcurement: 0, products: new Set() };
+          procuredByRollup[procuredByName] = { name: procuredByName, totalQty: 0, purchaseCost: 0, loadmanCost: 0, totalProcurement: 0, amountPayable: 0, products: new Set() };
         }
         procuredByRollup[procuredByName].totalQty += qty;
         procuredByRollup[procuredByName].purchaseCost += lineePurchaseCost;
         procuredByRollup[procuredByName].loadmanCost += lineLoadmanCost;
         procuredByRollup[procuredByName].totalProcurement += lineePurchaseCost + lineLoadmanCost;
+        // What Eptomart actually owes this person for procurement — the
+        // supplier cost they paid out of pocket, plus their share of the
+        // day's loadman charge. Same figure as totalProcurement, exposed
+        // under its own name so the UI can label it unambiguously as
+        // "Amount to Pay" rather than a generic cost total.
+        procuredByRollup[procuredByName].amountPayable += lineePurchaseCost + lineLoadmanCost;
         procuredByRollup[procuredByName].products.add(item.name);
       }
 
       return {
-        name: item.name, unit: item.unit || item.unitLabel, quantity: qty,
+        itemId: item._id, name: item.name, unit: item.unit || item.unitLabel, quantity: qty,
         orderPrice: unitPrice, revenue: lineRevenue,
         purchaseCostPerUnit, purchaseCost: lineePurchaseCost,
+        // Whether purchaseCostPerUnit came from a bill-specific override on
+        // this exact item, vs the shared day-level checklist value — lets
+        // the UI show which figure is actually in effect for this bill.
+        isBillOverride: item.procurementCostPerUnit != null,
         loadmanCost: lineLoadmanCost,
+        loadmanEligible: isLoadmanEligible(item.unit || item.unitLabel, lineRevenue),
         totalProcurement: lineePurchaseCost + lineLoadmanCost,
         procuredBy: procuredByName,
       };
@@ -8438,7 +8488,7 @@ module.exports = {
   adminGetUserCarts,
   // Super Admin — Procurement Report (confirmed orders)
   adminProcurementReport, adminUpdateProcurementItem, adminShareProcurement,
-  adminGetDailyExpense, adminSetDailyExpense, adminPnLDay, adminPnLSummary, adminExportPnL,
+  adminGetDailyExpense, adminSetDailyExpense, adminPnLDay, adminPnLSummary, adminExportPnL, adminSetItemProcurementCost,
   // Super Admin — Offer push notifications
   adminPreviewOfferAudience, adminBroadcastOffer, adminGetOfferBroadcasts,
   // Buyer orders

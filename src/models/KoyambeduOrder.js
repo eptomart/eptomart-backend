@@ -49,6 +49,13 @@ const orderItemSchema = new Schema({
   // "Added on <date>"); doesn't change how pricing/SA-review treats them.
   isAmendment:   { type: Boolean, default: false },
   amendedAt:     Date,
+
+  // Bill-specific procurement (supplier purchase) cost per unit for THIS
+  // order's line — lets admin enter procurement cost bill by bill in the
+  // P&L tab instead of only one shared value applied to every order for the
+  // product that day (see KoyambeduProcurementChecklist.purchaseCostPerUnit,
+  // which remains the day-level default when this is left unset).
+  procurementCostPerUnit: { type: Number, default: null },
 }, { _id: true });
 
 // ── Immutable original-order snapshot ─────────

@@ -272,6 +272,7 @@ router.patch('/admin/pnl/daily-expense',   protectAdmin, ctrl.adminSetDailyExpen
 router.get  ('/admin/pnl/summary',         protectAdmin, ctrl.adminPnLSummary); // must be before /admin/pnl/day if ever param-based; both are static here so order is fine
 router.get  ('/admin/pnl/day',             protectAdmin, ctrl.adminPnLDay);
 router.get  ('/admin/pnl/export',          protectAdmin, ctrl.adminExportPnL);
+router.patch('/admin/orders/:orderId/items/:itemId/procurement-cost', protectAdmin, ctrl.adminSetItemProcurementCost);
 // One-time data repair — recomputes cutoffCycle from deliveryDate for orders
 // placed before that fix went live (see koyambeduController.fixProcurementCutoffCycle).
 router.post ('/admin/fix-cutoff-cycle',                                protectSuperAdmin, ctrl.fixProcurementCutoffCycle);

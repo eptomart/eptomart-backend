@@ -14,6 +14,7 @@ const ExpressMarginConfig = require('../models/ExpressMarginConfig');
 const ExpressCart         = require('../models/ExpressCart');
 const ExpressOrder        = require('../models/ExpressOrder');
 const ExpressOnlineListing = require('../models/ExpressOnlineListing');
+const ExpressBanner       = require('../models/ExpressBanner');
 const { computeSellingPrice, toKgEquivalent, distanceKm, computeDeliveryFee, computeDeliveryEta, roundRupee } = require('../services/expressPricingService');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
@@ -38,6 +39,27 @@ const getStatus = async (req, res) => {
   } catch (err) {
     console.error('[express.getStatus]', err);
     fail(res, 500, 'Failed to load Express status');
+  }
+};
+
+// GET /express/banners — only banners that are isActive AND currently
+// within their scheduling window (if one is set). An admin can create a
+// flash-sale banner ahead of time with startAt/endAt and it will appear
+// and disappear automatically with no further action needed.
+const getActiveBanners = async (req, res) => {
+  try {
+    const now = new Date();
+    const banners = await ExpressBanner.find({
+      isActive: true,
+      $and: [
+        { $or: [{ startAt: null }, { startAt: { $lte: now } }] },
+        { $or: [{ endAt: null }, { endAt: { $gte: now } }] },
+      ],
+    }).sort({ sortOrder: 1, createdAt: -1 }).lean();
+    res.json({ success: true, banners });
+  } catch (err) {
+    console.error('[express.getActiveBanners]', err);
+    fail(res, 500, 'Failed to load banners');
   }
 };
 
@@ -684,7 +706,7 @@ const cancelMyOrder = async (req, res) => {
 };
 
 module.exports = {
-  getStatus, findNearestStore, getCatalogue,
+  getStatus, getActiveBanners, findNearestStore, getCatalogue,
   listActiveStores, getOnlineCatalogue,
   getCart, addToCart, updateCartItem, clearCart,
   getQuote, createRazorpayOrder, verifyPayment,

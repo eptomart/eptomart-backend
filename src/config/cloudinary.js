@@ -220,4 +220,24 @@ const uploadKoyambeduNews = multer({
   },
 });
 
-module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, uploadBill, uploadKoyambedu, uploadKoyambeduBill, uploadHeroVideo, uploadFruitBasket, uploadBulkHarvest, uploadKoyambeduNews, deleteImage };
+// Express Banners — admin-created hero banners (flash sale, lowest-price,
+// custom promos) shown at the top of the Express storefront. Wide aspect
+// crop since these render as a full-width carousel card, not a square tile.
+const expressBannerStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'eptomart/express-banners',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+    transformation: [{ width: 1200, height: 600, crop: 'limit', quality: 'auto' }],
+  },
+});
+const uploadExpressBanner = multer({
+  storage: expressBannerStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Only image files are allowed'), false);
+  },
+});
+
+module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, uploadBill, uploadKoyambedu, uploadKoyambeduBill, uploadHeroVideo, uploadFruitBasket, uploadBulkHarvest, uploadKoyambeduNews, uploadExpressBanner, deleteImage };

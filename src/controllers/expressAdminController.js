@@ -19,6 +19,7 @@ const ExpressOrder           = require('../models/ExpressOrder');
 const ExpressCart            = require('../models/ExpressCart');
 const ExpressBill            = require('../models/ExpressBill');
 const ExpressOnlineListing   = require('../models/ExpressOnlineListing');
+const ExpressBanner          = require('../models/ExpressBanner');
 const KoyambeduProduct       = require('../models/KoyambeduProduct');
 const KoyambeduCategory      = require('../models/KoyambeduCategory');
 const Analytics              = require('../models/Analytics');
@@ -1507,6 +1508,110 @@ const adminBulkSetOnlineListing = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════
+// HERO BANNERS — admin-created promotional banners for the Express
+// storefront (flash sale with timings, lowest-price, custom). Scheduling
+// (startAt/endAt) is purely a display window; the customer-facing endpoint
+// (expressCustomerController.getActiveBanners) filters to only banners
+// that are isActive AND currently within their window, so an admin can
+// create a flash-sale banner ahead of time and walk away.
+// ══════════════════════════════════════════════
+
+// GET /express/admin/banners — admin sees everything, including
+// scheduled-but-not-yet-live and expired banners, so they can manage them.
+const listBanners = async (req, res) => {
+  try {
+    const banners = await ExpressBanner.find({}).sort({ sortOrder: 1, createdAt: -1 }).lean();
+    res.json({ success: true, banners });
+  } catch (err) {
+    console.error('[express.listBanners]', err);
+    fail(res, 500, 'Failed to load banners');
+  }
+};
+
+// POST /express/admin/banners (multipart, field "image" optional)
+const createBanner = async (req, res) => {
+  try {
+    const { title, subtitle, type, gradientFrom, gradientTo, linkTo, ctaText, startAt, endAt, isActive, sortOrder } = req.body;
+    if (!title || !title.trim()) return fail(res, 400, 'Title is required');
+
+    const banner = await ExpressBanner.create({
+      title: title.trim(),
+      subtitle: subtitle || '',
+      type: type || 'custom',
+      image: req.file ? req.file.path : null,
+      gradientFrom: gradientFrom || '#4338ca',
+      gradientTo: gradientTo || '#7c3aed',
+      linkTo: linkTo || '/express/shop',
+      ctaText: ctaText || 'Shop Now',
+      startAt: startAt || null,
+      endAt: endAt || null,
+      isActive: isActive !== undefined ? isActive === 'true' || isActive === true : true,
+      sortOrder: sortOrder != null ? Number(sortOrder) : 0,
+      createdBy: req.user?.name || 'Admin',
+    });
+
+    await logAudit({ actorType: 'admin', actorName: req.user?.name || 'Admin', action: 'banner.create', meta: { bannerId: banner._id, title: banner.title } });
+    res.status(201).json({ success: true, banner });
+  } catch (err) {
+    console.error('[express.createBanner]', err);
+    fail(res, 500, 'Failed to create banner');
+  }
+};
+
+// PUT /express/admin/banners/:bannerId (multipart, field "image" optional)
+const updateBanner = async (req, res) => {
+  try {
+    const banner = await ExpressBanner.findById(req.params.bannerId);
+    if (!banner) return fail(res, 404, 'Banner not found');
+
+    const { title, subtitle, type, gradientFrom, gradientTo, linkTo, ctaText, startAt, endAt, isActive, sortOrder } = req.body;
+    if (title != null) banner.title = title.trim();
+    if (subtitle != null) banner.subtitle = subtitle;
+    if (type != null) banner.type = type;
+    if (gradientFrom != null) banner.gradientFrom = gradientFrom;
+    if (gradientTo != null) banner.gradientTo = gradientTo;
+    if (linkTo != null) banner.linkTo = linkTo;
+    if (ctaText != null) banner.ctaText = ctaText;
+    if (startAt !== undefined) banner.startAt = startAt || null;
+    if (endAt !== undefined) banner.endAt = endAt || null;
+    if (isActive !== undefined) banner.isActive = isActive === 'true' || isActive === true;
+    if (sortOrder != null) banner.sortOrder = Number(sortOrder);
+    if (req.file) banner.image = req.file.path;
+
+    await banner.save();
+    res.json({ success: true, banner });
+  } catch (err) {
+    console.error('[express.updateBanner]', err);
+    fail(res, 500, 'Failed to update banner');
+  }
+};
+
+const toggleBannerActive = async (req, res) => {
+  try {
+    const banner = await ExpressBanner.findById(req.params.bannerId);
+    if (!banner) return fail(res, 404, 'Banner not found');
+    banner.isActive = !banner.isActive;
+    await banner.save();
+    res.json({ success: true, banner });
+  } catch (err) {
+    console.error('[express.toggleBannerActive]', err);
+    fail(res, 500, 'Failed to toggle banner');
+  }
+};
+
+const deleteBanner = async (req, res) => {
+  try {
+    const banner = await ExpressBanner.findByIdAndDelete(req.params.bannerId);
+    if (!banner) return fail(res, 404, 'Banner not found');
+    await logAudit({ actorType: 'admin', actorName: req.user?.name || 'Admin', action: 'banner.delete', meta: { bannerId: banner._id, title: banner.title } });
+    res.json({ success: true, message: 'Banner deleted' });
+  } catch (err) {
+    console.error('[express.deleteBanner]', err);
+    fail(res, 500, 'Failed to delete banner');
+  }
+};
+
 module.exports = {
   listStores, createStore, updateStore, toggleStoreActive, toggleOnlineShop, togglePauseStore, archiveStore,
   listStoreManagers, createStoreManager, updateStoreManager,
@@ -1521,4 +1626,5 @@ module.exports = {
   listExpenses, createExpense, deleteExpense,
   getFinanceDashboard, adminGetVisitors, adminGetCarts,
   adminListOnlineCatalog, adminSetOnlineListing, adminSetNativeOnlineListing, adminBulkSetOnlineListing,
+  listBanners, createBanner, updateBanner, toggleBannerActive, deleteBanner,
 };

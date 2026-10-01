@@ -10,6 +10,7 @@ const ctrl = require('../controllers/expressCustomerController');
 const { protect } = require('../middleware/auth');
 
 router.get ('/status',                     ctrl.getStatus);
+router.get ('/banners',                    ctrl.getActiveBanners);
 router.post('/nearest-store',              ctrl.findNearestStore);
 router.get ('/active-stores',              ctrl.listActiveStores);
 router.get ('/stores/:storeId/catalogue',  ctrl.getCatalogue);

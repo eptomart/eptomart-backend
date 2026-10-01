@@ -12,6 +12,7 @@ const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/expressAdminController');
 const { protectAdmin } = require('../middleware/adminAuth');
+const { uploadExpressBanner } = require('../config/cloudinary');
 
 // Stores
 router.get   ('/stores',                    protectAdmin, ctrl.listStores);
@@ -94,5 +95,14 @@ router.patch('/inventory-requests/:requestId/reject',   protectAdmin, ctrl.rejec
 
 // Audit Log
 router.get('/audit-log', protectAdmin, ctrl.listAuditLog);
+
+// Hero Banners (flash sale / lowest-price / custom promos on the Express
+// storefront) — "image" is an optional multipart field; without it the
+// banner falls back to its gradientFrom/gradientTo background.
+router.get   ('/banners',                   protectAdmin, ctrl.listBanners);
+router.post  ('/banners',                   protectAdmin, uploadExpressBanner.single('image'), ctrl.createBanner);
+router.put   ('/banners/:bannerId',         protectAdmin, uploadExpressBanner.single('image'), ctrl.updateBanner);
+router.patch ('/banners/:bannerId/toggle',  protectAdmin, ctrl.toggleBannerActive);
+router.delete('/banners/:bannerId',         protectAdmin, ctrl.deleteBanner);
 
 module.exports = router;

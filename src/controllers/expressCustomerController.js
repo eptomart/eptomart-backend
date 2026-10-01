@@ -14,7 +14,7 @@ const ExpressMarginConfig = require('../models/ExpressMarginConfig');
 const ExpressCart         = require('../models/ExpressCart');
 const ExpressOrder        = require('../models/ExpressOrder');
 const ExpressOnlineListing = require('../models/ExpressOnlineListing');
-const { computeSellingPrice, toKgEquivalent, distanceKm, computeDeliveryFee } = require('../services/expressPricingService');
+const { computeSellingPrice, toKgEquivalent, distanceKm, computeDeliveryFee, roundRupee } = require('../services/expressPricingService');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
 
@@ -253,7 +253,7 @@ async function computeCartWeightKg(cart) {
 async function buildCartResponse(cart, config) {
   if (!cart) return { items: [], itemCount: 0, subtotal: 0, totalWeightKg: 0, largeOrderWarning: false };
   const totalWeightKg = Math.round((await computeCartWeightKg(cart)) * 100) / 100;
-  const subtotal = Math.round(cart.items.reduce((sum, i) => sum + i.price * i.quantity, 0) * 100) / 100;
+  const subtotal = roundRupee(cart.items.reduce((sum, i) => sum + i.price * i.quantity, 0));
   const threshold = config.largeOrderThresholdKg || 12;
   return {
     _id: cart._id,
@@ -319,7 +319,7 @@ const addToCart = async (req, res) => {
         product: productId,
         name: storeProduct.product.koyambeduProduct.name,
         unit: storeProduct.product.unit,
-        price: storeProduct.priceOverride ?? pricing.sellingPricePerUnit,
+        price: roundRupee(storeProduct.priceOverride ?? pricing.sellingPricePerUnit),
         quantity: Number(quantity),
       });
     }
@@ -428,8 +428,8 @@ async function priceCart(userId, deliveryAddress) {
     if (sp.stockQty < line.quantity) { const err = new Error(`Only ${sp.stockQty} of "${line.name}" left in stock.`); err.statusCode = 400; throw err; }
 
     const pricing = computeSellingPrice(sp.product, config, 1);
-    const unitPrice = sp.priceOverride ?? pricing.sellingPricePerUnit;
-    const lineTotal = Math.round(unitPrice * line.quantity * 100) / 100;
+    const unitPrice = roundRupee(sp.priceOverride ?? pricing.sellingPricePerUnit);
+    const lineTotal = roundRupee(unitPrice * line.quantity);
     subtotal += lineTotal;
     totalWeightKg += toKgEquivalent(sp.product, line.quantity);
 
@@ -449,9 +449,9 @@ async function priceCart(userId, deliveryAddress) {
     err.statusCode = 400; throw err;
   }
 
-  const roundedSubtotal = Math.round(subtotal * 100) / 100;
+  const roundedSubtotal = roundRupee(subtotal);
   const deliveryFee = computeDeliveryFee(distKm, roundedSubtotal, config);
-  const total = Math.round((roundedSubtotal + deliveryFee) * 100) / 100;
+  const total = roundRupee(roundedSubtotal + deliveryFee);
   return {
     cart, items, subtotal: roundedSubtotal, deliveryFee, total, totalWeightKg,
     largeOrderWarning: totalWeightKg > threshold, distanceKm: distKm,

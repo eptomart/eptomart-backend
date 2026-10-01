@@ -475,7 +475,7 @@ const adminAssignProductToStore = async (req, res) => {
 
     const update = { $setOnInsert: { store: storeId, product: product._id, isAvailable: true } };
     if (delta > 0) update.$inc = { stockQty: delta };
-    if (priceOverride !== undefined) update.$set = { priceOverride: priceOverride === '' ? null : Number(priceOverride) };
+    if (priceOverride !== undefined) update.$set = { priceOverride: priceOverride === '' ? null : Math.round(Number(priceOverride)) }; // whole rupees only
 
     const storeProduct = await ExpressStoreProduct.findOneAndUpdate(
       { store: storeId, product: product._id },
@@ -617,7 +617,7 @@ const upsertStoreProduct = async (req, res) => {
     // (empty string) clears it back to automatic. Sending null/undefined
     // (the field simply omitted) leaves whatever is already saved untouched
     // — same "only touch what's provided" behaviour as isAvailable/stockQty.
-    if (priceOverride !== undefined) update.priceOverride = priceOverride === '' ? null : Number(priceOverride);
+    if (priceOverride !== undefined) update.priceOverride = priceOverride === '' ? null : Math.round(Number(priceOverride)); // whole rupees only
 
     const storeProduct = await ExpressStoreProduct.findOneAndUpdate(
       { store: storeId, product: productId },
@@ -1126,8 +1126,10 @@ const WEIGHT_BASED_EXPRESS_UNITS = new Set(['kg', 'gram', 'litre']);
 // enables it without typing a price of their own. Admin can always type a
 // different number — that always wins over this default.
 const DEFAULT_ONLINE_MARKUP_PERCENT = 15;
+// Whole rupees only — no paise — on every Express item price, per admin
+// preference.
 function defaultOnlineListingPrice(wholesalePrice) {
-  return Math.round((wholesalePrice || 0) * (1 + DEFAULT_ONLINE_MARKUP_PERCENT / 100) * 100) / 100;
+  return Math.round((wholesalePrice || 0) * (1 + DEFAULT_ONLINE_MARKUP_PERCENT / 100));
 }
 
 // Looks up (or, the first time a product is enabled online, creates) the
@@ -1205,7 +1207,7 @@ async function upsertOnlineListing(storeId, koyambeduProductId, { isEnabled, pri
   // to fail with a 500.
   const set = { updatedAt: new Date(), updatedBy: userId };
   const priceProvided = price !== undefined && price !== null && price !== '';
-  if (priceProvided) set.price = Number(price);
+  if (priceProvided) set.price = Math.round(Number(price)); // whole rupees only — no paise
   if (isEnabled !== undefined) set.isEnabled = !!isEnabled;
 
   if (isEnabled) {

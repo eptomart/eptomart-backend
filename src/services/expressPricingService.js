@@ -70,7 +70,11 @@ function computeSellingPrice(product, marginConfig, quantity = 1) {
   const salesmanCharge = round2(baseCostPerUnit * (salesmanPct / 100));
   const packingCharge  = round2(baseCostPerUnit * (packingPct / 100));
 
-  const sellingPricePerUnit = round2(baseCostPerUnit + platformCharge + salesmanCharge + packingCharge);
+  // The customer-facing item price is always a whole rupee amount — no
+  // paise — per admin preference. Only the final price is rounded this way;
+  // the cost/charge breakdown above stays at 2dp so the admin's "Preview
+  // Price" panel still shows an accurate accounting trail.
+  const sellingPricePerUnit = roundRupee(baseCostPerUnit + platformCharge + salesmanCharge + packingCharge);
 
   return {
     procurementCost,
@@ -79,7 +83,7 @@ function computeSellingPrice(product, marginConfig, quantity = 1) {
     platformPct, salesmanPct, packingPct,
     platformCharge, salesmanCharge, packingCharge,
     sellingPricePerUnit,
-    totalForQuantity: round2(sellingPricePerUnit * quantity),
+    totalForQuantity: roundRupee(sellingPricePerUnit * quantity),
   };
 }
 
@@ -97,6 +101,10 @@ function distanceKm(a, b) {
 
 function toRad(deg) { return (deg * Math.PI) / 180; }
 function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+// Item/order prices are always whole rupees — no paise — per admin
+// preference. Used for every customer- or admin-facing price figure;
+// round2 is kept separate for non-price figures like distanceKm.
+function roundRupee(n) { return Math.round(Number(n) || 0); }
 
 /**
  * Delivery fee for an order, given the customer's distance from the store
@@ -112,7 +120,7 @@ function computeDeliveryFee(distanceKmValue, subtotal, marginConfig) {
   if (distanceKmValue <= freeRadius) return 0;
   const minOrder = Number(marginConfig.minOrderForFreeDelivery ?? 0);
   if (subtotal >= minOrder) return 0;
-  return round2(marginConfig.deliveryFeeBelowMinimum ?? 0);
+  return roundRupee(marginConfig.deliveryFeeBelowMinimum ?? 0);
 }
 
 module.exports = {
@@ -121,4 +129,5 @@ module.exports = {
   computeSellingPrice,
   distanceKm,
   computeDeliveryFee,
+  roundRupee,
 };

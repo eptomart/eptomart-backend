@@ -267,6 +267,7 @@ router.patch('/admin/reports/procurement-confirmed/item',             protectAdm
 router.patch('/admin/reports/procurement-confirmed/bulk',              protectAdmin,      ctrl.adminBulkUpdateProcurementItems);
 router.post ('/admin/reports/procurement-confirmed/share',            protectAdmin,      ctrl.adminShareProcurement);
 router.get  ('/admin/procurers',                                      protectAdmin,      ctrl.adminListProcurers);
+router.post ('/admin/procurers',                                      protectAdmin,      ctrl.adminAddProcurer);
 
 // Daily P&L report — see computeKoyambeduPnLForCycle in koyambeduController.js
 router.get  ('/admin/pnl/daily-expense',   protectAdmin, ctrl.adminGetDailyExpense);

@@ -7948,6 +7948,26 @@ const adminListProcurers = async (req, res) => {
   }
 };
 
+// POST /koyambedu/admin/procurers — explicitly add a new name to the
+// maintained "Procured By" dropdown (the dropdown is a strict select, so a
+// brand-new person has to be added here once before they can be picked).
+const adminAddProcurer = async (req, res) => {
+  try {
+    const name = String(req.body.name || '').trim();
+    if (!name) return res.status(400).json({ success: false, message: 'name is required' });
+    await KoyambeduProcurer.updateOne(
+      { name },
+      { $setOnInsert: { name, addedBy: req.user._id } },
+      { upsert: true }
+    );
+    const names = await KoyambeduProcurer.find().sort({ name: 1 }).select('name').lean();
+    res.json({ success: true, names: names.map(n => n.name) });
+  } catch (err) {
+    console.error('[adminAddProcurer] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to add procurer' });
+  }
+};
+
 // PATCH /koyambedu/admin/reports/procurement-confirmed/bulk
 // Body: { cycle, items: [{ productKey, productName, gradeKey, gradeName,
 // purchaseCostPerUnit, purchasedByName }] } — saves every row of the
@@ -8604,7 +8624,7 @@ module.exports = {
   // Super Admin — Procurement Report (confirmed orders)
   adminProcurementReport, adminUpdateProcurementItem, adminShareProcurement,
   adminGetDailyExpense, adminSetDailyExpense, adminPnLDay, adminPnLSummary, adminExportPnL, adminSetItemProcurementCost,
-  adminListProcurers, adminBulkUpdateProcurementItems,
+  adminListProcurers, adminAddProcurer, adminBulkUpdateProcurementItems,
   // Super Admin — Offer push notifications
   adminPreviewOfferAudience, adminBroadcastOffer, adminGetOfferBroadcasts,
   // Buyer orders

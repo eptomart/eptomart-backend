@@ -46,6 +46,7 @@ router.patch ('/products/:productId/plu',            protectAdmin, ctrl.adminSet
 // native + Koyambedu-linked) powers the combo-contents picker.
 router.get ('/products/native/search', protectAdmin, ctrl.searchExpressProducts);
 router.post('/products/native',        protectAdmin, ctrl.createNativeProduct);
+router.post('/products/generate-description', protectAdmin, ctrl.generateProductDescription);
 
 // Store Products (per-store availability + stock)
 router.get   ('/stores/:storeId/products',              protectAdmin, ctrl.listStoreProducts);

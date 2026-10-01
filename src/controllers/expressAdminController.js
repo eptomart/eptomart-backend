@@ -23,6 +23,10 @@ const KoyambeduProduct       = require('../models/KoyambeduProduct');
 const KoyambeduCategory      = require('../models/KoyambeduCategory');
 const Analytics              = require('../models/Analytics');
 const { computeLogisticsCostPerKg, computeSellingPrice } = require('../services/expressPricingService');
+// Reuses the same Claude helper already powering the seller product-
+// description generator (aiController.js) and the Fruit Basket admin one
+// (fruitBasketController.js) — no new SDK, no new env var.
+const { callClaude } = require('../utils/claudeApi');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
 
@@ -1289,6 +1293,54 @@ const createNativeProduct = async (req, res) => {
   }
 };
 
+// ── AI-assisted description for native products/combos ──────────────────
+const EXPRESS_DESCRIPTION_SYSTEM = `You are a copywriter for Eptomart Express, a same-day/quick-commerce delivery store.
+Write a short, appetising product description that:
+- Opens with a punchy one-sentence hook
+- Mentions what's included/key features if given (for a combo, briefly lists what's bundled)
+- Uses simple, everyday language — this is for quick grocery/convenience shopping, not a luxury pitch
+- Stays between 30 and 60 words
+- Does NOT include price, delivery time, or store information
+- Uses plain flowing prose only — no markdown, no bullet points, no asterisks
+Output ONLY the description text, nothing else.`;
+
+// POST /express/admin/products/generate-description
+// body: { name, category, unit, isCombo, comboContents, shortNote }
+// Pure text generator — does not touch or save any product; the admin
+// still clicks Create Product/Combo separately once happy with the text.
+const generateProductDescription = async (req, res) => {
+  try {
+    const { name, category, unit, isCombo, comboContents, shortNote } = req.body;
+    if (!name && !shortNote) {
+      return fail(res, 400, 'Give a product name or a short note to generate from');
+    }
+
+    const contentsText = isCombo && Array.isArray(comboContents) && comboContents.length
+      ? comboContents.map(c => `${c.name}${c.qty ? ` (${c.qty}${c.unit ? ' ' + c.unit : ''})` : ''}`).filter(Boolean).join(', ')
+      : '';
+
+    const userPrompt = [
+      name     ? `Product name: ${name}` : null,
+      category ? `Category: ${category}` : null,
+      unit     ? `Sold by: ${unit}` : null,
+      isCombo  ? 'This is a combo bundling several items.' : null,
+      contentsText ? `What's bundled: ${contentsText}` : null,
+      shortNote ? `Admin's short note: ${shortNote}` : null,
+    ].filter(Boolean).join('\n');
+
+    const result = await callClaude({
+      system: EXPRESS_DESCRIPTION_SYSTEM,
+      messages: [{ role: 'user', content: userPrompt }],
+      max_tokens: 150,
+      temperature: 0.75,
+    });
+    res.json({ success: true, description: result.text.trim() });
+  } catch (err) {
+    console.error('[express.generateProductDescription]', err.message);
+    fail(res, 503, 'Could not generate description right now. Try again.');
+  }
+};
+
 // GET /express/admin/products/native/search?search= — for the combo-
 // contents picker: search Express's OWN product catalogue (native +
 // Koyambedu-linked, either can go in a combo), never Koyambedu Daily's.
@@ -1449,7 +1501,7 @@ module.exports = {
   listStoreManagers, createStoreManager, updateStoreManager,
   listPOSUsers, createPOSUser, updatePOSUser,
   listProducts, createProduct, updateProduct, deleteProduct, previewPrice, searchKoyambeduCatalog,
-  createNativeProduct, searchExpressProducts,
+  createNativeProduct, searchExpressProducts, generateProductDescription,
   adminSetProductPlu, adminAssignProductToStore,
   listStoreProducts, listStoreProductsForPrint, upsertStoreProduct, removeStoreProduct, addStock, listStockLogs,
   getMarginConfig, updateMarginConfig, toggleExpressEnabled, recomputeLogisticsCost,

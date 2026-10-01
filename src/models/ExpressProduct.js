@@ -1,25 +1,61 @@
 // ============================================
 // EPTOMART EXPRESS — Product Model
-// Express does NOT maintain its own product name/image/description catalog
-// — it links to an existing KoyambeduProduct for all of that (single source
-// of truth, avoids duplicate/drifting product data entry). Everything
-// Express actually owns and manages independently is here: procurement
-// cost, unit-of-sale for logistics costing, and margin overrides. Per-store
-// availability/stock is separate again, in ExpressStoreProduct.
-//
-// Reading a KoyambeduProduct's fields does not grant Express any write
-// access to Koyambedu Daily's catalog, pricing, or inventory — this is a
-// read-only reference for display purposes only.
+// Two kinds of product live in this one collection:
+//   1. Koyambedu-linked — koyambeduProduct is set; name/description/images/
+//      category always come from the linked KoyambeduProduct, live, via
+//      populate. Never denormalized/copied onto this document.
+//   2. Native — koyambeduProduct is absent. Everything (name, description,
+//      image, category, optional combo contents) lives directly on this
+//      document instead. Created by the Express admin from inside Express
+//      (Admin -> Create Product/Combo), and NEVER touches Koyambedu Daily's
+//      catalog, product-create endpoints, or collection in any way — these
+//      products/combos exist only within Express.
+// Either way, everything Express actually owns and manages independently
+// is here: procurement cost, unit-of-sale for logistics costing, and
+// margin overrides. Per-store availability/stock is separate again, in
+// ExpressStoreProduct.
 // ============================================
 const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
 const expressProductSchema = new mongoose.Schema({
-  // The Koyambedu Daily product this Express listing displays as — name,
-  // description, images and category always come from here, live, via
-  // populate. Never denormalized/copied onto this document, so an edit to
-  // the Koyambedu product (e.g. a corrected description or new photo)
-  // shows up in Express immediately without any re-sync step.
-  koyambeduProduct: { type: mongoose.Schema.Types.ObjectId, ref: 'KoyambeduProduct', required: true, unique: true },
+  // The Koyambedu Daily product this Express listing displays as, when
+  // linked (see header comment). Optional — absent entirely for native
+  // Express-only products, never explicitly null (see the unique index
+  // below, which is sparse: a sparse index only skips documents where the
+  // field is truly ABSENT, not ones storing an explicit null — the exact
+  // bug fixed for `plu` elsewhere in this file, so the same rule applies
+  // here: omit the key for native products, never set it to null).
+  koyambeduProduct: { type: mongoose.Schema.Types.ObjectId, ref: 'KoyambeduProduct' },
+
+  // ── Native-product fields (Express's own, Koyambedu-independent) ──────
+  // Only populated when koyambeduProduct is absent. Kept separate rather
+  // than reusing Koyambedu's schema/collection so Express's self-service
+  // product/combo creation never has any write (or even indirect) access
+  // to Koyambedu Daily's catalog.
+  name:        { type: String, trim: true, default: null },
+  description: { type: String, default: '' },
+  image:       { type: String, default: null },
+  // Free-text, Express-only grouping — intentionally not a ref to
+  // KoyambeduCategory, which would reintroduce a Koyambedu dependency.
+  category:    { type: String, trim: true, default: null },
+
+  // A combo bundles several OTHER ExpressProducts (native or Koyambedu-
+  // linked, either is fine) under one purchasable item. comboContents is
+  // informational/display-only — shown to the customer and to procurement/
+  // stock planning; it does not affect pricing (the combo has its own
+  // price via ExpressOnlineListing, same as any other product) or deduct
+  // stock from the component products automatically.
+  isCombo: { type: Boolean, default: false },
+  comboContents: {
+    type: [{
+      product: { type: Schema.Types.ObjectId, ref: 'ExpressProduct' },
+      name:    { type: String, required: true }, // snapshot at selection time
+      unit:    { type: String, required: true },
+      qty:     { type: Number, required: true, min: 0 },
+    }],
+    default: [],
+  },
 
   // How Express prices/sells this product — independent of however
   // Koyambedu Daily prices the same underlying product.
@@ -62,5 +98,9 @@ const expressProductSchema = new mongoose.Schema({
 
 expressProductSchema.index({ isActive: 1 });
 expressProductSchema.index({ plu: 1 }, { unique: true, sparse: true });
+// Sparse, not inline `unique: true` — koyambeduProduct is now optional
+// (native products omit it entirely), so this must only enforce uniqueness
+// among documents that actually have the field set.
+expressProductSchema.index({ koyambeduProduct: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('ExpressProduct', expressProductSchema);

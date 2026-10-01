@@ -141,7 +141,7 @@ const getOnlineCatalogue = async (req, res) => {
 
     const listings = await ExpressOnlineListing.find({ store: storeId, isEnabled: true, price: { $ne: null } })
       .populate({ path: 'koyambeduProduct', select: 'name description images category' })
-      .populate({ path: 'product', select: 'unit' })
+      .populate({ path: 'product', select: 'unit name description image category isCombo' })
       .lean();
 
     const productIds = listings.map(l => l.product?._id).filter(Boolean);
@@ -149,21 +149,34 @@ const getOnlineCatalogue = async (req, res) => {
       .select('product stockQty').lean();
     const stockByProduct = Object.fromEntries(storeProducts.map(sp => [String(sp.product), sp.stockQty]));
 
+    // Every listing needs a resolved ExpressProduct (`l.product`) to be
+    // sellable — Koyambedu-linked listings additionally need the populated
+    // `koyambeduProduct` for display fields; native listings (no
+    // koyambeduProduct at all) get display fields from `l.product` itself,
+    // never from Koyambedu Daily.
     const catalogue = listings
-      .filter(l => l.koyambeduProduct && l.product)
-      .map(l => ({
-        storeProductId: l._id,
-        product: {
-          _id: l.product._id,
-          name: l.koyambeduProduct.name,
-          description: l.koyambeduProduct.description,
-          category: l.koyambeduProduct.category,
-          unit: l.product.unit,
-          image: l.koyambeduProduct.images?.find(i => i.isPrimary)?.url || l.koyambeduProduct.images?.[0]?.url || null,
-        },
-        stockQty: stockByProduct[String(l.product._id)] || 0,
-        pricePerUnit: l.price,
-      }));
+      .filter(l => l.product) // both native and Koyambedu-linked listings need a resolved ExpressProduct
+      .map(l => {
+        const isNative = !l.koyambeduProduct;
+        const display = isNative ? l.product : l.koyambeduProduct;
+        return {
+          storeProductId: l._id,
+          product: {
+            _id: l.product._id,
+            name: display?.name,
+            description: display?.description,
+            category: display?.category,
+            unit: l.product.unit,
+            image: isNative
+              ? (display?.image || null)
+              : (display?.images?.find(i => i.isPrimary)?.url || display?.images?.[0]?.url || null),
+            isCombo: !!l.product.isCombo,
+          },
+          stockQty: stockByProduct[String(l.product._id)] || 0,
+          pricePerUnit: l.price,
+        };
+      })
+      .filter(it => it.product.name); // drop anything that somehow has no display name
 
     const config = await getMarginConfig();
     res.json({
@@ -291,11 +304,16 @@ const addToCart = async (req, res) => {
 
     const storeProduct = await ExpressStoreProduct.findOne({ store: storeId, product: productId, isAvailable: true })
       .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } });
-    if (!storeProduct || !storeProduct.product?.koyambeduProduct) return fail(res, 404, 'Product not available at this store');
+    // Product is sellable whether it's Koyambedu-linked (name comes from
+    // the populated koyambeduProduct) or a native Express product/combo
+    // (name lives directly on the ExpressProduct document) — either way we
+    // just need the ExpressProduct itself to exist.
+    if (!storeProduct || !storeProduct.product) return fail(res, 404, 'Product not available at this store');
     if (storeProduct.stockQty < quantity) return fail(res, 400, 'Not enough stock available');
 
     const config = await getMarginConfig();
     const pricing = computeSellingPrice(storeProduct.product, config, 1);
+    const productName = storeProduct.product.koyambeduProduct?.name || storeProduct.product.name;
 
     let cart = await ExpressCart.findOne({ user: req.user._id });
 
@@ -317,7 +335,7 @@ const addToCart = async (req, res) => {
     } else {
       cart.items.push({
         product: productId,
-        name: storeProduct.product.koyambeduProduct.name,
+        name: productName,
         unit: storeProduct.product.unit,
         price: roundRupee(storeProduct.priceOverride ?? pricing.sellingPricePerUnit),
         quantity: Number(quantity),

@@ -19,7 +19,10 @@ const { Schema } = mongoose;
 
 const expressOnlineListingSchema = new Schema({
   store:            { type: Schema.Types.ObjectId, ref: 'ExpressStore', required: true },
-  koyambeduProduct: { type: Schema.Types.ObjectId, ref: 'KoyambeduProduct', required: true },
+  // Set for a listing of a Koyambedu-linked product; absent (never
+  // explicit null — see the index note below) for a listing of a native
+  // Express-only product, which is instead keyed by `product` alone.
+  koyambeduProduct: { type: Schema.Types.ObjectId, ref: 'KoyambeduProduct' },
   // Resolved/auto-created the first time this is enabled — lets the online
   // shop and the existing (unmodified) Express cart/checkout pipeline work
   // against the same ExpressProduct id they always have. Null until then.
@@ -33,7 +36,23 @@ const expressOnlineListingSchema = new Schema({
   updatedAt:        Date,
 }, { timestamps: true });
 
-expressOnlineListingSchema.index({ store: 1, koyambeduProduct: 1 }, { unique: true });
+// partialFilterExpression (not plain `sparse`) — for a COMPOUND index,
+// `sparse` only skips a document missing ALL of the indexed fields, and
+// `store` is always present, so a plain sparse index here would still
+// collide every native listing (koyambeduProduct always absent) against
+// each other at { store, <missing> }, exactly the plu:null bug elsewhere
+// in this codebase, just in compound form. partialFilterExpression avoids
+// that by only indexing documents where koyambeduProduct genuinely exists.
+expressOnlineListingSchema.index(
+  { store: 1, koyambeduProduct: 1 },
+  { unique: true, partialFilterExpression: { koyambeduProduct: { $exists: true } } }
+);
+// Second uniqueness guard, for native listings (no koyambeduProduct at
+// all) — one listing per native product per store, keyed by `product`.
+expressOnlineListingSchema.index(
+  { store: 1, product: 1 },
+  { unique: true, partialFilterExpression: { product: { $exists: true } } }
+);
 expressOnlineListingSchema.index({ store: 1, isEnabled: 1 });
 
 module.exports = mongoose.model('ExpressOnlineListing', expressOnlineListingSchema);

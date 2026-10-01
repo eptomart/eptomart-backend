@@ -1158,27 +1158,59 @@ async function resolveExpressProduct(koyambeduProductId) {
 }
 
 // GET /express/admin/stores/:storeId/online-catalog
-// Every active Koyambedu Daily product, with this store's current online
-// decision (if any) merged in, plus the Koyambedu price shown only as a
-// wholesale reference point for the admin setting the online price.
+// Two kinds of candidate, merged into one list:
+//   - every active Koyambedu Daily product (source: 'koyambedu') — unchanged
+//     from before, Koyambedu's own price shown only as a wholesale
+//     reference point for the admin setting the online price.
+//   - every active NATIVE ExpressProduct (source: 'native') — products and
+//     combos the Express admin created directly (see createNativeProduct
+//     below), which never touch Koyambedu Daily at all.
 const adminListOnlineCatalog = async (req, res) => {
   try {
     const { storeId } = req.params;
     const store = await ExpressStore.findById(storeId).lean();
     if (!store) return fail(res, 404, 'Store not found');
 
-    const koyambeduProducts = await KoyambeduProduct.find({ isActive: true })
-      .select('name unit currentPrice images category')
-      .populate('category', 'name')
-      .sort({ name: 1 })
-      .lean();
+    const [koyambeduProducts, nativeProducts, listings] = await Promise.all([
+      KoyambeduProduct.find({ isActive: true })
+        .select('name unit currentPrice images category')
+        .populate('category', 'name')
+        .sort({ name: 1 })
+        .lean(),
+      ExpressProduct.find({ koyambeduProduct: { $exists: false }, isActive: true })
+        .select('name unit procurementBaseCost image category isCombo')
+        .sort({ name: 1 })
+        .lean(),
+      ExpressOnlineListing.find({ store: storeId }).lean(),
+    ]);
 
-    const listings = await ExpressOnlineListing.find({ store: storeId }).lean();
-    const listingByProduct = Object.fromEntries(listings.map(l => [String(l.koyambeduProduct), l]));
+    const listingByKoyambeduProduct = Object.fromEntries(
+      listings.filter(l => l.koyambeduProduct).map(l => [String(l.koyambeduProduct), l])
+    );
+    const listingByProduct = Object.fromEntries(
+      listings.filter(l => l.product && !l.koyambeduProduct).map(l => [String(l.product), l])
+    );
 
-    const items = koyambeduProducts.map(kb => {
-      const listing = listingByProduct[String(kb._id)];
+    const nativeItems = nativeProducts.map(np => {
+      const listing = listingByProduct[String(np._id)];
       return {
+        source: 'native',
+        expressProductId: np._id,
+        name: np.name,
+        unit: np.unit,
+        category: np.category || (np.isCombo ? 'Combo' : null),
+        image: np.image || null,
+        isCombo: !!np.isCombo,
+        wholesalePrice: np.procurementBaseCost || 0,
+        isEnabled: listing?.isEnabled || false,
+        price: listing?.price ?? null,
+      };
+    });
+
+    const koyambeduItems = koyambeduProducts.map(kb => {
+      const listing = listingByKoyambeduProduct[String(kb._id)];
+      return {
+        source: 'koyambedu',
         koyambeduProductId: kb._id,
         name: kb.name,
         unit: kb.unit,
@@ -1190,15 +1222,107 @@ const adminListOnlineCatalog = async (req, res) => {
       };
     });
 
-    res.json({ success: true, store: { _id: store._id, name: store.name }, items });
+    // Native items first so admin notices their just-created product/combo
+    // right away instead of scrolling through the whole Koyambedu list.
+    res.json({ success: true, store: { _id: store._id, name: store.name }, items: [...nativeItems, ...koyambeduItems] });
   } catch (err) {
     console.error('[express.adminListOnlineCatalog]', err);
     fail(res, 500, 'Failed to load online catalog');
   }
 };
 
-// Shared upsert used by both the single and bulk endpoints below.
-async function upsertOnlineListing(storeId, koyambeduProductId, { isEnabled, price }, userId) {
+// POST /express/admin/products/native — admin creates a standalone product
+// or a combo entirely within Express. NEVER touches Koyambedu Daily's
+// catalog, collection, or create endpoints in any way — this is a fully
+// separate write path from createProduct (Koyambedu-linking) above.
+const createNativeProduct = async (req, res) => {
+  try {
+    const {
+      name, description, unit, category, image,
+      procurementBaseCost, isWeightBased, unitsPerKg, customMarginPct,
+      isCombo, comboContents,
+    } = req.body;
+
+    if (!name || !name.trim()) return fail(res, 400, 'Name is required');
+    if (procurementBaseCost == null || procurementBaseCost === '') return fail(res, 400, 'Cost price is required');
+    if (isCombo && (!Array.isArray(comboContents) || comboContents.length === 0)) {
+      return fail(res, 400, 'Add at least one item to the combo');
+    }
+
+    // Uniqueness within Express's own native-product namespace only — fully
+    // independent of Koyambedu Daily's own name-uniqueness rule.
+    const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const dup = await ExpressProduct.findOne({
+      koyambeduProduct: { $exists: false },
+      name: new RegExp(`^${escaped}$`, 'i'),
+    }).select('_id').lean();
+    if (dup) return fail(res, 400, `A product named "${name.trim()}" already exists in Express`);
+
+    const product = await ExpressProduct.create({
+      name: name.trim(),
+      description: description || '',
+      unit: unit || 'kg',
+      category: category || null,
+      image: image || null,
+      isWeightBased, unitsPerKg,
+      procurementBaseCost: Number(procurementBaseCost),
+      customMarginPct: customMarginPct || null,
+      isCombo: !!isCombo,
+      comboContents: isCombo
+        ? comboContents.map(c => ({ product: c.product, name: c.name, unit: c.unit, qty: Number(c.qty) || 0 }))
+        : [],
+      // koyambeduProduct intentionally omitted (not set to null) — see the
+      // sparse-index comment in models/ExpressProduct.js.
+    });
+
+    await logAudit({
+      actorType: 'admin', actorName: req.user?.name || 'Admin',
+      action: isCombo ? 'product.create-native-combo' : 'product.create-native',
+      meta: { productId: product._id, name: product.name },
+    });
+
+    res.status(201).json({ success: true, product });
+  } catch (err) {
+    if (err.code === 11000) return fail(res, 409, 'A product with this name already exists');
+    console.error('[express.createNativeProduct]', err);
+    fail(res, 500, 'Failed to create product');
+  }
+};
+
+// GET /express/admin/products/native/search?search= — for the combo-
+// contents picker: search Express's OWN product catalogue (native +
+// Koyambedu-linked, either can go in a combo), never Koyambedu Daily's.
+const searchExpressProducts = async (req, res) => {
+  try {
+    const { search = '' } = req.query;
+    const filter = { isActive: true };
+    const products = await ExpressProduct.find(filter)
+      .populate('koyambeduProduct', 'name')
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .lean();
+
+    const withNames = products.map(p => ({
+      _id: p._id,
+      name: p.koyambeduProduct?.name || p.name || '(unnamed)',
+      unit: p.unit,
+      isCombo: !!p.isCombo,
+    }));
+
+    const needle = search.trim().toLowerCase();
+    const filtered = needle ? withNames.filter(p => p.name.toLowerCase().includes(needle)) : withNames;
+    res.json({ success: true, products: filtered.slice(0, 20) });
+  } catch (err) {
+    console.error('[express.searchExpressProducts]', err);
+    fail(res, 500, 'Failed to search Express products');
+  }
+};
+
+// Shared upsert used by both the single and bulk endpoints below. `ref` is
+// either { koyambeduProductId } or { expressProductId } (native product) —
+// exactly one of the two, never both. The native path never reads or
+// writes anything in the KoyambeduProduct collection.
+async function upsertOnlineListing(storeId, ref, { isEnabled, price }, userId) {
   // Must be wrapped in $set — a plain object with no atomic operators is
   // rejected (or, on some driver/server combos, applied as a full document
   // replacement) by findOneAndUpdate, which would wipe out this document's
@@ -1210,6 +1334,31 @@ async function upsertOnlineListing(storeId, koyambeduProductId, { isEnabled, pri
   if (priceProvided) set.price = Math.round(Number(price)); // whole rupees only — no paise
   if (isEnabled !== undefined) set.isEnabled = !!isEnabled;
 
+  if (ref.expressProductId) {
+    // ── Native product/combo — entirely within Express ──────────────────
+    const product = await ExpressProduct.findOne({ _id: ref.expressProductId, koyambeduProduct: { $exists: false } }).lean();
+    if (!product) throw new Error('Express product not found');
+    set.product = product._id;
+
+    if (isEnabled && !priceProvided) {
+      const existing = await ExpressOnlineListing.findOne({ store: storeId, product: product._id }).select('price').lean();
+      if (!existing?.price) set.price = defaultOnlineListingPrice(product.procurementBaseCost || 0);
+    }
+    if (isEnabled) {
+      const spUpdate = { $setOnInsert: { store: storeId, product: product._id, isAvailable: true, stockQty: 0 } };
+      if (set.price != null) spUpdate.$set = { priceOverride: set.price };
+      await ExpressStoreProduct.findOneAndUpdate({ store: storeId, product: product._id }, spUpdate, { upsert: true });
+    }
+
+    return ExpressOnlineListing.findOneAndUpdate(
+      { store: storeId, product: product._id },
+      { $set: set, $setOnInsert: { store: storeId, product: product._id } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+  }
+
+  // ── Koyambedu-linked product — unchanged behaviour ─────────────────────
+  const koyambeduProductId = ref.koyambeduProductId;
   if (isEnabled) {
     const product = await resolveExpressProduct(koyambeduProductId);
     if (!product) throw new Error('Koyambedu product not found');
@@ -1246,7 +1395,7 @@ async function upsertOnlineListing(storeId, koyambeduProductId, { isEnabled, pri
 const adminSetOnlineListing = async (req, res) => {
   try {
     const { storeId, koyambeduProductId } = req.params;
-    const listing = await upsertOnlineListing(storeId, koyambeduProductId, req.body, req.user?._id);
+    const listing = await upsertOnlineListing(storeId, { koyambeduProductId }, req.body, req.user?._id);
     res.json({ success: true, listing });
   } catch (err) {
     console.error('[express.adminSetOnlineListing]', err);
@@ -1254,8 +1403,23 @@ const adminSetOnlineListing = async (req, res) => {
   }
 };
 
-// PATCH /express/admin/stores/:storeId/online-catalog — body: { items: [{ koyambeduProductId, isEnabled, price }] }
-// One save for the whole catalog screen instead of a click per product.
+// PATCH /express/admin/stores/:storeId/online-catalog/native/:expressProductId
+// Body: { isEnabled, price } — same as above, for a native product/combo.
+const adminSetNativeOnlineListing = async (req, res) => {
+  try {
+    const { storeId, expressProductId } = req.params;
+    const listing = await upsertOnlineListing(storeId, { expressProductId }, req.body, req.user?._id);
+    res.json({ success: true, listing });
+  } catch (err) {
+    console.error('[express.adminSetNativeOnlineListing]', err);
+    fail(res, 500, err.message || 'Failed to update online listing');
+  }
+};
+
+// PATCH /express/admin/stores/:storeId/online-catalog
+// body: { items: [{ koyambeduProductId | expressProductId, isEnabled, price }] }
+// One save for the whole catalog screen instead of a click per product —
+// each item is either a Koyambedu-linked row or a native Express row.
 const adminBulkSetOnlineListing = async (req, res) => {
   try {
     const { storeId } = req.params;
@@ -1264,8 +1428,13 @@ const adminBulkSetOnlineListing = async (req, res) => {
 
     let saved = 0;
     for (const it of items) {
-      if (!it?.koyambeduProductId) continue;
-      await upsertOnlineListing(storeId, it.koyambeduProductId, it, req.user?._id);
+      if (it?.expressProductId) {
+        await upsertOnlineListing(storeId, { expressProductId: it.expressProductId }, it, req.user?._id);
+      } else if (it?.koyambeduProductId) {
+        await upsertOnlineListing(storeId, { koyambeduProductId: it.koyambeduProductId }, it, req.user?._id);
+      } else {
+        continue;
+      }
       saved++;
     }
     res.json({ success: true, saved });
@@ -1280,6 +1449,7 @@ module.exports = {
   listStoreManagers, createStoreManager, updateStoreManager,
   listPOSUsers, createPOSUser, updatePOSUser,
   listProducts, createProduct, updateProduct, deleteProduct, previewPrice, searchKoyambeduCatalog,
+  createNativeProduct, searchExpressProducts,
   adminSetProductPlu, adminAssignProductToStore,
   listStoreProducts, listStoreProductsForPrint, upsertStoreProduct, removeStoreProduct, addStock, listStockLogs,
   getMarginConfig, updateMarginConfig, toggleExpressEnabled, recomputeLogisticsCost,
@@ -1287,5 +1457,5 @@ module.exports = {
   listAuditLog,
   listExpenses, createExpense, deleteExpense,
   getFinanceDashboard, adminGetVisitors, adminGetCarts,
-  adminListOnlineCatalog, adminSetOnlineListing, adminBulkSetOnlineListing,
+  adminListOnlineCatalog, adminSetOnlineListing, adminSetNativeOnlineListing, adminBulkSetOnlineListing,
 };

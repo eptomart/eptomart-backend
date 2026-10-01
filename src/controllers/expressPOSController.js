@@ -33,10 +33,10 @@ const listProducts = async (req, res) => {
       .lean();
 
     const products = storeProducts
-      .filter(sp => sp.product?.koyambeduProduct)
+      .filter(sp => sp.product) // Koyambedu-linked or native — either sells fine at POS
       .map(sp => ({
         _id: sp.product._id,
-        name: sp.product.koyambeduProduct.name,
+        name: sp.product.koyambeduProduct?.name || sp.product.name,
         unit: sp.product.unit,
         stockQty: sp.stockQty,
         plu: sp.product.plu ?? null,

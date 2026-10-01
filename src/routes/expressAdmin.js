@@ -41,6 +41,12 @@ router.delete('/products/:productId',       protectAdmin, ctrl.deleteProduct);
 router.get   ('/products/:productId/price-preview', protectAdmin, ctrl.previewPrice);
 router.patch ('/products/:productId/plu',            protectAdmin, ctrl.adminSetProductPlu);
 
+// Native products/combos — created entirely within Express, never touching
+// Koyambedu Daily's catalog. searchExpressProducts (Express's own catalogue,
+// native + Koyambedu-linked) powers the combo-contents picker.
+router.get ('/products/native/search', protectAdmin, ctrl.searchExpressProducts);
+router.post('/products/native',        protectAdmin, ctrl.createNativeProduct);
+
 // Store Products (per-store availability + stock)
 router.get   ('/stores/:storeId/products',              protectAdmin, ctrl.listStoreProducts);
 router.get   ('/stores/:storeId/products/print-list',   protectAdmin, ctrl.listStoreProductsForPrint);
@@ -54,9 +60,10 @@ router.post  ('/products/assign-to-store', protectAdmin, ctrl.adminAssignProduct
 // Online Catalog (per-store "show online?" + price) — separate from the
 // Products/Store Products section above, which is for physical
 // stock/inventory and stays untouched by this.
-router.get  ('/stores/:storeId/online-catalog',                          protectAdmin, ctrl.adminListOnlineCatalog);
-router.patch('/stores/:storeId/online-catalog',                          protectAdmin, ctrl.adminBulkSetOnlineListing);
-router.patch('/stores/:storeId/online-catalog/:koyambeduProductId',      protectAdmin, ctrl.adminSetOnlineListing);
+router.get  ('/stores/:storeId/online-catalog',                              protectAdmin, ctrl.adminListOnlineCatalog);
+router.patch('/stores/:storeId/online-catalog',                              protectAdmin, ctrl.adminBulkSetOnlineListing);
+router.patch('/stores/:storeId/online-catalog/native/:expressProductId',     protectAdmin, ctrl.adminSetNativeOnlineListing);
+router.patch('/stores/:storeId/online-catalog/:koyambeduProductId',          protectAdmin, ctrl.adminSetOnlineListing);
 
 // Stock Report (admin additions + store-manager losses, all in one report)
 router.get('/stock-logs', protectAdmin, ctrl.listStockLogs);

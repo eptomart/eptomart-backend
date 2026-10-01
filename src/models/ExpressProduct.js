@@ -49,7 +49,15 @@ const expressProductSchema = new mongoose.Schema({
   // Fruits. Products in any other category (or where the category can't be
   // confidently matched) get no code and can have one assigned manually
   // by admin later (see adminSetProductPlu). Null = no code assigned.
-  plu: { type: Number, default: null, min: 100, max: 299 },
+  // No `default: null` here on purpose — the unique index below is sparse,
+  // which only skips documents where the field is entirely ABSENT, not
+  // documents that explicitly store `plu: null`. Giving this a default of
+  // null would mean every product with no detected PLU series ends up with
+  // the field present-and-null, and the second such product collides with
+  // the first on the unique index (E11000 duplicate key: { plu: null }).
+  // Always omit the key (or use $unset) rather than assigning null — see
+  // resolveExpressProduct/createProduct/adminSetProductPlu.
+  plu: { type: Number, min: 100, max: 299 },
 }, { timestamps: true });
 
 expressProductSchema.index({ isActive: 1 });

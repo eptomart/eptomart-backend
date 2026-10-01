@@ -394,7 +394,8 @@ const createProduct = async (req, res) => {
     const product = await ExpressProduct.create({
       koyambeduProduct: koyambeduProductId,
       unit: unit || koyambeduProduct.unit || 'kg',
-      isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct, plu,
+      isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct,
+      plu: plu || undefined, // omit rather than null — keeps the sparse unique index happy
     });
     const populated = await product.populate('koyambeduProduct', KOYAMBEDU_PRODUCT_FIELDS);
     res.status(201).json({ success: true, product: populated });
@@ -412,7 +413,9 @@ const adminSetProductPlu = async (req, res) => {
     const { productId } = req.params;
     const { plu } = req.body;
     if (plu === null || plu === '') {
-      const product = await ExpressProduct.findByIdAndUpdate(productId, { plu: null }, { new: true });
+      // $unset, not $set: null — a sparse unique index only skips documents
+      // where the field is absent, not ones explicitly set to null.
+      const product = await ExpressProduct.findByIdAndUpdate(productId, { $unset: { plu: 1 } }, { new: true });
       if (!product) return fail(res, 404, 'Product not found');
       return res.json({ success: true, product });
     }
@@ -459,7 +462,8 @@ const adminAssignProductToStore = async (req, res) => {
       product = await ExpressProduct.create({
         koyambeduProduct: koyambeduProductId,
         unit: unit || koyambeduProduct.unit || 'kg',
-        isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct, plu,
+        isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct,
+        plu: plu || undefined, // omit rather than null — keeps the sparse unique index happy
       });
     }
 
@@ -1147,7 +1151,7 @@ async function resolveExpressProduct(koyambeduProductId) {
     unit,
     isWeightBased: WEIGHT_BASED_EXPRESS_UNITS.has(unit),
     procurementBaseCost: koyambeduProduct.currentPrice || koyambeduProduct.finalPrice || 0,
-    plu,
+    plu: plu || undefined, // omit rather than null — keeps the sparse unique index happy
   });
 }
 

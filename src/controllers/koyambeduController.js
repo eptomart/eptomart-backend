@@ -8075,6 +8075,34 @@ const adminShareProcurement = async (req, res) => {
 // purchaseCostPerUnit/adminCosts fields added alongside this feature.
 // ══════════════════════════════════════════════
 
+// Margin thresholds for the "which products need a price bump" alerts —
+// a product earning less than LOW_MARGIN_PERCENT of its selling price is
+// flagged 'low', one selling at or below cost is flagged 'loss'. The
+// suggested price is what it would need to sell at (given today's actual
+// cost per unit) to reach TARGET_MARGIN_PERCENT instead.
+const LOW_MARGIN_PERCENT = 15;
+const TARGET_MARGIN_PERCENT = 20;
+
+// Mutates and returns an itemRollup row with margin/alert/suggested-price
+// fields added, based on its already-accumulated revenue/totalQty/
+// totalProcurement. Shared by the single-day report and the range-level
+// margin report so both flag products the same way.
+function annotateMargin(row) {
+  const costPerUnit = row.totalQty > 0 ? row.totalProcurement / row.totalQty : 0;
+  const sellingPricePerUnit = row.totalQty > 0 ? row.revenue / row.totalQty : 0;
+  const margin = row.revenue - row.totalProcurement;
+  const marginPercent = row.revenue > 0 ? (margin / row.revenue) * 100 : 0;
+  const alertLevel = margin <= 0 ? 'loss' : (marginPercent < LOW_MARGIN_PERCENT ? 'low' : 'ok');
+  // Price it would need to sell at (at today's cost) to hit the target
+  // margin — only meaningful once there's an actual cost to price against.
+  const suggestedPricePerUnit = (alertLevel !== 'ok' && costPerUnit > 0)
+    ? Math.ceil((costPerUnit / (1 - TARGET_MARGIN_PERCENT / 100)) * 100) / 100
+    : null;
+  return {
+    ...row, costPerUnit, sellingPricePerUnit, margin, marginPercent, alertLevel, suggestedPricePerUnit,
+  };
+}
+
 // GET /koyambedu/admin/pnl/daily-expense?cycle=2026-09-26
 const adminGetDailyExpense = async (req, res) => {
   try {
@@ -8238,13 +8266,15 @@ async function computeKoyambeduPnLForCycle(cycle) {
         itemRollup[productKey] = {
           productKey, productName: item.name, unit: item.unit || item.unitLabel || 'kg',
           gradeKey: item.gradeKey || null, gradeName: item.gradeName || null,
-          totalQty: 0, purchaseCostPerUnit, purchaseCost: 0, loadmanCost: 0, totalProcurement: 0, procuredBy: procuredByName,
+          totalQty: 0, purchaseCostPerUnit, purchaseCost: 0, loadmanCost: 0, totalProcurement: 0,
+          revenue: 0, procuredBy: procuredByName,
         };
       }
       itemRollup[productKey].totalQty += qty;
       itemRollup[productKey].purchaseCost += lineePurchaseCost;
       itemRollup[productKey].loadmanCost += lineLoadmanCost;
       itemRollup[productKey].totalProcurement += lineePurchaseCost + lineLoadmanCost;
+      itemRollup[productKey].revenue += lineRevenue;
 
       if (procuredByName) {
         if (!procuredByRollup[procuredByName]) {
@@ -8325,6 +8355,15 @@ async function computeKoyambeduPnLForCycle(cycle) {
   const dayCost     = orderLines.reduce((s, o) => s + o.totalCost, 0);
   const dayProfit   = dayRevenue - dayCost;
 
+  // Margin/alert fields per product — "is this product being sold for
+  // enough above what it actually cost today", and if not, what it should
+  // be priced at tomorrow to reach a healthy margin again.
+  const itemRollupWithMargin = Object.values(itemRollup).map(annotateMargin)
+    .sort((a, b) => a.productName.localeCompare(b.productName));
+  const marginAlerts = itemRollupWithMargin
+    .filter(r => r.alertLevel !== 'ok')
+    .sort((a, b) => a.marginPercent - b.marginPercent);
+
   return {
     cycle,
     orderCount: orders.length,
@@ -8332,7 +8371,8 @@ async function computeKoyambeduPnLForCycle(cycle) {
     loadmanCharge,
     loadmanPerUnitRate,
     orders: orderLines,
-    itemRollup: Object.values(itemRollup).sort((a, b) => a.productName.localeCompare(b.productName)),
+    itemRollup: itemRollupWithMargin,
+    marginAlerts,
     procuredByRollup: Object.values(procuredByRollup).map(p => ({ ...p, products: [...p.products] })),
     dayRevenue, dayCost, dayProfit,
   };
@@ -8422,6 +8462,54 @@ const adminPnLSummary = async (req, res) => {
   } catch (err) {
     console.error('[adminPnLSummary] error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to build P&L summary' });
+  }
+};
+
+// GET /koyambedu/admin/pnl/margin-report?from=2026-07-01&to=2026-09-30
+// "Which products are actually making money" over a range, not just one
+// day — a single bad-margin day can be a one-off supplier price spike, but
+// a product that's low-margin or loss-making across a whole range is the
+// one that genuinely needs its selling price revisited. Aggregates each
+// day's itemRollup (quantity/revenue/cost) per product across the range,
+// then re-runs the same margin/alert logic on the totals.
+const adminMarginReport = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) return res.status(400).json({ success: false, message: 'from and to are required (YYYY-MM-DD)' });
+
+    const cycles = await KoyambeduOrder.distinct('cutoffCycle', {
+      cutoffCycle: { $gte: from, $lte: to },
+      orderStatus: { $in: CONFIRMED_REPORT_STATUSES },
+    });
+    cycles.sort();
+
+    const totals = {}; // productKey -> { productName, unit, totalQty, revenue, totalProcurement, daysSeen, lastCostPerUnit }
+    for (const cycle of cycles) {
+      const report = await computeKoyambeduPnLForCycle(cycle);
+      for (const row of report.itemRollup) {
+        if (!totals[row.productKey]) {
+          totals[row.productKey] = {
+            productKey: row.productKey, productName: row.productName, unit: row.unit,
+            gradeKey: row.gradeKey, gradeName: row.gradeName,
+            totalQty: 0, revenue: 0, totalProcurement: 0, daysSeen: 0,
+          };
+        }
+        const t = totals[row.productKey];
+        t.totalQty += row.totalQty;
+        t.revenue += row.revenue;
+        t.totalProcurement += row.totalProcurement;
+        t.daysSeen += 1;
+      }
+    }
+
+    const products = Object.values(totals).map(annotateMargin)
+      .sort((a, b) => a.marginPercent - b.marginPercent);
+    const alerts = products.filter(p => p.alertLevel !== 'ok');
+
+    res.json({ success: true, from, to, products, alerts });
+  } catch (err) {
+    console.error('[adminMarginReport] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to build margin report' });
   }
 };
 
@@ -8624,6 +8712,7 @@ module.exports = {
   // Super Admin — Procurement Report (confirmed orders)
   adminProcurementReport, adminUpdateProcurementItem, adminShareProcurement,
   adminGetDailyExpense, adminSetDailyExpense, adminPnLDay, adminPnLSummary, adminExportPnL, adminSetItemProcurementCost,
+  adminMarginReport,
   adminListProcurers, adminAddProcurer, adminBulkUpdateProcurementItems,
   // Super Admin — Offer push notifications
   adminPreviewOfferAudience, adminBroadcastOffer, adminGetOfferBroadcasts,

@@ -270,6 +270,7 @@ router.get  ('/admin/procurers',                                      protectAdm
 router.post ('/admin/procurers',                                      protectAdmin,      ctrl.adminAddProcurer);
 
 // Daily P&L report — see computeKoyambeduPnLForCycle in koyambeduController.js
+router.get  ('/admin/pnl/margin-report',   protectAdmin, ctrl.adminMarginReport);
 router.get  ('/admin/pnl/daily-expense',   protectAdmin, ctrl.adminGetDailyExpense);
 router.patch('/admin/pnl/daily-expense',   protectAdmin, ctrl.adminSetDailyExpense);
 router.get  ('/admin/pnl/summary',         protectAdmin, ctrl.adminPnLSummary); // must be before /admin/pnl/day if ever param-based; both are static here so order is fine

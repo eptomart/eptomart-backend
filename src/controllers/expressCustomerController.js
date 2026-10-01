@@ -167,7 +167,7 @@ const getOnlineCatalogue = async (req, res) => {
     if (!store) return fail(res, 404, 'Store not found or inactive');
 
     const listings = await ExpressOnlineListing.find({ store: storeId, isEnabled: true, price: { $ne: null } })
-      .populate({ path: 'koyambeduProduct', select: 'name description images category' })
+      .populate({ path: 'koyambeduProduct', select: 'name description images category', populate: { path: 'category', select: 'name' } })
       .populate({ path: 'product', select: 'unit name description image category isCombo' })
       .lean();
 
@@ -186,13 +186,18 @@ const getOnlineCatalogue = async (req, res) => {
       .map(l => {
         const isNative = !l.koyambeduProduct;
         const display = isNative ? l.product : l.koyambeduProduct;
+        // Native products store category as a plain string (ExpressProduct.
+        // category); Koyambedu-linked products store it as a populated
+        // KoyambeduCategory ref — resolve both to the same plain string so
+        // the shop's category chips never show a raw ObjectId.
+        const categoryName = isNative ? (display?.category || null) : (display?.category?.name || null);
         return {
           storeProductId: l._id,
           product: {
             _id: l.product._id,
             name: display?.name,
             description: display?.description,
-            category: display?.category,
+            category: categoryName,
             unit: l.product.unit,
             image: isNative
               ? (display?.image || null)
@@ -237,7 +242,10 @@ const getCatalogue = async (req, res) => {
     const storeProducts = await ExpressStoreProduct.find({ store: storeId, isAvailable: true, stockQty: { $gt: 0 } })
       .populate({
         path: 'product', match: { isActive: true },
-        populate: { path: 'koyambeduProduct', select: 'name description images category' },
+        populate: {
+          path: 'koyambeduProduct', select: 'name description images category',
+          populate: { path: 'category', select: 'name' },
+        },
       })
       .lean();
 
@@ -257,7 +265,7 @@ const getCatalogue = async (req, res) => {
             _id: sp.product._id,
             name: kb.name,
             description: kb.description,
-            category: kb.category,
+            category: kb.category?.name || null,
             unit: sp.product.unit,
             image: kb.images?.find(i => i.isPrimary)?.url || kb.images?.[0]?.url || null,
           },

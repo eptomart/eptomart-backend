@@ -123,11 +123,29 @@ function computeDeliveryFee(distanceKmValue, subtotal, marginConfig) {
   return roundRupee(marginConfig.deliveryFeeBelowMinimum ?? 0);
 }
 
+/**
+ * Estimated delivery time (minutes) for a given distance from the store,
+ * using the admin-configured deliveryTimeTiers (see ExpressMarginConfig).
+ * Tiers are evaluated in ascending maxDistanceKm order; the first tier the
+ * distance fits within wins. A distance beyond every tier's maxDistanceKm
+ * (shouldn't normally happen — that's what maxDeliveryDistanceKm is for)
+ * falls back to the largest tier's etaMinutes rather than returning null.
+ * Returns null only if no tiers are configured at all.
+ */
+function computeDeliveryEta(distanceKmValue, marginConfig) {
+  const tiers = Array.isArray(marginConfig?.deliveryTimeTiers) ? marginConfig.deliveryTimeTiers : [];
+  if (!tiers.length) return null;
+  const sorted = [...tiers].sort((a, b) => a.maxDistanceKm - b.maxDistanceKm);
+  const match = sorted.find(t => distanceKmValue <= t.maxDistanceKm);
+  return (match || sorted[sorted.length - 1]).etaMinutes;
+}
+
 module.exports = {
   computeLogisticsCostPerKg,
   toKgEquivalent,
   computeSellingPrice,
   distanceKm,
   computeDeliveryFee,
+  computeDeliveryEta,
   roundRupee,
 };

@@ -737,7 +737,7 @@ const updateMarginConfig = async (req, res) => {
   try {
     const {
       platformChargePct, salesmanChargePct, packingChargePct, largeOrderThresholdKg, largeOrderAction, maxDeliveryDistanceKm,
-      freeDeliveryRadiusKm, minOrderForFreeDelivery, deliveryFeeBelowMinimum, customOrderPhone,
+      freeDeliveryRadiusKm, minOrderForFreeDelivery, deliveryFeeBelowMinimum, customOrderPhone, deliveryTimeTiers,
     } = req.body;
     const update = { updatedBy: req.user?.name || 'Admin' };
     if (platformChargePct != null) update.platformChargePct = platformChargePct;
@@ -750,6 +750,17 @@ const updateMarginConfig = async (req, res) => {
     if (minOrderForFreeDelivery != null) update.minOrderForFreeDelivery = minOrderForFreeDelivery;
     if (deliveryFeeBelowMinimum != null) update.deliveryFeeBelowMinimum = deliveryFeeBelowMinimum;
     if (customOrderPhone !== undefined) update.customOrderPhone = customOrderPhone || null;
+    // Admin-configurable distance -> ETA tiers (see ExpressMarginConfig.js).
+    // Validate shape + sort ascending by distance so computeDeliveryEta can
+    // rely on a sane ordering without re-sorting on every lookup.
+    if (Array.isArray(deliveryTimeTiers)) {
+      const cleaned = deliveryTimeTiers
+        .map(t => ({ maxDistanceKm: Number(t.maxDistanceKm), etaMinutes: Number(t.etaMinutes) }))
+        .filter(t => Number.isFinite(t.maxDistanceKm) && t.maxDistanceKm > 0 && Number.isFinite(t.etaMinutes) && t.etaMinutes > 0)
+        .sort((a, b) => a.maxDistanceKm - b.maxDistanceKm);
+      if (!cleaned.length) return fail(res, 400, 'Add at least one valid delivery time tier');
+      update.deliveryTimeTiers = cleaned;
+    }
 
     const config = await ExpressMarginConfig.findOneAndUpdate(
       { key: 'default' }, update, { new: true, upsert: true, runValidators: true }

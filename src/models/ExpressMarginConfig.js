@@ -50,6 +50,23 @@ const expressMarginConfigSchema = new mongoose.Schema({
   // custom (manually arranged) order. Null/empty hides the call-to-action.
   customOrderPhone: { type: String, trim: true, default: null },
 
+  // Admin-configurable delivery TIME estimate tiers, by distance from the
+  // store — fully dynamic, not hardcoded. Each tier means "if the customer
+  // is within maxDistanceKm of the store, quote etaMinutes". Tiers are
+  // evaluated in ascending maxDistanceKm order, first match wins (see
+  // expressPricingService.computeDeliveryEta); a customer beyond every
+  // tier's maxDistanceKm gets the last (largest) tier's etaMinutes rather
+  // than no estimate at all. Example default: <=4km->30min, <=10km->45min,
+  // beyond that (up to maxDeliveryDistanceKm)->60min.
+  deliveryTimeTiers: {
+    type: [{ maxDistanceKm: { type: Number, required: true, min: 0 }, etaMinutes: { type: Number, required: true, min: 1 } }],
+    default: [
+      { maxDistanceKm: 4,  etaMinutes: 30 },
+      { maxDistanceKm: 10, etaMinutes: 45 },
+      { maxDistanceKm: 12, etaMinutes: 60 },
+    ],
+  },
+
   updatedBy: { type: String, default: null }, // admin name/email, for audit
 }, { timestamps: true });
 

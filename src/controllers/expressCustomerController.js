@@ -14,7 +14,7 @@ const ExpressMarginConfig = require('../models/ExpressMarginConfig');
 const ExpressCart         = require('../models/ExpressCart');
 const ExpressOrder        = require('../models/ExpressOrder');
 const ExpressOnlineListing = require('../models/ExpressOnlineListing');
-const { computeSellingPrice, toKgEquivalent, distanceKm, computeDeliveryFee, roundRupee } = require('../services/expressPricingService');
+const { computeSellingPrice, toKgEquivalent, distanceKm, computeDeliveryFee, computeDeliveryEta, roundRupee } = require('../services/expressPricingService');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
 
@@ -82,6 +82,7 @@ const findNearestStore = async (req, res) => {
       withinRange: true,
       store: { _id: nearest.store._id, name: nearest.store.name, code: nearest.store.code, location: nearest.store.location },
       distanceKm: nearest.distanceKm,
+      estimatedDeliveryMinutes: computeDeliveryEta(nearest.distanceKm, config),
     });
   } catch (err) {
     console.error('[express.findNearestStore]', err);
@@ -108,11 +109,15 @@ const listActiveStores = async (req, res) => {
       .select('name code address city location isPaused pauseMessage')
       .lean();
 
-    let stores = activeStores.map(s => ({
-      _id: s._id, name: s.name, code: s.code, address: s.address, city: s.city,
-      isPaused: !!s.isPaused, pauseMessage: s.pauseMessage || null,
-      distanceKm: (lat != null && lng != null) ? distanceKm({ lat: Number(lat), lng: Number(lng) }, s.location) : null,
-    }));
+    let stores = activeStores.map(s => {
+      const dKm = (lat != null && lng != null) ? distanceKm({ lat: Number(lat), lng: Number(lng) }, s.location) : null;
+      return {
+        _id: s._id, name: s.name, code: s.code, address: s.address, city: s.city,
+        isPaused: !!s.isPaused, pauseMessage: s.pauseMessage || null,
+        distanceKm: dKm,
+        estimatedDeliveryMinutes: dKm != null ? computeDeliveryEta(dKm, config) : null,
+      };
+    });
 
     stores = stores.sort((a, b) => {
       if (a.distanceKm != null && b.distanceKm != null) return a.distanceKm - b.distanceKm;
@@ -473,6 +478,7 @@ async function priceCart(userId, deliveryAddress) {
   return {
     cart, items, subtotal: roundedSubtotal, deliveryFee, total, totalWeightKg,
     largeOrderWarning: totalWeightKg > threshold, distanceKm: distKm,
+    estimatedDeliveryMinutes: computeDeliveryEta(distKm, config),
     freeDeliveryRadiusKm: config.freeDeliveryRadiusKm, minOrderForFreeDelivery: config.minOrderForFreeDelivery,
   };
 }
@@ -485,7 +491,8 @@ const getQuote = async (req, res) => {
     res.json({
       success: true, items: priced.items, subtotal: priced.subtotal, deliveryFee: priced.deliveryFee,
       total: priced.total, totalWeightKg: priced.totalWeightKg, largeOrderWarning: priced.largeOrderWarning,
-      distanceKm: priced.distanceKm, freeDeliveryRadiusKm: priced.freeDeliveryRadiusKm, minOrderForFreeDelivery: priced.minOrderForFreeDelivery,
+      distanceKm: priced.distanceKm, estimatedDeliveryMinutes: priced.estimatedDeliveryMinutes,
+      freeDeliveryRadiusKm: priced.freeDeliveryRadiusKm, minOrderForFreeDelivery: priced.minOrderForFreeDelivery,
     });
   } catch (err) {
     if (err.statusCode) {

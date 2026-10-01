@@ -18,6 +18,7 @@ router.get   ('/stores',                    protectAdmin, ctrl.listStores);
 router.post  ('/stores',                    protectAdmin, ctrl.createStore);
 router.put   ('/stores/:storeId',           protectAdmin, ctrl.updateStore);
 router.patch ('/stores/:storeId/toggle',    protectAdmin, ctrl.toggleStoreActive);
+router.patch ('/stores/:storeId/toggle-online-shop', protectAdmin, ctrl.toggleOnlineShop);
 router.delete('/stores/:storeId',           protectAdmin, ctrl.archiveStore);
 
 // Store Managers

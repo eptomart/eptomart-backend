@@ -105,6 +105,29 @@ const toggleStoreActive = async (req, res) => {
   }
 };
 
+// Separate from toggleStoreActive above — this only hides/shows the store
+// in the customer-facing online Express shop (store list + online
+// catalogue). POS, the manager dashboard and inventory are unaffected.
+const toggleOnlineShop = async (req, res) => {
+  try {
+    const { storeId } = req.params;
+    const store = await ExpressStore.findById(storeId);
+    if (!store) return fail(res, 404, 'Store not found');
+
+    store.onlineShopEnabled = !store.onlineShopEnabled;
+    await store.save();
+
+    await logAudit({
+      actorType: 'admin', actorName: req.user?.name || 'Admin',
+      action: store.onlineShopEnabled ? 'store.online_shop_enable' : 'store.online_shop_disable', store: store._id,
+    });
+    res.json({ success: true, store });
+  } catch (err) {
+    console.error('[express.toggleOnlineShop]', err);
+    fail(res, 500, 'Failed to update online shop status');
+  }
+};
+
 const archiveStore = async (req, res) => {
   try {
     const { storeId } = req.params;
@@ -1061,6 +1084,14 @@ const KOYAMBEDU_TO_EXPRESS_UNIT = {
 };
 const WEIGHT_BASED_EXPRESS_UNITS = new Set(['kg', 'gram', 'litre']);
 
+// Default markup applied to a product's online listing price when the admin
+// enables it without typing a price of their own. Admin can always type a
+// different number — that always wins over this default.
+const DEFAULT_ONLINE_MARKUP_PERCENT = 15;
+function defaultOnlineListingPrice(wholesalePrice) {
+  return Math.round((wholesalePrice || 0) * (1 + DEFAULT_ONLINE_MARKUP_PERCENT / 100) * 100) / 100;
+}
+
 // Looks up (or, the first time a product is enabled online, creates) the
 // ExpressProduct link for a Koyambedu product — same auto-link pattern as
 // adminAssignProductToStore above, reused so the existing (untouched) cart/
@@ -1135,13 +1166,23 @@ async function upsertOnlineListing(storeId, koyambeduProductId, { isEnabled, pri
   // collide with the unique index below. This was causing every "Save All"
   // to fail with a 500.
   const set = { updatedAt: new Date(), updatedBy: userId };
-  if (price !== undefined) set.price = price === '' || price === null ? null : Number(price);
+  const priceProvided = price !== undefined && price !== null && price !== '';
+  if (priceProvided) set.price = Number(price);
   if (isEnabled !== undefined) set.isEnabled = !!isEnabled;
 
   if (isEnabled) {
     const product = await resolveExpressProduct(koyambeduProductId);
     if (!product) throw new Error('Koyambedu product not found');
     set.product = product._id;
+
+    // No price typed by the admin — default to the Koyambedu wholesale
+    // price plus DEFAULT_ONLINE_MARKUP_PERCENT, so the product is usable
+    // online right away. The admin can always type their own price instead,
+    // which takes priority over this default.
+    if (!priceProvided) {
+      const kb = await KoyambeduProduct.findById(koyambeduProductId).select('currentPrice finalPrice').lean();
+      set.price = defaultOnlineListingPrice(kb?.currentPrice || kb?.finalPrice || 0);
+    }
 
     // Ensure the cart/checkout pipeline (which reads ExpressStoreProduct)
     // has a row to find — only on first creation (setOnInsert), so an
@@ -1195,7 +1236,7 @@ const adminBulkSetOnlineListing = async (req, res) => {
 };
 
 module.exports = {
-  listStores, createStore, updateStore, toggleStoreActive, archiveStore,
+  listStores, createStore, updateStore, toggleStoreActive, toggleOnlineShop, archiveStore,
   listStoreManagers, createStoreManager, updateStoreManager,
   listPOSUsers, createPOSUser, updatePOSUser,
   listProducts, createProduct, updateProduct, deleteProduct, previewPrice, searchKoyambeduCatalog,

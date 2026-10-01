@@ -52,7 +52,7 @@ const findNearestStore = async (req, res) => {
       return res.json({ success: true, withinRange: false, expressDisabled: true, message: 'Eptomart Express is currently unavailable.' });
     }
 
-    const activeStores = await ExpressStore.find({ isActive: true, isArchived: false }).lean();
+    const activeStores = await ExpressStore.find({ isActive: true, isArchived: false, onlineShopEnabled: true }).lean();
 
     if (activeStores.length === 0) {
       return res.json({ success: true, withinRange: false, message: 'No Eptomart Express stores are currently active.', redirectTo: 'koyambedu' });
@@ -104,7 +104,7 @@ const listActiveStores = async (req, res) => {
       return res.json({ success: true, expressDisabled: true, stores: [], message: 'Eptomart Express is currently unavailable.' });
     }
 
-    const activeStores = await ExpressStore.find({ isActive: true, isArchived: false })
+    const activeStores = await ExpressStore.find({ isActive: true, isArchived: false, onlineShopEnabled: true })
       .select('name code address city location')
       .lean();
 
@@ -135,7 +135,7 @@ const listActiveStores = async (req, res) => {
 const getOnlineCatalogue = async (req, res) => {
   try {
     const { storeId } = req.params;
-    const store = await ExpressStore.findOne({ _id: storeId, isActive: true, isArchived: false });
+    const store = await ExpressStore.findOne({ _id: storeId, isActive: true, isArchived: false, onlineShopEnabled: true });
     if (!store) return fail(res, 404, 'Store not found or inactive');
 
     const listings = await ExpressOnlineListing.find({ store: storeId, isEnabled: true, price: { $ne: null } })
@@ -175,7 +175,7 @@ const getOnlineCatalogue = async (req, res) => {
 const getCatalogue = async (req, res) => {
   try {
     const { storeId } = req.params;
-    const store = await ExpressStore.findOne({ _id: storeId, isActive: true, isArchived: false });
+    const store = await ExpressStore.findOne({ _id: storeId, isActive: true, isArchived: false, onlineShopEnabled: true });
     if (!store) return fail(res, 404, 'Store not found or inactive');
 
     const config = await getMarginConfig();

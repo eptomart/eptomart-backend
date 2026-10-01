@@ -33,6 +33,12 @@ const expressStoreSchema = new mongoose.Schema({
   // Master ON/OFF — when off, store is excluded from nearest-store routing
   // and from receiving new Express orders. Toggled by Store Manager or Admin.
   isActive: { type: Boolean, default: true },
+  // Separate ON/OFF for the customer-facing ONLINE shop only — independent
+  // of isActive above. Lets admin keep a store open for in-person/POS
+  // business while hiding it from the Express app's store list and online
+  // catalogue (or the reverse). Does not affect POS, the manager dashboard,
+  // or inventory in any way.
+  onlineShopEnabled: { type: Boolean, default: true },
   // Soft-delete flag — archived stores never appear anywhere
   isArchived: { type: Boolean, default: false },
   // Who last flipped isActive, and when — for the audit trail (section 22)

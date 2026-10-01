@@ -1128,14 +1128,20 @@ const adminListOnlineCatalog = async (req, res) => {
 
 // Shared upsert used by both the single and bulk endpoints below.
 async function upsertOnlineListing(storeId, koyambeduProductId, { isEnabled, price }, userId) {
-  const update = { updatedAt: new Date(), updatedBy: userId };
-  if (price !== undefined) update.price = price === '' || price === null ? null : Number(price);
-  if (isEnabled !== undefined) update.isEnabled = !!isEnabled;
+  // Must be wrapped in $set — a plain object with no atomic operators is
+  // rejected (or, on some driver/server combos, applied as a full document
+  // replacement) by findOneAndUpdate, which would wipe out this document's
+  // required `store`/`koyambeduProduct` fields on every re-save and then
+  // collide with the unique index below. This was causing every "Save All"
+  // to fail with a 500.
+  const set = { updatedAt: new Date(), updatedBy: userId };
+  if (price !== undefined) set.price = price === '' || price === null ? null : Number(price);
+  if (isEnabled !== undefined) set.isEnabled = !!isEnabled;
 
   if (isEnabled) {
     const product = await resolveExpressProduct(koyambeduProductId);
     if (!product) throw new Error('Koyambedu product not found');
-    update.product = product._id;
+    set.product = product._id;
 
     // Ensure the cart/checkout pipeline (which reads ExpressStoreProduct)
     // has a row to find — only on first creation (setOnInsert), so an
@@ -1143,13 +1149,13 @@ async function upsertOnlineListing(storeId, koyambeduProductId, { isEnabled, pri
     // Stock itself is still only ever added via the existing inventory
     // flow; toggling a product online here never adds stock.
     const spUpdate = { $setOnInsert: { store: storeId, product: product._id, isAvailable: true, stockQty: 0 } };
-    if (update.price != null) spUpdate.$set = { priceOverride: update.price };
+    if (set.price != null) spUpdate.$set = { priceOverride: set.price };
     await ExpressStoreProduct.findOneAndUpdate({ store: storeId, product: product._id }, spUpdate, { upsert: true });
   }
 
   return ExpressOnlineListing.findOneAndUpdate(
     { store: storeId, koyambeduProduct: koyambeduProductId },
-    update,
+    { $set: set, $setOnInsert: { store: storeId, koyambeduProduct: koyambeduProductId } },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 }
@@ -1184,7 +1190,7 @@ const adminBulkSetOnlineListing = async (req, res) => {
     res.json({ success: true, saved });
   } catch (err) {
     console.error('[express.adminBulkSetOnlineListing]', err);
-    fail(res, 500, 'Failed to save online catalog');
+    fail(res, 500, err.message || 'Failed to save online catalog');
   }
 };
 

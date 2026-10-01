@@ -13,6 +13,7 @@ const ExpressStoreProduct = require('../models/ExpressStoreProduct');
 const ExpressMarginConfig = require('../models/ExpressMarginConfig');
 const ExpressCart         = require('../models/ExpressCart');
 const ExpressOrder        = require('../models/ExpressOrder');
+const ExpressOnlineListing = require('../models/ExpressOnlineListing');
 const { computeSellingPrice, toKgEquivalent, distanceKm } = require('../services/expressPricingService');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
@@ -85,6 +86,88 @@ const findNearestStore = async (req, res) => {
   } catch (err) {
     console.error('[express.findNearestStore]', err);
     fail(res, 500, 'Failed to find nearest store');
+  }
+};
+
+// ── All active stores, for the customer to choose from directly ─────────
+// Unlike findNearestStore (auto-picks the single closest one and redirects),
+// this lists every active store so the customer can see and pick whichever
+// one they want. Distance is included (sorted nearest-first) whenever lat/
+// lng is provided, but every active store is returned regardless of
+// distance — the max-delivery-range cutoff used by findNearestStore does
+// not apply here, since the customer is choosing, not being auto-routed.
+const listActiveStores = async (req, res) => {
+  try {
+    const { lat, lng } = req.query;
+    const config = await getMarginConfig();
+    if (!config.isEnabled) {
+      return res.json({ success: true, expressDisabled: true, stores: [], message: 'Eptomart Express is currently unavailable.' });
+    }
+
+    const activeStores = await ExpressStore.find({ isActive: true, isArchived: false })
+      .select('name code address city location')
+      .lean();
+
+    let stores = activeStores.map(s => ({
+      _id: s._id, name: s.name, code: s.code, address: s.address, city: s.city,
+      distanceKm: (lat != null && lng != null) ? distanceKm({ lat: Number(lat), lng: Number(lng) }, s.location) : null,
+    }));
+
+    stores = stores.sort((a, b) => {
+      if (a.distanceKm != null && b.distanceKm != null) return a.distanceKm - b.distanceKm;
+      return a.name.localeCompare(b.name);
+    });
+
+    res.json({ success: true, stores });
+  } catch (err) {
+    console.error('[express.listActiveStores]', err);
+    fail(res, 500, 'Failed to load stores');
+  }
+};
+
+// ── Online catalogue (admin-curated subset of Koyambedu Daily's catalog,
+// per store) — separate from getCatalogue below, which is driven by
+// ExpressStoreProduct's physical stock/availability. This one is driven by
+// ExpressOnlineListing: only products an admin has explicitly enabled
+// online for this store show up, at the admin-set online price. Response
+// shape intentionally matches getCatalogue's exactly, so the shop page
+// needs no changes beyond which URL it calls.
+const getOnlineCatalogue = async (req, res) => {
+  try {
+    const { storeId } = req.params;
+    const store = await ExpressStore.findOne({ _id: storeId, isActive: true, isArchived: false });
+    if (!store) return fail(res, 404, 'Store not found or inactive');
+
+    const listings = await ExpressOnlineListing.find({ store: storeId, isEnabled: true, price: { $ne: null } })
+      .populate({ path: 'koyambeduProduct', select: 'name description images category' })
+      .populate({ path: 'product', select: 'unit' })
+      .lean();
+
+    const productIds = listings.map(l => l.product?._id).filter(Boolean);
+    const storeProducts = await ExpressStoreProduct.find({ store: storeId, product: { $in: productIds } })
+      .select('product stockQty').lean();
+    const stockByProduct = Object.fromEntries(storeProducts.map(sp => [String(sp.product), sp.stockQty]));
+
+    const catalogue = listings
+      .filter(l => l.koyambeduProduct && l.product)
+      .map(l => ({
+        storeProductId: l._id,
+        product: {
+          _id: l.product._id,
+          name: l.koyambeduProduct.name,
+          description: l.koyambeduProduct.description,
+          category: l.koyambeduProduct.category,
+          unit: l.product.unit,
+          image: l.koyambeduProduct.images?.find(i => i.isPrimary)?.url || l.koyambeduProduct.images?.[0]?.url || null,
+        },
+        stockQty: stockByProduct[String(l.product._id)] || 0,
+        pricePerUnit: l.price,
+      }));
+
+    res.json({ success: true, store: { _id: store._id, name: store.name }, catalogue });
+  } catch (err) {
+    console.error('[express.getOnlineCatalogue]', err);
+    fail(res, 500, 'Failed to load catalogue');
   }
 };
 
@@ -512,6 +595,7 @@ const cancelMyOrder = async (req, res) => {
 
 module.exports = {
   getStatus, findNearestStore, getCatalogue,
+  listActiveStores, getOnlineCatalogue,
   getCart, addToCart, updateCartItem, clearCart,
   getQuote, createRazorpayOrder, verifyPayment,
   getMyOrders, getMyOrder, cancelMyOrder,

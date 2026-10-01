@@ -11,7 +11,9 @@ const { protect } = require('../middleware/auth');
 
 router.get ('/status',                     ctrl.getStatus);
 router.post('/nearest-store',              ctrl.findNearestStore);
+router.get ('/active-stores',              ctrl.listActiveStores);
 router.get ('/stores/:storeId/catalogue',  ctrl.getCatalogue);
+router.get ('/stores/:storeId/online-catalogue', ctrl.getOnlineCatalogue);
 
 router.get   ('/cart',       protect, ctrl.getCart);
 router.post  ('/cart',       protect, ctrl.addToCart);

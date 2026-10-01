@@ -18,6 +18,7 @@ const ExpressExpense         = require('../models/ExpressExpense');
 const ExpressOrder           = require('../models/ExpressOrder');
 const ExpressCart            = require('../models/ExpressCart');
 const ExpressBill            = require('../models/ExpressBill');
+const ExpressOnlineListing   = require('../models/ExpressOnlineListing');
 const KoyambeduProduct       = require('../models/KoyambeduProduct');
 const KoyambeduCategory      = require('../models/KoyambeduCategory');
 const Analytics              = require('../models/Analytics');
@@ -1043,6 +1044,150 @@ const adminGetCarts = async (req, res) => {
   }
 };
 
+// ── Online Catalog (per-store "show online?" + price) ─────────────────────
+// Deliberately NOT part of the Products/StoreInventory flow above — this is
+// a pure admin-curation decision over the FULL Koyambedu Daily catalog
+// (every active product is a candidate for every store, no "link into
+// Express" step needed first), kept in its own collection
+// (ExpressOnlineListing) so it never touches store stock, the manager
+// dashboard, or the POS terminal.
+
+// Koyambedu's unit vocabulary is broader than Express's; map it down to the
+// closest Express unit so quantity logic (isWeightBased, kg-stepper, etc.)
+// keeps working for products that have never been manually linked before.
+const KOYAMBEDU_TO_EXPRESS_UNIT = {
+  kg: 'kg', g: 'gram', piece: 'piece', bunch: 'bunch', dozen: 'dozen', litre: 'litre',
+  pack: 'piece', leaf: 'piece', box: 'piece', bag: 'piece', crate: 'piece',
+};
+const WEIGHT_BASED_EXPRESS_UNITS = new Set(['kg', 'gram', 'litre']);
+
+// Looks up (or, the first time a product is enabled online, creates) the
+// ExpressProduct link for a Koyambedu product — same auto-link pattern as
+// adminAssignProductToStore above, reused so the existing (untouched) cart/
+// checkout pipeline, which only knows ExpressProduct ids, keeps working.
+async function resolveExpressProduct(koyambeduProductId) {
+  let product = await ExpressProduct.findOne({ koyambeduProduct: koyambeduProductId });
+  if (product) return product;
+
+  const koyambeduProduct = await KoyambeduProduct.findById(koyambeduProductId).lean();
+  if (!koyambeduProduct) return null;
+
+  let plu = null;
+  const series = await detectPluSeries(koyambeduProduct);
+  if (series) plu = await nextFreePlu(series);
+
+  const unit = KOYAMBEDU_TO_EXPRESS_UNIT[koyambeduProduct.unit] || 'kg';
+  return ExpressProduct.create({
+    koyambeduProduct: koyambeduProductId,
+    unit,
+    isWeightBased: WEIGHT_BASED_EXPRESS_UNITS.has(unit),
+    procurementBaseCost: koyambeduProduct.currentPrice || koyambeduProduct.finalPrice || 0,
+    plu,
+  });
+}
+
+// GET /express/admin/stores/:storeId/online-catalog
+// Every active Koyambedu Daily product, with this store's current online
+// decision (if any) merged in, plus the Koyambedu price shown only as a
+// wholesale reference point for the admin setting the online price.
+const adminListOnlineCatalog = async (req, res) => {
+  try {
+    const { storeId } = req.params;
+    const store = await ExpressStore.findById(storeId).lean();
+    if (!store) return fail(res, 404, 'Store not found');
+
+    const koyambeduProducts = await KoyambeduProduct.find({ isActive: true })
+      .select('name unit currentPrice images category')
+      .populate('category', 'name')
+      .sort({ name: 1 })
+      .lean();
+
+    const listings = await ExpressOnlineListing.find({ store: storeId }).lean();
+    const listingByProduct = Object.fromEntries(listings.map(l => [String(l.koyambeduProduct), l]));
+
+    const items = koyambeduProducts.map(kb => {
+      const listing = listingByProduct[String(kb._id)];
+      return {
+        koyambeduProductId: kb._id,
+        name: kb.name,
+        unit: kb.unit,
+        category: kb.category?.name || null,
+        image: kb.images?.find(i => i.isPrimary)?.url || kb.images?.[0]?.url || null,
+        wholesalePrice: kb.currentPrice || 0,
+        isEnabled: listing?.isEnabled || false,
+        price: listing?.price ?? null,
+      };
+    });
+
+    res.json({ success: true, store: { _id: store._id, name: store.name }, items });
+  } catch (err) {
+    console.error('[express.adminListOnlineCatalog]', err);
+    fail(res, 500, 'Failed to load online catalog');
+  }
+};
+
+// Shared upsert used by both the single and bulk endpoints below.
+async function upsertOnlineListing(storeId, koyambeduProductId, { isEnabled, price }, userId) {
+  const update = { updatedAt: new Date(), updatedBy: userId };
+  if (price !== undefined) update.price = price === '' || price === null ? null : Number(price);
+  if (isEnabled !== undefined) update.isEnabled = !!isEnabled;
+
+  if (isEnabled) {
+    const product = await resolveExpressProduct(koyambeduProductId);
+    if (!product) throw new Error('Koyambedu product not found');
+    update.product = product._id;
+
+    // Ensure the cart/checkout pipeline (which reads ExpressStoreProduct)
+    // has a row to find — only on first creation (setOnInsert), so an
+    // existing manager-managed stock/availability record is never touched.
+    // Stock itself is still only ever added via the existing inventory
+    // flow; toggling a product online here never adds stock.
+    const spUpdate = { $setOnInsert: { store: storeId, product: product._id, isAvailable: true, stockQty: 0 } };
+    if (update.price != null) spUpdate.$set = { priceOverride: update.price };
+    await ExpressStoreProduct.findOneAndUpdate({ store: storeId, product: product._id }, spUpdate, { upsert: true });
+  }
+
+  return ExpressOnlineListing.findOneAndUpdate(
+    { store: storeId, koyambeduProduct: koyambeduProductId },
+    update,
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+}
+
+// PATCH /express/admin/stores/:storeId/online-catalog/:koyambeduProductId
+// Body: { isEnabled, price }
+const adminSetOnlineListing = async (req, res) => {
+  try {
+    const { storeId, koyambeduProductId } = req.params;
+    const listing = await upsertOnlineListing(storeId, koyambeduProductId, req.body, req.user?._id);
+    res.json({ success: true, listing });
+  } catch (err) {
+    console.error('[express.adminSetOnlineListing]', err);
+    fail(res, 500, err.message || 'Failed to update online listing');
+  }
+};
+
+// PATCH /express/admin/stores/:storeId/online-catalog — body: { items: [{ koyambeduProductId, isEnabled, price }] }
+// One save for the whole catalog screen instead of a click per product.
+const adminBulkSetOnlineListing = async (req, res) => {
+  try {
+    const { storeId } = req.params;
+    const { items } = req.body;
+    if (!Array.isArray(items) || !items.length) return fail(res, 400, 'items array is required');
+
+    let saved = 0;
+    for (const it of items) {
+      if (!it?.koyambeduProductId) continue;
+      await upsertOnlineListing(storeId, it.koyambeduProductId, it, req.user?._id);
+      saved++;
+    }
+    res.json({ success: true, saved });
+  } catch (err) {
+    console.error('[express.adminBulkSetOnlineListing]', err);
+    fail(res, 500, 'Failed to save online catalog');
+  }
+};
+
 module.exports = {
   listStores, createStore, updateStore, toggleStoreActive, archiveStore,
   listStoreManagers, createStoreManager, updateStoreManager,
@@ -1055,4 +1200,5 @@ module.exports = {
   listAuditLog,
   listExpenses, createExpense, deleteExpense,
   getFinanceDashboard, adminGetVisitors, adminGetCarts,
+  adminListOnlineCatalog, adminSetOnlineListing, adminBulkSetOnlineListing,
 };

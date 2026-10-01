@@ -49,6 +49,13 @@ router.post  ('/stores/:storeId/products/:productId/add-stock', protectAdmin, ct
 // Combined "pick Koyambedu product → assign to store with stock + price" flow
 router.post  ('/products/assign-to-store', protectAdmin, ctrl.adminAssignProductToStore);
 
+// Online Catalog (per-store "show online?" + price) — separate from the
+// Products/Store Products section above, which is for physical
+// stock/inventory and stays untouched by this.
+router.get  ('/stores/:storeId/online-catalog',                          protectAdmin, ctrl.adminListOnlineCatalog);
+router.patch('/stores/:storeId/online-catalog',                          protectAdmin, ctrl.adminBulkSetOnlineListing);
+router.patch('/stores/:storeId/online-catalog/:koyambeduProductId',      protectAdmin, ctrl.adminSetOnlineListing);
+
 // Stock Report (admin additions + store-manager losses, all in one report)
 router.get('/stock-logs', protectAdmin, ctrl.listStockLogs);
 

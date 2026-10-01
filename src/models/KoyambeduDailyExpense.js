@@ -20,6 +20,11 @@ const koyambeduDailyExpenseSchema = new Schema({
   // order/item proportional to its own quantity.
   loadmanCharge: { type: Number, default: 0 },
 
+  // Who actually paid the loadman out of pocket that day (e.g. a staff
+  // member fronted the cash, to be reimbursed) — purely informational,
+  // shown alongside the charge amount in the P&L day view.
+  loadmanPaidBy: { type: String, default: '' },
+
   updatedAt: Date,
   updatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });

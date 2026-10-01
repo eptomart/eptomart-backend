@@ -264,7 +264,9 @@ router.get  ('/admin/carts',                                          protectSup
 // Procurement Report — confirmed orders only, with purchased/comment checklist (SuperAdmin)
 router.get  ('/admin/reports/procurement-confirmed',                  protectAdmin,      ctrl.adminProcurementReport);
 router.patch('/admin/reports/procurement-confirmed/item',             protectAdmin,      ctrl.adminUpdateProcurementItem);
+router.patch('/admin/reports/procurement-confirmed/bulk',              protectAdmin,      ctrl.adminBulkUpdateProcurementItems);
 router.post ('/admin/reports/procurement-confirmed/share',            protectAdmin,      ctrl.adminShareProcurement);
+router.get  ('/admin/procurers',                                      protectAdmin,      ctrl.adminListProcurers);
 
 // Daily P&L report — see computeKoyambeduPnLForCycle in koyambeduController.js
 router.get  ('/admin/pnl/daily-expense',   protectAdmin, ctrl.adminGetDailyExpense);

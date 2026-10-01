@@ -22,6 +22,7 @@ const KoyambeduDeliverySlot = require('../models/KoyambeduDeliverySlot');
 const KoyambeduProcurementChecklist = require('../models/KoyambeduProcurementChecklist');
 const KoyambeduProcurementShare     = require('../models/KoyambeduProcurementShare');
 const KoyambeduDailyExpense         = require('../models/KoyambeduDailyExpense');
+const KoyambeduProcurer             = require('../models/KoyambeduProcurer');
 const KoyambeduOfferBroadcast       = require('../models/KoyambeduOfferBroadcast');
 const { notifyAudience, notifyAll } = require('../utils/pushNotification');
 const User                  = require('../models/User');
@@ -7894,6 +7895,7 @@ const adminUpdateProcurementItem = async (req, res) => {
     if (purchasedByName !== undefined) {
       update.purchasedByName = String(purchasedByName).trim();
     }
+    if (update.purchasedByName) registerProcurerName(update.purchasedByName, req.user._id);
     if (comment !== undefined) {
       update.comment       = String(comment).slice(0, 1000);
       update.commentBy     = req.user._id;
@@ -7917,6 +7919,76 @@ const adminUpdateProcurementItem = async (req, res) => {
   } catch (err) {
     console.error('[adminUpdateProcurementItem] error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to update procurement item' });
+  }
+};
+
+// Fire-and-forget: the first time a name is typed/selected as "Procured By"
+// anywhere, it joins the maintained dropdown list forever after, so admin
+// never has to visit a separate screen to manage the list — it just grows
+// from use. Never throws into the caller; a failure here shouldn't block
+// the actual save the admin was trying to make.
+function registerProcurerName(name, userId) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return;
+  KoyambeduProcurer.updateOne(
+    { name: trimmed },
+    { $setOnInsert: { name: trimmed, addedBy: userId } },
+    { upsert: true }
+  ).catch(err => console.error('[registerProcurerName] error:', err.message));
+}
+
+// GET /koyambedu/admin/procurers — maintained dropdown list for "Procured By"
+const adminListProcurers = async (req, res) => {
+  try {
+    const names = await KoyambeduProcurer.find().sort({ name: 1 }).select('name').lean();
+    res.json({ success: true, names: names.map(n => n.name) });
+  } catch (err) {
+    console.error('[adminListProcurers] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch procurers' });
+  }
+};
+
+// PATCH /koyambedu/admin/reports/procurement-confirmed/bulk
+// Body: { cycle, items: [{ productKey, productName, gradeKey, gradeName,
+// purchaseCostPerUnit, purchasedByName }] } — saves every row of the
+// Procurement Cost Entry table in one request instead of a separate click
+// per product, since re-saving row by row for a 20-30 product day was the
+// specific friction being solved here.
+const adminBulkUpdateProcurementItems = async (req, res) => {
+  try {
+    const { cycle, items } = req.body;
+    if (!cycle || !Array.isArray(items) || !items.length) {
+      return res.status(400).json({ success: false, message: 'cycle and a non-empty items array are required' });
+    }
+
+    const ops = items.filter(it => it && it.productKey).map(it => {
+      const update = { cycle, productKey: it.productKey };
+      if (it.productName !== undefined) update.productName = it.productName;
+      if (it.gradeKey !== undefined)    update.gradeKey    = it.gradeKey || null;
+      if (it.gradeName !== undefined)   update.gradeName   = it.gradeName || null;
+      if (it.purchaseCostPerUnit !== undefined) {
+        update.purchaseCostPerUnit = (it.purchaseCostPerUnit === '' || it.purchaseCostPerUnit === null)
+          ? null
+          : Number(it.purchaseCostPerUnit);
+      }
+      if (it.purchasedByName !== undefined) {
+        update.purchasedByName = String(it.purchasedByName).trim();
+        if (update.purchasedByName) registerProcurerName(update.purchasedByName, req.user._id);
+      }
+      return {
+        updateOne: {
+          filter: { cycle, productKey: it.productKey },
+          update: { $set: update },
+          upsert: true,
+        },
+      };
+    });
+
+    if (ops.length) await KoyambeduProcurementChecklist.bulkWrite(ops);
+    res.json({ success: true, saved: ops.length });
+  } catch (err) {
+    console.error('[adminBulkUpdateProcurementItems] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to save procurement rows' });
   }
 };
 
@@ -7988,7 +8060,7 @@ const adminGetDailyExpense = async (req, res) => {
   try {
     const cycle = req.query.cycle || getProcurementCycle();
     const doc = await KoyambeduDailyExpense.findOne({ cycle }).lean();
-    res.json({ success: true, cycle, loadmanCharge: doc?.loadmanCharge || 0 });
+    res.json({ success: true, cycle, loadmanCharge: doc?.loadmanCharge || 0, loadmanPaidBy: doc?.loadmanPaidBy || '' });
   } catch (err) {
     console.error('[adminGetDailyExpense] error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to fetch daily expense' });
@@ -7998,19 +8070,22 @@ const adminGetDailyExpense = async (req, res) => {
 // PATCH /koyambedu/admin/pnl/daily-expense — body { cycle, loadmanCharge }
 const adminSetDailyExpense = async (req, res) => {
   try {
-    const { cycle, loadmanCharge } = req.body;
+    const { cycle, loadmanCharge, loadmanPaidBy } = req.body;
     if (!cycle) return res.status(400).json({ success: false, message: 'cycle is required' });
+
+    const update = {
+      loadmanCharge: Number(loadmanCharge) || 0,
+      updatedAt: new Date(),
+      updatedBy: req.user._id,
+    };
+    if (loadmanPaidBy !== undefined) update.loadmanPaidBy = String(loadmanPaidBy || '').trim();
 
     const doc = await KoyambeduDailyExpense.findOneAndUpdate(
       { cycle },
-      {
-        loadmanCharge: Number(loadmanCharge) || 0,
-        updatedAt: new Date(),
-        updatedBy: req.user._id,
-      },
+      update,
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
-    res.json({ success: true, cycle: doc.cycle, loadmanCharge: doc.loadmanCharge });
+    res.json({ success: true, cycle: doc.cycle, loadmanCharge: doc.loadmanCharge, loadmanPaidBy: doc.loadmanPaidBy || '' });
   } catch (err) {
     console.error('[adminSetDailyExpense] error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to save daily expense' });
@@ -8057,9 +8132,15 @@ async function computeKoyambeduPnLForCycle(cycle) {
   const orders = await KoyambeduOrder.find({
     cutoffCycle: cycle,
     orderStatus: { $in: CONFIRMED_REPORT_STATUSES },
-  }).select('orderId buyer shippingAddress items pricing adminCosts createdAt')
+  }).select('orderId buyer shippingAddress items pricing calculatedPricing adminCosts paymentMethod createdAt')
     .populate('buyer', 'name phone')
     .lean();
+
+  // Payment-gateway cut is a real pass-through cost (Razorpay keeps a slice
+  // of every online payment), but it's a fixed, known rate — no reason to
+  // make admin type it in by hand every time. Only applies when the order
+  // was actually paid online; COD / fully-wallet orders never touch Razorpay.
+  const RAZORPAY_FEE_PERCENT = 2;
 
   // Loadman only carries proper weighed produce — a bunch of coriander or a
   // small ₹40 box isn't worth a porter charge the same way a 25kg sack of
@@ -8109,7 +8190,7 @@ async function computeKoyambeduPnLForCycle(cycle) {
   const procuredByRollup = {}; // name -> { name, totalQty, purchaseCost, loadmanCost, totalProcurement, products: Set }
 
   const orderLines = orders.map(order => {
-    let revenue = 0, purchaseCost = 0, loadmanCost = 0;
+    let itemsSubtotal = 0, purchaseCost = 0, loadmanCost = 0;
     const items = (order.items || []).filter(it => it.itemStatus !== 'declined').map(item => {
       const unitPrice = item.finalPrice || item.orderedPrice || 0;
       const qty = item.quantity || 0;
@@ -8129,7 +8210,7 @@ async function computeKoyambeduPnLForCycle(cycle) {
       const lineLoadmanCost = isLoadmanEligible(item.unit || item.unitLabel, lineRevenue) ? loadmanPerUnitRate * qty : 0;
       const procuredByName = c?.purchasedByName || null;
 
-      revenue += lineRevenue;
+      itemsSubtotal += lineRevenue;
       purchaseCost += lineePurchaseCost;
       loadmanCost += lineLoadmanCost;
 
@@ -8177,19 +8258,45 @@ async function computeKoyambeduPnLForCycle(cycle) {
       };
     });
 
-    const platformFeeCost   = order.adminCosts?.platformFeeCost   || 0;
-    const transportCost     = order.adminCosts?.transportCharge   || 0;
-    const packingCost       = order.adminCosts?.packingCharge     || 0;
-    const razorpayDeduction = order.adminCosts?.razorpayDeduction || 0;
+    // Revenue is the full amount the customer actually paid — platform fee,
+    // delivery charge, packing/logistics fee, GST etc. are already baked
+    // into this figure (it's what hit the bank, net of any discount/coupon/
+    // wallet adjustment), so admin no longer needs to separately subtract a
+    // "platform fee cost": it was never a cash outflow, it's revenue the
+    // business already collected. finalPayableAmount (set whenever an order
+    // is revised, e.g. a declined item) is the more authoritative figure
+    // when present; otherwise fall back to the original order total, and
+    // only fall back further to the item subtotal for very old/incomplete
+    // records that never stored a pricing total at all.
+    const amountPaidByCustomer = order.calculatedPricing?.finalPayableAmount
+      || order.pricing?.total
+      || itemsSubtotal;
+    const couponCode = order.pricing?.couponCode || null;
+
+    const isOnlinePayment = order.paymentMethod === 'razorpay' || order.paymentMethod === 'upi';
+    const razorpayDeduction = isOnlinePayment ? Math.round(amountPaidByCustomer * RAZORPAY_FEE_PERCENT) / 100 : 0;
+    const transportCost     = order.adminCosts?.transportCharge || 0;
+    const packingCost       = order.adminCosts?.packingCharge   || 0;
     const totalProcurement  = purchaseCost + loadmanCost;
-    const totalCost         = totalProcurement + platformFeeCost + transportCost + packingCost + razorpayDeduction;
-    const profit            = revenue - totalCost;
+    // Admin now only ever types in two numbers per bill — actual
+    // transportation and packing cost. Everything else (procurement,
+    // loadman share, Razorpay's cut) is computed by the system.
+    const totalCost         = totalProcurement + transportCost + packingCost + razorpayDeduction;
+    const profit            = amountPaidByCustomer - totalCost;
 
     return {
       orderId: order.orderId, _id: order._id,
       customerName: order.shippingAddress?.fullName || order.buyer?.name || 'Unknown',
-      items, revenue, purchaseCost, loadmanCost, totalProcurement,
-      platformFeeCost, transportCost, packingCost, razorpayDeduction,
+      items,
+      revenue: amountPaidByCustomer, itemsSubtotal, couponCode,
+      pricingBreakdown: {
+        deliveryCharge: order.pricing?.deliveryCharge || 0,
+        platformFee: order.pricing?.platformFee || 0,
+        packingLogisticsFee: order.pricing?.packingLogisticsFee || 0,
+        discount: order.pricing?.discount || 0,
+      },
+      purchaseCost, loadmanCost, totalProcurement,
+      transportCost, packingCost, razorpayDeduction,
       totalCost, profit,
     };
   });
@@ -8497,6 +8604,7 @@ module.exports = {
   // Super Admin — Procurement Report (confirmed orders)
   adminProcurementReport, adminUpdateProcurementItem, adminShareProcurement,
   adminGetDailyExpense, adminSetDailyExpense, adminPnLDay, adminPnLSummary, adminExportPnL, adminSetItemProcurementCost,
+  adminListProcurers, adminBulkUpdateProcurementItems,
   // Super Admin — Offer push notifications
   adminPreviewOfferAudience, adminBroadcastOffer, adminGetOfferBroadcasts,
   // Buyer orders

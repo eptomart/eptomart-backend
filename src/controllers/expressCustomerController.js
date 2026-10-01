@@ -15,6 +15,7 @@ const ExpressCart         = require('../models/ExpressCart');
 const ExpressOrder        = require('../models/ExpressOrder');
 const ExpressOnlineListing = require('../models/ExpressOnlineListing');
 const ExpressBanner       = require('../models/ExpressBanner');
+const ExpressHoldWaitlist = require('../models/ExpressHoldWaitlist');
 const { computeSellingPrice, toKgEquivalent, distanceKm, computeDeliveryFee, computeDeliveryEta, roundRupee } = require('../services/expressPricingService');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
@@ -29,6 +30,38 @@ async function getMarginConfig() {
   let config = await ExpressMarginConfig.findOne({ key: 'default' });
   if (!config) config = await ExpressMarginConfig.create({ key: 'default' });
   return config;
+}
+
+// A customer hit the checkout gate because their store is on hold — log
+// (or bump) their interest so Admin has a call-back list the moment the
+// store reopens, instead of that demand just silently disappearing.
+// One row per store+user: repeat attempts just bump the counter and
+// refresh the cart snapshot/timestamp rather than spamming new rows.
+async function recordHoldInterest(storeId, userId, cart, deliveryAddress) {
+  try {
+    const cartSummary = (cart.items || []).map(i => ({ name: i.name, unit: i.unit, quantity: i.quantity }));
+    const estimatedTotal = (cart.items || []).reduce((sum, i) => sum + (Number(i.price) || 0) * (Number(i.quantity) || 0), 0);
+    await ExpressHoldWaitlist.findOneAndUpdate(
+      { store: storeId, user: userId },
+      {
+        $set: {
+          name: deliveryAddress?.name || '',
+          phone: deliveryAddress?.phone || '',
+          cartSummary,
+          estimatedTotal: roundRupee(estimatedTotal),
+          lastAttemptAt: new Date(),
+          calledBack: false, // a fresh attempt means they're still waiting — un-tick any earlier call-back
+          calledBackAt: null,
+        },
+        $inc: { attempts: 1 },
+        $setOnInsert: { store: storeId, user: userId },
+      },
+      { upsert: true, new: true }
+    );
+  } catch (err) {
+    // Never let waitlist logging break the actual checkout-gate response.
+    console.error('[express.recordHoldInterest]', err);
+  }
 }
 
 // ── Public status — is Express live at all? (section 19 master switch) ──
@@ -384,7 +417,10 @@ const addToCart = async (req, res) => {
 
     const store = await ExpressStore.findById(storeId).lean();
     if (!store || !store.isActive || store.isArchived) return fail(res, 400, 'This store is no longer available.');
-    if (store.isPaused) return fail(res, 409, store.pauseMessage || "We're currently busy with existing orders — we'll be back online shortly!");
+    // Deliberately NOT blocked by store.isPaused — customers can keep
+    // browsing and building their cart while a store is on hold for high
+    // demand; only checkout (priceCart below) is gated until the store
+    // reopens, so nobody loses the items they picked out while waiting.
 
     const storeProduct = await ExpressStoreProduct.findOne({ store: storeId, product: productId, isAvailable: true })
       .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } });
@@ -497,7 +533,11 @@ async function priceCart(userId, deliveryAddress) {
     const err = new Error('This store is no longer available.'); err.statusCode = 400; throw err;
   }
   if (store.isPaused) {
-    const err = new Error(store.pauseMessage || "We're currently busy with existing orders — we'll be back online shortly!");
+    // Log this as demand waiting to be served (before throwing) so Admin
+    // sees exactly who wants to order and can call them back once the
+    // store reopens, rather than this interest just disappearing.
+    await recordHoldInterest(store._id, userId, cart, deliveryAddress);
+    const err = new Error(store.pauseMessage || "We're experiencing high demand right now — we'll open orders again shortly! Your cart is saved, so you can check out the moment we're back.");
     err.statusCode = 409; err.storePaused = true; throw err;
   }
 

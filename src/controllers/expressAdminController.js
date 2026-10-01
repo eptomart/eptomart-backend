@@ -20,6 +20,7 @@ const ExpressCart            = require('../models/ExpressCart');
 const ExpressBill            = require('../models/ExpressBill');
 const ExpressOnlineListing   = require('../models/ExpressOnlineListing');
 const ExpressBanner          = require('../models/ExpressBanner');
+const ExpressHoldWaitlist    = require('../models/ExpressHoldWaitlist');
 const KoyambeduProduct       = require('../models/KoyambeduProduct');
 const KoyambeduCategory      = require('../models/KoyambeduCategory');
 const Analytics              = require('../models/Analytics');
@@ -45,6 +46,17 @@ const listStores = async (req, res) => {
       .populate('storeManager', 'name phone isActive')
       .sort({ createdAt: -1 })
       .lean();
+
+    // Pending (not-yet-called-back) hold-waitlist count per store, so the
+    // Hold button can show "3 waiting" right in the store list without a
+    // separate request per store.
+    const counts = await ExpressHoldWaitlist.aggregate([
+      { $match: { calledBack: false } },
+      { $group: { _id: '$store', count: { $sum: 1 } } },
+    ]);
+    const countByStore = new Map(counts.map(c => [String(c._id), c.count]));
+    stores.forEach(s => { s.pendingWaitlistCount = countByStore.get(String(s._id)) || 0; });
+
     res.json({ success: true, stores });
   } catch (err) {
     console.error('[express.listStores]', err);
@@ -112,9 +124,12 @@ const toggleStoreActive = async (req, res) => {
 
 // Temporary "hold" — for a surge of existing orders, not a real closure
 // (that's toggleStoreActive). The store stays visible everywhere (store
-// list, online catalogue) but customers see a busy/"back shortly" banner
-// and cannot add to cart or check out until this is turned off again. An
-// optional custom message can be set when pausing; it's cleared on resume.
+// list, online catalogue) and customers can keep browsing + adding to
+// cart as normal; only checkout is gated with a "high demand, opening
+// again shortly" message until this is turned off. An optional custom
+// message can be set when pausing; it's cleared on resume. Every customer
+// who hits that checkout gate gets logged to ExpressHoldWaitlist (see
+// getHoldWaitlist below) so Admin knows exactly who to call back.
 const togglePauseStore = async (req, res) => {
   try {
     const { storeId } = req.params;
@@ -134,6 +149,43 @@ const togglePauseStore = async (req, res) => {
   } catch (err) {
     console.error('[express.togglePauseStore]', err);
     fail(res, 500, 'Failed to update store hold status');
+  }
+};
+
+// GET /express/admin/stores/:storeId/hold-waitlist — everyone who hit the
+// checkout gate while this store was on hold, newest attempt first, so
+// Admin can call them back once the store reopens. Doesn't auto-clear on
+// resume (the whole point is to survive past the hold) — Admin ticks off
+// "Called back" per person once they've actually rung them.
+const getHoldWaitlist = async (req, res) => {
+  try {
+    const { storeId } = req.params;
+    const entries = await ExpressHoldWaitlist.find({ store: storeId })
+      .sort({ calledBack: 1, lastAttemptAt: -1 })
+      .lean();
+    res.json({ success: true, entries, pendingCount: entries.filter(e => !e.calledBack).length });
+  } catch (err) {
+    console.error('[express.getHoldWaitlist]', err);
+    fail(res, 500, 'Failed to load hold waitlist');
+  }
+};
+
+// PATCH /express/admin/hold-waitlist/:entryId/called-back — mark (or
+// un-mark) that Admin has rung this customer back.
+const markWaitlistCalledBack = async (req, res) => {
+  try {
+    const { entryId } = req.params;
+    const { calledBack = true } = req.body || {};
+    const entry = await ExpressHoldWaitlist.findByIdAndUpdate(
+      entryId,
+      { calledBack: !!calledBack, calledBackAt: calledBack ? new Date() : null },
+      { new: true }
+    );
+    if (!entry) return fail(res, 404, 'Entry not found');
+    res.json({ success: true, entry });
+  } catch (err) {
+    console.error('[express.markWaitlistCalledBack]', err);
+    fail(res, 500, 'Failed to update entry');
   }
 };
 
@@ -1614,6 +1666,7 @@ const deleteBanner = async (req, res) => {
 
 module.exports = {
   listStores, createStore, updateStore, toggleStoreActive, toggleOnlineShop, togglePauseStore, archiveStore,
+  getHoldWaitlist, markWaitlistCalledBack,
   listStoreManagers, createStoreManager, updateStoreManager,
   listPOSUsers, createPOSUser, updatePOSUser,
   listProducts, createProduct, updateProduct, deleteProduct, previewPrice, searchKoyambeduCatalog,

@@ -21,6 +21,8 @@ router.put   ('/stores/:storeId',           protectAdmin, ctrl.updateStore);
 router.patch ('/stores/:storeId/toggle',    protectAdmin, ctrl.toggleStoreActive);
 router.patch ('/stores/:storeId/toggle-online-shop', protectAdmin, ctrl.toggleOnlineShop);
 router.patch ('/stores/:storeId/toggle-pause', protectAdmin, ctrl.togglePauseStore);
+router.get   ('/stores/:storeId/hold-waitlist', protectAdmin, ctrl.getHoldWaitlist);
+router.patch ('/hold-waitlist/:entryId/called-back', protectAdmin, ctrl.markWaitlistCalledBack);
 router.delete('/stores/:storeId',           protectAdmin, ctrl.archiveStore);
 
 // Store Managers

@@ -98,9 +98,27 @@ function distanceKm(a, b) {
 function toRad(deg) { return (deg * Math.PI) / 180; }
 function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 
+/**
+ * Delivery fee for an order, given the customer's distance from the store
+ * and their order subtotal:
+ *   - within freeDeliveryRadiusKm of the store → always free.
+ *   - beyond that, but subtotal >= minOrderForFreeDelivery → free.
+ *   - otherwise → the flat deliveryFeeBelowMinimum fee.
+ * Distance beyond maxDeliveryDistanceKm is handled separately by the caller
+ * (that's a hard stop — "call us for a custom order" — not a fee tier).
+ */
+function computeDeliveryFee(distanceKmValue, subtotal, marginConfig) {
+  const freeRadius = Number(marginConfig.freeDeliveryRadiusKm ?? 0);
+  if (distanceKmValue <= freeRadius) return 0;
+  const minOrder = Number(marginConfig.minOrderForFreeDelivery ?? 0);
+  if (subtotal >= minOrder) return 0;
+  return round2(marginConfig.deliveryFeeBelowMinimum ?? 0);
+}
+
 module.exports = {
   computeLogisticsCostPerKg,
   toKgEquivalent,
   computeSellingPrice,
   distanceKm,
+  computeDeliveryFee,
 };

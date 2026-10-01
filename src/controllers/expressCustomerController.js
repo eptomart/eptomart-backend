@@ -14,7 +14,7 @@ const ExpressMarginConfig = require('../models/ExpressMarginConfig');
 const ExpressCart         = require('../models/ExpressCart');
 const ExpressOrder        = require('../models/ExpressOrder');
 const ExpressOnlineListing = require('../models/ExpressOnlineListing');
-const { computeSellingPrice, toKgEquivalent, distanceKm } = require('../services/expressPricingService');
+const { computeSellingPrice, toKgEquivalent, distanceKm, computeDeliveryFee } = require('../services/expressPricingService');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
 
@@ -105,11 +105,12 @@ const listActiveStores = async (req, res) => {
     }
 
     const activeStores = await ExpressStore.find({ isActive: true, isArchived: false, onlineShopEnabled: true })
-      .select('name code address city location')
+      .select('name code address city location isPaused pauseMessage')
       .lean();
 
     let stores = activeStores.map(s => ({
       _id: s._id, name: s.name, code: s.code, address: s.address, city: s.city,
+      isPaused: !!s.isPaused, pauseMessage: s.pauseMessage || null,
       distanceKm: (lat != null && lng != null) ? distanceKm({ lat: Number(lat), lng: Number(lng) }, s.location) : null,
     }));
 
@@ -164,7 +165,21 @@ const getOnlineCatalogue = async (req, res) => {
         pricePerUnit: l.price,
       }));
 
-    res.json({ success: true, store: { _id: store._id, name: store.name }, catalogue });
+    const config = await getMarginConfig();
+    res.json({
+      success: true,
+      store: {
+        _id: store._id, name: store.name,
+        isPaused: !!store.isPaused, pauseMessage: store.pauseMessage || null,
+      },
+      delivery: {
+        freeDeliveryRadiusKm: config.freeDeliveryRadiusKm,
+        minOrderForFreeDelivery: config.minOrderForFreeDelivery,
+        deliveryFeeBelowMinimum: config.deliveryFeeBelowMinimum,
+        maxDeliveryDistanceKm: config.maxDeliveryDistanceKm,
+      },
+      catalogue,
+    });
   } catch (err) {
     console.error('[express.getOnlineCatalogue]', err);
     fail(res, 500, 'Failed to load catalogue');
@@ -270,6 +285,10 @@ const addToCart = async (req, res) => {
     if (!storeId || !productId) return fail(res, 400, 'storeId and productId are required');
     if (!Number.isFinite(Number(quantity)) || Number(quantity) <= 0) return fail(res, 400, 'quantity must be a positive number');
 
+    const store = await ExpressStore.findById(storeId).lean();
+    if (!store || !store.isActive || store.isArchived) return fail(res, 400, 'This store is no longer available.');
+    if (store.isPaused) return fail(res, 409, store.pauseMessage || "We're currently busy with existing orders — we'll be back online shortly!");
+
     const storeProduct = await ExpressStoreProduct.findOne({ store: storeId, product: productId, isAvailable: true })
       .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } });
     if (!storeProduct || !storeProduct.product?.koyambeduProduct) return fail(res, 404, 'Product not available at this store');
@@ -371,6 +390,30 @@ async function priceCart(userId, deliveryAddress) {
     const err = new Error('Eptomart Express is currently unavailable.'); err.statusCode = 503; throw err;
   }
 
+  const store = await ExpressStore.findById(cart.store).lean();
+  if (!store || !store.isActive || store.isArchived) {
+    const err = new Error('This store is no longer available.'); err.statusCode = 400; throw err;
+  }
+  if (store.isPaused) {
+    const err = new Error(store.pauseMessage || "We're currently busy with existing orders — we'll be back online shortly!");
+    err.statusCode = 409; err.storePaused = true; throw err;
+  }
+
+  // Distance-based delivery fee + hard out-of-range cutoff. Beyond
+  // maxDeliveryDistanceKm we don't silently fail — we flag it specially so
+  // the frontend can offer a "call us for a custom order" option instead.
+  const distKm = distanceKm(
+    { lat: Number(deliveryAddress.lat), lng: Number(deliveryAddress.lng) },
+    store.location
+  );
+  const maxKm = config.maxDeliveryDistanceKm || 12;
+  if (Number.isFinite(distKm) && distKm > maxKm) {
+    const err = new Error(`You're ${distKm} km from this store, beyond our ${maxKm} km delivery range.`);
+    err.statusCode = 400; err.outOfRange = true; err.distanceKm = distKm; err.maxDeliveryDistanceKm = maxKm;
+    err.customOrderPhone = config.customOrderPhone || null;
+    throw err;
+  }
+
   const storeProducts = await ExpressStoreProduct.find({ store: cart.store, isAvailable: true })
     .populate('product')
     .lean();
@@ -406,8 +449,14 @@ async function priceCart(userId, deliveryAddress) {
     err.statusCode = 400; throw err;
   }
 
-  const total = Math.round(subtotal * 100) / 100;
-  return { cart, items, subtotal, total, totalWeightKg, largeOrderWarning: totalWeightKg > threshold };
+  const roundedSubtotal = Math.round(subtotal * 100) / 100;
+  const deliveryFee = computeDeliveryFee(distKm, roundedSubtotal, config);
+  const total = Math.round((roundedSubtotal + deliveryFee) * 100) / 100;
+  return {
+    cart, items, subtotal: roundedSubtotal, deliveryFee, total, totalWeightKg,
+    largeOrderWarning: totalWeightKg > threshold, distanceKm: distKm,
+    freeDeliveryRadiusKm: config.freeDeliveryRadiusKm, minOrderForFreeDelivery: config.minOrderForFreeDelivery,
+  };
 }
 
 /** POST /express/quote */
@@ -415,9 +464,19 @@ const getQuote = async (req, res) => {
   try {
     const { deliveryAddress } = req.body;
     const priced = await priceCart(req.user._id, deliveryAddress);
-    res.json({ success: true, items: priced.items, subtotal: priced.subtotal, total: priced.total, totalWeightKg: priced.totalWeightKg, largeOrderWarning: priced.largeOrderWarning });
+    res.json({
+      success: true, items: priced.items, subtotal: priced.subtotal, deliveryFee: priced.deliveryFee,
+      total: priced.total, totalWeightKg: priced.totalWeightKg, largeOrderWarning: priced.largeOrderWarning,
+      distanceKm: priced.distanceKm, freeDeliveryRadiusKm: priced.freeDeliveryRadiusKm, minOrderForFreeDelivery: priced.minOrderForFreeDelivery,
+    });
   } catch (err) {
-    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({
+        success: false, message: err.message,
+        outOfRange: !!err.outOfRange, storePaused: !!err.storePaused,
+        distanceKm: err.distanceKm, maxDeliveryDistanceKm: err.maxDeliveryDistanceKm, customOrderPhone: err.customOrderPhone,
+      });
+    }
     console.error('[express.getQuote]', err);
     fail(res, 500, 'Failed to price your order');
   }
@@ -454,7 +513,7 @@ const createRazorpayOrder = async (req, res) => {
         pincode: deliveryAddress.pincode || '',
         lat: deliveryAddress.lat, lng: deliveryAddress.lng,
       },
-      pricing: { subtotal: priced.subtotal, total: priced.total },
+      pricing: { subtotal: priced.subtotal, deliveryFee: priced.deliveryFee, total: priced.total },
       totalWeightKg: priced.totalWeightKg,
       deliverySlot: deliverySlot ? {
         date: deliverySlot.date || null,
@@ -472,7 +531,13 @@ const createRazorpayOrder = async (req, res) => {
       orderId: order._id, keyId: isDemo ? null : process.env.RAZORPAY_KEY_ID,
     });
   } catch (err) {
-    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({
+        success: false, message: err.message,
+        outOfRange: !!err.outOfRange, storePaused: !!err.storePaused,
+        distanceKm: err.distanceKm, maxDeliveryDistanceKm: err.maxDeliveryDistanceKm, customOrderPhone: err.customOrderPhone,
+      });
+    }
     console.error('[express.createRazorpayOrder]', err);
     fail(res, 500, 'Failed to start checkout');
   }

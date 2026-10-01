@@ -39,6 +39,13 @@ const expressStoreSchema = new mongoose.Schema({
   // catalogue (or the reverse). Does not affect POS, the manager dashboard,
   // or inventory in any way.
   onlineShopEnabled: { type: Boolean, default: true },
+  // Temporary "hold" — for when the store is swamped with existing orders
+  // and needs a short pause on new ones, without going fully inactive or
+  // disappearing from the online shop. Customers still see the store (so it
+  // doesn't vanish confusingly) but see a "we'll be back shortly" banner and
+  // cannot add items to cart or check out until this is turned off again.
+  isPaused: { type: Boolean, default: false },
+  pauseMessage: { type: String, trim: true, default: null },
   // Soft-delete flag — archived stores never appear anywhere
   isArchived: { type: Boolean, default: false },
   // Who last flipped isActive, and when — for the audit trail (section 22)

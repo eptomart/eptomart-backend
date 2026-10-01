@@ -105,6 +105,33 @@ const toggleStoreActive = async (req, res) => {
   }
 };
 
+// Temporary "hold" — for a surge of existing orders, not a real closure
+// (that's toggleStoreActive). The store stays visible everywhere (store
+// list, online catalogue) but customers see a busy/"back shortly" banner
+// and cannot add to cart or check out until this is turned off again. An
+// optional custom message can be set when pausing; it's cleared on resume.
+const togglePauseStore = async (req, res) => {
+  try {
+    const { storeId } = req.params;
+    const { message } = req.body || {};
+    const store = await ExpressStore.findById(storeId);
+    if (!store) return fail(res, 404, 'Store not found');
+
+    store.isPaused = !store.isPaused;
+    store.pauseMessage = store.isPaused ? (message || null) : null;
+    await store.save();
+
+    await logAudit({
+      actorType: 'admin', actorName: req.user?.name || 'Admin',
+      action: store.isPaused ? 'store.pause' : 'store.resume', store: store._id,
+    });
+    res.json({ success: true, store });
+  } catch (err) {
+    console.error('[express.togglePauseStore]', err);
+    fail(res, 500, 'Failed to update store hold status');
+  }
+};
+
 // Separate from toggleStoreActive above — this only hides/shows the store
 // in the customer-facing online Express shop (store list + online
 // catalogue). POS, the manager dashboard and inventory are unaffected.
@@ -700,7 +727,10 @@ const getMarginConfig = async (req, res) => {
 
 const updateMarginConfig = async (req, res) => {
   try {
-    const { platformChargePct, salesmanChargePct, packingChargePct, largeOrderThresholdKg, largeOrderAction, maxDeliveryDistanceKm } = req.body;
+    const {
+      platformChargePct, salesmanChargePct, packingChargePct, largeOrderThresholdKg, largeOrderAction, maxDeliveryDistanceKm,
+      freeDeliveryRadiusKm, minOrderForFreeDelivery, deliveryFeeBelowMinimum, customOrderPhone,
+    } = req.body;
     const update = { updatedBy: req.user?.name || 'Admin' };
     if (platformChargePct != null) update.platformChargePct = platformChargePct;
     if (salesmanChargePct != null) update.salesmanChargePct = salesmanChargePct;
@@ -708,6 +738,10 @@ const updateMarginConfig = async (req, res) => {
     if (largeOrderThresholdKg != null) update.largeOrderThresholdKg = largeOrderThresholdKg;
     if (largeOrderAction != null) update.largeOrderAction = largeOrderAction;
     if (maxDeliveryDistanceKm != null) update.maxDeliveryDistanceKm = maxDeliveryDistanceKm;
+    if (freeDeliveryRadiusKm != null) update.freeDeliveryRadiusKm = freeDeliveryRadiusKm;
+    if (minOrderForFreeDelivery != null) update.minOrderForFreeDelivery = minOrderForFreeDelivery;
+    if (deliveryFeeBelowMinimum != null) update.deliveryFeeBelowMinimum = deliveryFeeBelowMinimum;
+    if (customOrderPhone !== undefined) update.customOrderPhone = customOrderPhone || null;
 
     const config = await ExpressMarginConfig.findOneAndUpdate(
       { key: 'default' }, update, { new: true, upsert: true, runValidators: true }
@@ -1236,7 +1270,7 @@ const adminBulkSetOnlineListing = async (req, res) => {
 };
 
 module.exports = {
-  listStores, createStore, updateStore, toggleStoreActive, toggleOnlineShop, archiveStore,
+  listStores, createStore, updateStore, toggleStoreActive, toggleOnlineShop, togglePauseStore, archiveStore,
   listStoreManagers, createStoreManager, updateStoreManager,
   listPOSUsers, createPOSUser, updatePOSUser,
   listProducts, createProduct, updateProduct, deleteProduct, previewPrice, searchKoyambeduCatalog,

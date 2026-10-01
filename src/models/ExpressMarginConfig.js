@@ -36,6 +36,20 @@ const expressMarginConfigSchema = new mongoose.Schema({
   // Section 9 — max delivery distance before redirecting to Koyambedu Daily
   maxDeliveryDistanceKm: { type: Number, default: 12 },
 
+  // Delivery fee rules — all admin-configurable. Within freeDeliveryRadiusKm
+  // of the store, delivery is always free regardless of order value. Beyond
+  // that radius (but still within maxDeliveryDistanceKm), delivery stays
+  // free if the order subtotal is at least minOrderForFreeDelivery;
+  // otherwise deliveryFeeBelowMinimum is charged as a flat fee.
+  freeDeliveryRadiusKm:    { type: Number, default: 3, min: 0 },
+  minOrderForFreeDelivery: { type: Number, default: 199, min: 0 },
+  deliveryFeeBelowMinimum: { type: Number, default: 29, min: 0 },
+
+  // Shown to the customer when they're beyond maxDeliveryDistanceKm instead
+  // of a dead-end error — a phone/WhatsApp number they can call for a
+  // custom (manually arranged) order. Null/empty hides the call-to-action.
+  customOrderPhone: { type: String, trim: true, default: null },
+
   updatedBy: { type: String, default: null }, // admin name/email, for audit
 }, { timestamps: true });
 

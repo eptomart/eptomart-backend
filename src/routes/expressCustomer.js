@@ -15,6 +15,7 @@ router.post('/nearest-store',              ctrl.findNearestStore);
 router.get ('/active-stores',              ctrl.listActiveStores);
 router.get ('/stores/:storeId/catalogue',  ctrl.getCatalogue);
 router.get ('/stores/:storeId/online-catalogue', ctrl.getOnlineCatalogue);
+router.get ('/stores/:storeId/online-catalogue/:productId', ctrl.getOnlineCatalogueItem);
 
 router.get   ('/cart',       protect, ctrl.getCart);
 router.post  ('/cart',       protect, ctrl.addToCart);

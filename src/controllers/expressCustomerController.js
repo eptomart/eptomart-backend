@@ -231,6 +231,55 @@ const getOnlineCatalogue = async (req, res) => {
   }
 };
 
+// ── Single product detail (for the product detail page) ─────────────────
+// GET /express/stores/:storeId/online-catalogue/:productId — productId is
+// always the ExpressProduct id (same id used throughout the cart/catalogue
+// response), so this works identically for native and Koyambedu-linked
+// products. Returns everything getOnlineCatalogue returns for one item,
+// plus comboContents when it's a combo (already a name/unit/qty snapshot
+// on the ExpressProduct itself — no further lookups needed).
+const getOnlineCatalogueItem = async (req, res) => {
+  try {
+    const { storeId, productId } = req.params;
+    const store = await ExpressStore.findOne({ _id: storeId, isActive: true, isArchived: false, onlineShopEnabled: true });
+    if (!store) return fail(res, 404, 'Store not found or inactive');
+
+    const listing = await ExpressOnlineListing.findOne({ store: storeId, product: productId, isEnabled: true, price: { $ne: null } })
+      .populate({ path: 'koyambeduProduct', select: 'name description images category', populate: { path: 'category', select: 'name' } })
+      .populate({ path: 'product', select: 'unit name description image category isCombo comboContents' })
+      .lean();
+    if (!listing || !listing.product) return fail(res, 404, 'Product not available at this store');
+
+    const stockDoc = await ExpressStoreProduct.findOne({ store: storeId, product: productId }).select('stockQty').lean();
+
+    const isNative = !listing.koyambeduProduct;
+    const display = isNative ? listing.product : listing.koyambeduProduct;
+    const categoryName = isNative ? (display?.category || null) : (display?.category?.name || null);
+
+    res.json({
+      success: true,
+      store: { _id: store._id, name: store.name },
+      product: {
+        _id: listing.product._id,
+        name: display?.name,
+        description: display?.description,
+        category: categoryName,
+        unit: listing.product.unit,
+        image: isNative
+          ? (display?.image || null)
+          : (display?.images?.find(i => i.isPrimary)?.url || display?.images?.[0]?.url || null),
+        isCombo: !!listing.product.isCombo,
+        comboContents: listing.product.isCombo ? (listing.product.comboContents || []) : [],
+      },
+      stockQty: stockDoc?.stockQty || 0,
+      pricePerUnit: listing.price,
+    });
+  } catch (err) {
+    console.error('[express.getOnlineCatalogueItem]', err);
+    fail(res, 500, 'Failed to load product');
+  }
+};
+
 // ── Store catalogue (section 8 — customer shops without seeing which store) ─
 const getCatalogue = async (req, res) => {
   try {
@@ -715,7 +764,7 @@ const cancelMyOrder = async (req, res) => {
 
 module.exports = {
   getStatus, getActiveBanners, findNearestStore, getCatalogue,
-  listActiveStores, getOnlineCatalogue,
+  listActiveStores, getOnlineCatalogue, getOnlineCatalogueItem,
   getCart, addToCart, updateCartItem, clearCart,
   getQuote, createRazorpayOrder, verifyPayment,
   getMyOrders, getMyOrder, cancelMyOrder,

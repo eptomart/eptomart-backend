@@ -135,7 +135,7 @@ const findNearestStore = async (req, res) => {
     res.json({
       success: true,
       withinRange: true,
-      store: { _id: nearest.store._id, name: nearest.store.name, code: nearest.store.code, location: nearest.store.location },
+      store: { _id: nearest.store._id, name: nearest.store.name, code: nearest.store.code, location: nearest.store.location, deliverySlots: nearest.store.deliverySlots },
       distanceKm: nearest.distanceKm,
       estimatedDeliveryMinutes: computeDeliveryEta(nearest.distanceKm, config),
     });
@@ -161,7 +161,7 @@ const listActiveStores = async (req, res) => {
     }
 
     const activeStores = await ExpressStore.find({ isActive: true, isArchived: false, onlineShopEnabled: true })
-      .select('name code address city location isPaused pauseMessage')
+      .select('name code address city location isPaused pauseMessage deliverySlots')
       .lean();
 
     let stores = activeStores.map(s => {
@@ -171,6 +171,7 @@ const listActiveStores = async (req, res) => {
         isPaused: !!s.isPaused, pauseMessage: s.pauseMessage || null,
         distanceKm: dKm,
         estimatedDeliveryMinutes: dKm != null ? computeDeliveryEta(dKm, config) : null,
+        deliverySlots: s.deliverySlots,
       };
     });
 

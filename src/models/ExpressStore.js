@@ -48,6 +48,32 @@ const expressStoreSchema = new mongoose.Schema({
   pauseMessage: { type: String, trim: true, default: null },
   // Soft-delete flag — archived stores never appear anywhere
   isArchived: { type: Boolean, default: false },
+  // Per-store delivery slot configuration. Each store can enable/disable
+  // individual same-day time windows independently (e.g. a smaller store
+  // might only staff 9am-6pm), and can separately opt in to offering a
+  // next-day delivery option alongside same-day. Windows carry their own
+  // startHour/endHour/label so admin can edit the wording per store too,
+  // without touching any other store's configuration.
+  deliverySlots: {
+    windows: {
+      type: [{
+        startHour: { type: Number, required: true, min: 0, max: 23 },
+        endHour:   { type: Number, required: true, min: 1, max: 24 },
+        label:     { type: String, required: true, trim: true },
+        enabled:   { type: Boolean, default: true },
+      }],
+      default: () => ([
+        { startHour: 9,  endHour: 12, label: '9:00 AM - 12:00 PM', enabled: true },
+        { startHour: 12, endHour: 15, label: '12:00 PM - 3:00 PM', enabled: true },
+        { startHour: 15, endHour: 18, label: '3:00 PM - 6:00 PM', enabled: true },
+        { startHour: 18, endHour: 21, label: '6:00 PM - 9:00 PM', enabled: true },
+      ]),
+    },
+    // When true, the checkout page also offers every enabled window for
+    // tomorrow (not just today's remaining windows) for customers who'd
+    // rather schedule ahead than wait for same-day delivery.
+    nextDayEnabled: { type: Boolean, default: false },
+  },
   // Who last flipped isActive, and when — for the audit trail (section 22)
   lastStatusChange: {
     by: { type: String, default: null },        // 'admin' | 'store_manager'

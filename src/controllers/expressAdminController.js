@@ -152,6 +152,48 @@ const togglePauseStore = async (req, res) => {
   }
 };
 
+// PATCH /express/admin/stores/:storeId/delivery-slots — per-store delivery
+// slot configuration: which same-day time windows are enabled (and their
+// labels/hours, editable per store), plus whether this store also offers
+// next-day delivery. Entirely separate from togglePauseStore above — this
+// controls what windows are ever offered, not a temporary pause.
+const updateDeliverySlots = async (req, res) => {
+  try {
+    const { storeId } = req.params;
+    const { windows, nextDayEnabled } = req.body || {};
+
+    const store = await ExpressStore.findById(storeId);
+    if (!store) return fail(res, 404, 'Store not found');
+
+    if (Array.isArray(windows)) {
+      const clean = windows
+        .map(w => ({
+          startHour: Number(w.startHour),
+          endHour: Number(w.endHour),
+          label: String(w.label || '').trim(),
+          enabled: !!w.enabled,
+        }))
+        .filter(w => w.label && Number.isFinite(w.startHour) && Number.isFinite(w.endHour) && w.endHour > w.startHour);
+      if (!clean.length) return fail(res, 400, 'At least one valid delivery window is required');
+      store.deliverySlots.windows = clean;
+    }
+    if (nextDayEnabled !== undefined) {
+      store.deliverySlots.nextDayEnabled = !!nextDayEnabled;
+    }
+    await store.save();
+
+    await logAudit({
+      actorType: 'admin', actorName: req.user?.name || 'Admin',
+      action: 'store.deliverySlots.update', store: store._id,
+      meta: { nextDayEnabled: store.deliverySlots.nextDayEnabled, windowCount: store.deliverySlots.windows.length },
+    });
+    res.json({ success: true, store });
+  } catch (err) {
+    console.error('[express.updateDeliverySlots]', err);
+    fail(res, 500, 'Failed to update delivery slots');
+  }
+};
+
 // GET /express/admin/stores/:storeId/hold-waitlist — everyone who hit the
 // checkout gate while this store was on hold, newest attempt first, so
 // Admin can call them back once the store reopens. Doesn't auto-clear on
@@ -1666,6 +1708,7 @@ const deleteBanner = async (req, res) => {
 
 module.exports = {
   listStores, createStore, updateStore, toggleStoreActive, toggleOnlineShop, togglePauseStore, archiveStore,
+  updateDeliverySlots,
   getHoldWaitlist, markWaitlistCalledBack,
   listStoreManagers, createStoreManager, updateStoreManager,
   listPOSUsers, createPOSUser, updatePOSUser,

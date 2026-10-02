@@ -2628,6 +2628,67 @@ const adminGetOrders = async (req, res) => {
 };
 
 /**
+ * GET /api/koyambedu/admin/customers/glance?buyerId=&phone=
+ * "Quick glance" customer profile for the admin Orders tab — given a
+ * buyer's account id and/or the phone number captured on an order's
+ * shippingAddress, returns a lightweight summary: how many times this
+ * customer has ordered, their approximate total spend, and their most
+ * recent order. Intentionally read-only and separate from adminGetOrders
+ * so it never affects the existing Orders list behaviour.
+ *
+ * Matches the same way adminGetOrders' customerSearch does — by the
+ * account's buyer id OR the delivery-time shippingAddress.phone — since a
+ * customer can check out with a different contact number than their
+ * account, and both legitimately belong to "this customer" for a human
+ * admin glancing at their history.
+ */
+const adminCustomerGlance = async (req, res) => {
+  try {
+    const { buyerId, phone } = req.query;
+    if (!buyerId && !phone) {
+      return res.status(400).json({ success: false, message: 'buyerId or phone is required' });
+    }
+
+    const or = [];
+    if (buyerId) or.push({ buyer: buyerId });
+    if (phone) or.push({ 'shippingAddress.phone': phone });
+    const filter = { $or: or };
+
+    const orders = await KoyambeduOrder.find(filter)
+      .select('orderStatus pricing.total createdAt shippingAddress.fullName shippingAddress.phone buyer')
+      .populate('buyer', 'name phone email')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const realOrders = orders.filter(o => o.orderStatus !== 'payment_pending');
+    const cancelled = realOrders.filter(o => o.orderStatus === 'cancelled');
+    const counted = realOrders.filter(o => o.orderStatus !== 'cancelled');
+    const totalSpent = counted.reduce((sum, o) => sum + (o.pricing?.total || 0), 0);
+
+    const latest = orders[0];
+    const customerName = latest?.buyer?.name || latest?.shippingAddress?.fullName || '';
+    const customerPhone = latest?.buyer?.phone || latest?.shippingAddress?.phone || phone || '';
+
+    res.json({
+      success: true,
+      customer: {
+        name: customerName,
+        phone: customerPhone,
+        totalOrders: realOrders.length,
+        cancelledOrders: cancelled.length,
+        totalSpent: Math.round(totalSpent),
+        avgOrderValue: counted.length ? Math.round(totalSpent / counted.length) : 0,
+        firstOrderAt: realOrders.length ? realOrders[realOrders.length - 1].createdAt : null,
+        lastOrderAt: realOrders.length ? realOrders[0].createdAt : null,
+      },
+    });
+  } catch (err) {
+    console.error('[koyambedu.adminCustomerGlance]', err);
+    res.status(500).json({ success: false, message: 'Failed to load customer summary' });
+  }
+};
+
+/**
  * GET /api/koyambedu/admin/orders/print-list
  * Standalone, print-only order list for the thermal-printer admin tab.
  * Deliberately separate from adminGetOrders (used by the existing Orders
@@ -8729,7 +8790,7 @@ module.exports = {
   toggleProductAvailability, deleteSellerProduct,
   getSellerOrders, confirmStock, requestPriceRevision, createSellerCategory,
   // Admin — sellers
-  adminDashboard, adminGetOrders, getOrdersForPrinting, markItemsPrinted, resetPackingProgress, adminGetOrderWalletHistory, adminUpdateOrderStatus, adminRescheduleOrder, adminEditOrderItemQty, adminDeclineOrderItem,
+  adminDashboard, adminGetOrders, adminCustomerGlance, getOrdersForPrinting, markItemsPrinted, resetPackingProgress, adminGetOrderWalletHistory, adminUpdateOrderStatus, adminRescheduleOrder, adminEditOrderItemQty, adminDeclineOrderItem,
 
   // Order Fulfillment tab
   adminFulfillmentList, adminSetFulfilledBy, adminExportFulfillment, adminFulfillmentOrderDetail,

@@ -223,6 +223,7 @@ router.get  ('/admin/dashboard',                  protectAdmin, ctrl.adminDashbo
 router.get  ('/admin/orders',                               protectAdmin,      ctrl.adminGetOrders);
 router.get  ('/admin/orders/print-list',                    protectAdmin,      ctrl.getOrdersForPrinting); // Thermal-printer tab — separate from adminGetOrders above, does not affect it
 router.get  ('/admin/orders/fulfillment',                   protectAdmin,      ctrl.adminFulfillmentList); // Fulfillment tab — separate from adminGetOrders above, does not affect it
+router.get  ('/admin/customers/glance',                     protectAdmin,      ctrl.adminCustomerGlance); // Quick-glance customer profile (order count, approx spend) — read-only, separate from adminGetOrders
 router.get  ('/admin/orders/fulfillment/export',            protectAdmin,      ctrl.adminExportFulfillment);
 router.get  ('/admin/orders/fulfillment/:id',                protectAdmin,      ctrl.adminFulfillmentOrderDetail);
 router.patch('/admin/orders/:id/fulfilled-by',              protectAdmin,      ctrl.adminSetFulfilledBy);

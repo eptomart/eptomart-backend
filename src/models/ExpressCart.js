@@ -16,7 +16,11 @@ const expressCartSchema = new Schema({
     name:     String,
     unit:     String,
     price:    Number, // snapshot of computed selling price per unit at time of add
-    quantity: { type: Number, required: true, min: 1, default: 1 },
+    // min is 0.1 (not 1) because kg-priced produce can be added in
+    // sub-kilogram steps (250g/500g — see WEIGHT_STEPS in ExpressShop.jsx);
+    // a min of 1 here silently failed validation on cart.save() for any
+    // such item, which looked like "the cart never updates" to the customer.
+    quantity: { type: Number, required: true, min: 0.1, default: 1 },
     addedAt:  { type: Date, default: Date.now },
   }],
 }, { timestamps: true });

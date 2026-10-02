@@ -514,7 +514,6 @@ const addToCart = async (req, res) => {
     // (name lives directly on the ExpressProduct document) — either way we
     // just need the ExpressProduct itself to exist.
     if (!storeProduct || !storeProduct.product) return fail(res, 404, 'Product not available at this store');
-    if (storeProduct.stockQty < quantity) return fail(res, 400, 'Not enough stock available');
 
     const config = await getMarginConfig();
     const pricing = computeSellingPrice(storeProduct.product, config, 1);
@@ -535,6 +534,18 @@ const addToCart = async (req, res) => {
     }
 
     const existing = cart.items.find(i => String(i.product) === String(productId));
+    // Checked against the TOTAL the cart would hold after this add
+    // (existing quantity + what's being added now), not just the quantity
+    // in this one request — otherwise three separate adds of, say, 5 units
+    // each would each individually pass a 10-in-stock check while the cart
+    // silently accumulates to 15, only surfacing as a confusing "only 10
+    // left" error much later at checkout instead of being stopped here.
+    const requestedTotal = (existing?.quantity || 0) + Number(quantity);
+    if (storeProduct.stockQty < requestedTotal) {
+      return fail(res, 400, existing
+        ? `Only ${storeProduct.stockQty} of "${productName}" available — you already have ${existing.quantity} in your cart.`
+        : `Only ${storeProduct.stockQty} of "${productName}" left in stock.`);
+    }
     if (existing) {
       existing.quantity += Number(quantity);
     } else {
@@ -569,6 +580,16 @@ const updateCartItem = async (req, res) => {
     } else {
       const item = cart.items.find(i => String(i.product) === String(productId));
       if (!item) return fail(res, 404, 'Item not in cart');
+      // This endpoint previously had NO stock check at all — the quantity
+      // stepper on the shop page (+/-) calls this directly, so a customer
+      // could step an item's quantity past what's actually in stock with
+      // nothing stopping them, only discovering the mismatch much later as
+      // a confusing "only N left" error at checkout. Validate here instead,
+      // at the moment the quantity actually changes.
+      const storeProduct = await ExpressStoreProduct.findOne({ store: cart.store, product: productId }).select('stockQty').lean();
+      if (storeProduct && Number(quantity) > storeProduct.stockQty) {
+        return fail(res, 400, `Only ${storeProduct.stockQty} of "${item.name}" left in stock.`);
+      }
       item.quantity = Number(quantity);
     }
     await cart.save();

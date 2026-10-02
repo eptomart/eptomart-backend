@@ -71,8 +71,11 @@ const expressStoreSchema = new mongoose.Schema({
     },
     // When true, the checkout page also offers every enabled window for
     // tomorrow (not just today's remaining windows) for customers who'd
-    // rather schedule ahead than wait for same-day delivery.
-    nextDayEnabled: { type: Boolean, default: false },
+    // rather schedule ahead than wait for same-day delivery. Defaults to
+    // true so a store nobody has configured yet never dead-ends with zero
+    // delivery options once today's windows run out — admin can switch a
+    // specific store to same-day-only from the Delivery Slots panel.
+    nextDayEnabled: { type: Boolean, default: true },
   },
   // Who last flipped isActive, and when — for the audit trail (section 22)
   lastStatusChange: {

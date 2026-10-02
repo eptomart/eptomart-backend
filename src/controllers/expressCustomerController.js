@@ -262,7 +262,14 @@ const getStoreEta = async (req, res) => {
 const getOnlineCatalogue = async (req, res) => {
   try {
     const { storeId } = req.params;
-    const store = await ExpressStore.findOne({ _id: storeId, isActive: true, isArchived: false, onlineShopEnabled: true });
+    // isActive deliberately left OUT of this query (unlike isArchived,
+    // which is a true soft-delete) — a store with the master on/off switch
+    // flipped off should behave exactly like a paused one for a customer
+    // who already has it selected: still browsable, with a "we'll be back
+    // soon" banner, not a hard 404 that dumps them out with a generic
+    // "failed to load products" error and no indication of why. Checkout
+    // itself is still correctly blocked either way (see priceCart).
+    const store = await ExpressStore.findOne({ _id: storeId, isArchived: false, onlineShopEnabled: true });
     if (!store) return fail(res, 404, 'Store not found or inactive');
 
     const listings = await ExpressOnlineListing.find({ store: storeId, isEnabled: true, price: { $ne: null } })
@@ -317,7 +324,11 @@ const getOnlineCatalogue = async (req, res) => {
       success: true,
       store: {
         _id: store._id, name: store.name,
-        isPaused: !!store.isPaused, pauseMessage: store.pauseMessage || null,
+        // isPaused (temporary hold) and !isActive (master off) both render
+        // the same "we'll be back soon" banner on the frontend — merged
+        // into one flag here so ExpressShop doesn't need to know about two
+        // separate switches.
+        isPaused: !!store.isPaused || !store.isActive, pauseMessage: store.pauseMessage || null,
       },
       delivery: {
         minOrderForFreeDelivery: feeConfig.minOrderForFreeDelivery,
@@ -342,7 +353,9 @@ const getOnlineCatalogue = async (req, res) => {
 const getOnlineCatalogueItem = async (req, res) => {
   try {
     const { storeId, productId } = req.params;
-    const store = await ExpressStore.findOne({ _id: storeId, isActive: true, isArchived: false, onlineShopEnabled: true });
+    // See getOnlineCatalogue above — isActive is deliberately not part of
+    // this filter, so a paused-via-master-switch store stays browsable.
+    const store = await ExpressStore.findOne({ _id: storeId, isArchived: false, onlineShopEnabled: true });
     if (!store) return fail(res, 404, 'Store not found or inactive');
 
     const listing = await ExpressOnlineListing.findOne({ store: storeId, product: productId, isEnabled: true, price: { $ne: null } })
@@ -601,10 +614,18 @@ async function priceCart(userId, deliveryAddress, couponCode) {
   }
 
   const store = await ExpressStore.findById(cart.store).lean();
-  if (!store || !store.isActive || store.isArchived) {
+  // Archived (soft-deleted) is the only truly terminal state — the store is
+  // gone, not coming back. Everything else (the master isActive switch
+  // flipped off, or a temporary isPaused hold) looks identical to a
+  // customer who already has items in their cart: "we're not taking orders
+  // right now." Previously isActive=false fell through to this same cold
+  // "no longer available" message with no waitlist capture, which read as
+  // the hold feature being broken whenever a manager used the master
+  // on/off switch instead of the dedicated pause toggle.
+  if (!store || store.isArchived) {
     const err = new Error('This store is no longer available.'); err.statusCode = 400; throw err;
   }
-  if (store.isPaused) {
+  if (store.isPaused || !store.isActive) {
     // Log this as demand waiting to be served (before throwing) so Admin
     // sees exactly who wants to order and can call them back once the
     // store reopens, rather than this interest just disappearing.

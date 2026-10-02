@@ -22,6 +22,7 @@ router.patch ('/stores/:storeId/toggle',    protectAdmin, ctrl.toggleStoreActive
 router.patch ('/stores/:storeId/toggle-online-shop', protectAdmin, ctrl.toggleOnlineShop);
 router.patch ('/stores/:storeId/toggle-pause', protectAdmin, ctrl.togglePauseStore);
 router.patch ('/stores/:storeId/delivery-slots', protectAdmin, ctrl.updateDeliverySlots);
+router.patch ('/stores/:storeId/delivery-fee', protectAdmin, ctrl.updateDeliveryFeeConfig);
 router.get   ('/stores/:storeId/hold-waitlist', protectAdmin, ctrl.getHoldWaitlist);
 router.patch ('/hold-waitlist/:entryId/called-back', protectAdmin, ctrl.markWaitlistCalledBack);
 router.delete('/stores/:storeId',           protectAdmin, ctrl.archiveStore);

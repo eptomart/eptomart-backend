@@ -107,20 +107,21 @@ function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 function roundRupee(n) { return Math.round(Number(n) || 0); }
 
 /**
- * Delivery fee for an order, given the customer's distance from the store
- * and their order subtotal:
- *   - within freeDeliveryRadiusKm of the store → always free.
- *   - beyond that, but subtotal >= minOrderForFreeDelivery → free.
+ * Delivery fee for an order, based purely on order value against this
+ * store's own minimum-order threshold:
+ *   - subtotal >= minOrderForFreeDelivery → free.
  *   - otherwise → the flat deliveryFeeBelowMinimum fee.
- * Distance beyond maxDeliveryDistanceKm is handled separately by the caller
- * (that's a hard stop — "call us for a custom order" — not a fee tier).
+ * Deliberately irrespective of the customer's distance from the store — a
+ * customer right next door ordering below the minimum is charged exactly
+ * like one further away, so the minimum-order rule can't be sidestepped by
+ * being nearby. Distance beyond maxDeliveryDistanceKm is handled
+ * separately by the caller (that's a hard stop — "call us for a custom
+ * order" — not a fee tier) and never affects this calculation.
  */
-function computeDeliveryFee(distanceKmValue, subtotal, marginConfig) {
-  const freeRadius = Number(marginConfig.freeDeliveryRadiusKm ?? 0);
-  if (distanceKmValue <= freeRadius) return 0;
-  const minOrder = Number(marginConfig.minOrderForFreeDelivery ?? 0);
+function computeDeliveryFee(subtotal, feeConfig) {
+  const minOrder = Number(feeConfig?.minOrderForFreeDelivery ?? 0);
   if (subtotal >= minOrder) return 0;
-  return roundRupee(marginConfig.deliveryFeeBelowMinimum ?? 0);
+  return roundRupee(feeConfig?.deliveryFeeBelowMinimum ?? 0);
 }
 
 /**

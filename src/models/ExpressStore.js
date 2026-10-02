@@ -77,6 +77,17 @@ const expressStoreSchema = new mongoose.Schema({
     // specific store to same-day-only from the Delivery Slots panel.
     nextDayEnabled: { type: Boolean, default: true },
   },
+  // Per-store minimum-order delivery fee rule. Applies irrespective of the
+  // customer's distance from the store (a nearby customer ordering below
+  // the minimum is charged exactly like a far one) — distance only governs
+  // the separate hard maxDeliveryDistanceKm cutoff (ExpressMarginConfig),
+  // never whether this fee applies. Defaults mirror the previous global
+  // ExpressMarginConfig values so behaviour for unconfigured stores is
+  // unchanged until admin tunes a specific store.
+  deliveryFeeConfig: {
+    minOrderForFreeDelivery: { type: Number, default: 199, min: 0 },
+    deliveryFeeBelowMinimum: { type: Number, default: 29, min: 0 },
+  },
   // Who last flipped isActive, and when — for the audit trail (section 22)
   lastStatusChange: {
     by: { type: String, default: null },        // 'admin' | 'store_manager'

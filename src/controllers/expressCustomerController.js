@@ -32,6 +32,17 @@ async function getMarginConfig() {
   return config;
 }
 
+// Resolves the minimum-order delivery fee rule for a specific store,
+// falling back to the global ExpressMarginConfig's values only for stores
+// that predate the per-store deliveryFeeConfig field (so a .lean() read
+// with no deliveryFeeConfig in the DB document doesn't silently charge ₹0).
+function resolveDeliveryFeeConfig(store, config) {
+  return {
+    minOrderForFreeDelivery: store?.deliveryFeeConfig?.minOrderForFreeDelivery ?? config.minOrderForFreeDelivery ?? 0,
+    deliveryFeeBelowMinimum: store?.deliveryFeeConfig?.deliveryFeeBelowMinimum ?? config.deliveryFeeBelowMinimum ?? 0,
+  };
+}
+
 // A customer hit the checkout gate because their store is on hold — log
 // (or bump) their interest so Admin has a call-back list the moment the
 // store reopens, instead of that demand just silently disappearing.
@@ -245,6 +256,7 @@ const getOnlineCatalogue = async (req, res) => {
       .filter(it => it.product.name); // drop anything that somehow has no display name
 
     const config = await getMarginConfig();
+    const feeConfig = resolveDeliveryFeeConfig(store, config);
     res.json({
       success: true,
       store: {
@@ -252,9 +264,8 @@ const getOnlineCatalogue = async (req, res) => {
         isPaused: !!store.isPaused, pauseMessage: store.pauseMessage || null,
       },
       delivery: {
-        freeDeliveryRadiusKm: config.freeDeliveryRadiusKm,
-        minOrderForFreeDelivery: config.minOrderForFreeDelivery,
-        deliveryFeeBelowMinimum: config.deliveryFeeBelowMinimum,
+        minOrderForFreeDelivery: feeConfig.minOrderForFreeDelivery,
+        deliveryFeeBelowMinimum: feeConfig.deliveryFeeBelowMinimum,
         maxDeliveryDistanceKm: config.maxDeliveryDistanceKm,
       },
       catalogue,
@@ -593,13 +604,14 @@ async function priceCart(userId, deliveryAddress) {
   }
 
   const roundedSubtotal = roundRupee(subtotal);
-  const deliveryFee = computeDeliveryFee(distKm, roundedSubtotal, config);
+  const feeConfig = resolveDeliveryFeeConfig(store, config);
+  const deliveryFee = computeDeliveryFee(roundedSubtotal, feeConfig);
   const total = roundRupee(roundedSubtotal + deliveryFee);
   return {
     cart, items, subtotal: roundedSubtotal, deliveryFee, total, totalWeightKg,
     largeOrderWarning: totalWeightKg > threshold, distanceKm: distKm,
     estimatedDeliveryMinutes: computeDeliveryEta(distKm, config),
-    freeDeliveryRadiusKm: config.freeDeliveryRadiusKm, minOrderForFreeDelivery: config.minOrderForFreeDelivery,
+    minOrderForFreeDelivery: feeConfig.minOrderForFreeDelivery, deliveryFeeBelowMinimum: feeConfig.deliveryFeeBelowMinimum,
   };
 }
 
@@ -612,7 +624,7 @@ const getQuote = async (req, res) => {
       success: true, items: priced.items, subtotal: priced.subtotal, deliveryFee: priced.deliveryFee,
       total: priced.total, totalWeightKg: priced.totalWeightKg, largeOrderWarning: priced.largeOrderWarning,
       distanceKm: priced.distanceKm, estimatedDeliveryMinutes: priced.estimatedDeliveryMinutes,
-      freeDeliveryRadiusKm: priced.freeDeliveryRadiusKm, minOrderForFreeDelivery: priced.minOrderForFreeDelivery,
+      minOrderForFreeDelivery: priced.minOrderForFreeDelivery, deliveryFeeBelowMinimum: priced.deliveryFeeBelowMinimum,
     });
   } catch (err) {
     if (err.statusCode) {

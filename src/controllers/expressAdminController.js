@@ -194,6 +194,43 @@ const updateDeliverySlots = async (req, res) => {
   }
 };
 
+// PATCH /express/admin/stores/:storeId/delivery-fee — per-store minimum-
+// order delivery fee rule. Applies irrespective of the customer's distance
+// from the store (that's a deliberate business rule — see
+// expressPricingService.computeDeliveryFee) — this only controls the
+// rupee thresholds, not any distance-based exemption.
+const updateDeliveryFeeConfig = async (req, res) => {
+  try {
+    const { storeId } = req.params;
+    const { minOrderForFreeDelivery, deliveryFeeBelowMinimum } = req.body || {};
+
+    const store = await ExpressStore.findById(storeId);
+    if (!store) return fail(res, 404, 'Store not found');
+
+    if (minOrderForFreeDelivery !== undefined) {
+      const v = Number(minOrderForFreeDelivery);
+      if (!Number.isFinite(v) || v < 0) return fail(res, 400, 'minOrderForFreeDelivery must be a non-negative number');
+      store.deliveryFeeConfig.minOrderForFreeDelivery = v;
+    }
+    if (deliveryFeeBelowMinimum !== undefined) {
+      const v = Number(deliveryFeeBelowMinimum);
+      if (!Number.isFinite(v) || v < 0) return fail(res, 400, 'deliveryFeeBelowMinimum must be a non-negative number');
+      store.deliveryFeeConfig.deliveryFeeBelowMinimum = v;
+    }
+    await store.save();
+
+    await logAudit({
+      actorType: 'admin', actorName: req.user?.name || 'Admin',
+      action: 'store.deliveryFee.update', store: store._id,
+      meta: { ...store.deliveryFeeConfig.toObject() },
+    });
+    res.json({ success: true, store });
+  } catch (err) {
+    console.error('[express.updateDeliveryFeeConfig]', err);
+    fail(res, 500, 'Failed to update delivery fee rule');
+  }
+};
+
 // GET /express/admin/stores/:storeId/hold-waitlist — everyone who hit the
 // checkout gate while this store was on hold, newest attempt first, so
 // Admin can call them back once the store reopens. Doesn't auto-clear on
@@ -1708,7 +1745,7 @@ const deleteBanner = async (req, res) => {
 
 module.exports = {
   listStores, createStore, updateStore, toggleStoreActive, toggleOnlineShop, togglePauseStore, archiveStore,
-  updateDeliverySlots,
+  updateDeliverySlots, updateDeliveryFeeConfig,
   getHoldWaitlist, markWaitlistCalledBack,
   listStoreManagers, createStoreManager, updateStoreManager,
   listPOSUsers, createPOSUser, updatePOSUser,

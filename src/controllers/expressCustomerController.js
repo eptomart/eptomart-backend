@@ -16,9 +16,37 @@ const ExpressOrder        = require('../models/ExpressOrder');
 const ExpressOnlineListing = require('../models/ExpressOnlineListing');
 const ExpressBanner       = require('../models/ExpressBanner');
 const ExpressHoldWaitlist = require('../models/ExpressHoldWaitlist');
+const EptoFreshCoupon     = require('../models/EptoFreshCoupon');
 const { computeSellingPrice, toKgEquivalent, distanceKm, computeDeliveryFee, computeDeliveryEta, roundRupee } = require('../services/expressPricingService');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
+
+/**
+ * Validate + price a coupon against a subtotal — same universal-coupon model
+ * (EptoFreshCoupon) and rules /api/coupon/validate uses, applied inline here
+ * so priceCart below can fold the discount into the total it returns.
+ * Never throws — an invalid/expired code is silently ignored (0 discount)
+ * so a stale code left over from a previous session can't block checkout.
+ */
+const applyCoupon = async (couponCode, subtotal) => {
+  if (!couponCode) return { couponDiscount: 0, appliedCode: null };
+  const coupon = await EptoFreshCoupon.findOne({
+    code: String(couponCode).toUpperCase().trim(),
+    isActive: true,
+    requestStatus: { $in: ['admin_created', 'approved'] },
+    validFrom: { $lte: new Date() },
+    validTo:   { $gte: new Date() },
+  });
+  const platformOk = !coupon || !coupon.platformRestriction || ['all', 'express'].includes(coupon.platformRestriction);
+  if (!coupon || !platformOk || coupon.usedCount >= coupon.maxUsage || subtotal < coupon.minOrderValue) {
+    return { couponDiscount: 0, appliedCode: null };
+  }
+  let discount = coupon.discountType === 'flat'
+    ? Math.min(coupon.discountValue, subtotal)
+    : (subtotal * coupon.discountValue) / 100;
+  if (coupon.discountType === 'percent' && coupon.maxDiscount) discount = Math.min(discount, coupon.maxDiscount);
+  return { couponDiscount: parseFloat(discount.toFixed(2)), appliedCode: coupon.code };
+};
 
 const getRazorpay = () => {
   if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return null;
@@ -558,7 +586,7 @@ const clearCart = async (req, res) => {
  * what the customer confirms at checkout is always accurate (same pattern
  * as fruitBasketController.priceOrderRequest).
  */
-async function priceCart(userId, deliveryAddress) {
+async function priceCart(userId, deliveryAddress, couponCode) {
   const cart = await ExpressCart.findOne({ user: userId });
   if (!cart || cart.items.length === 0) {
     const err = new Error('Your cart is empty.'); err.statusCode = 400; throw err;
@@ -638,25 +666,28 @@ async function priceCart(userId, deliveryAddress) {
   const roundedSubtotal = roundRupee(subtotal);
   const feeConfig = resolveDeliveryFeeConfig(store, config);
   const deliveryFee = computeDeliveryFee(roundedSubtotal, feeConfig);
-  const total = roundRupee(roundedSubtotal + deliveryFee);
+  const { couponDiscount, appliedCode } = await applyCoupon(couponCode, roundedSubtotal);
+  const total = Math.max(0, roundRupee(roundedSubtotal + deliveryFee - couponDiscount));
   return {
     cart, items, subtotal: roundedSubtotal, deliveryFee, total, totalWeightKg,
     largeOrderWarning: totalWeightKg > threshold, distanceKm: distKm,
     estimatedDeliveryMinutes: computeDeliveryEta(distKm, config),
     minOrderForFreeDelivery: feeConfig.minOrderForFreeDelivery, deliveryFeeBelowMinimum: feeConfig.deliveryFeeBelowMinimum,
+    couponCode: appliedCode, couponDiscount,
   };
 }
 
 /** POST /express/quote */
 const getQuote = async (req, res) => {
   try {
-    const { deliveryAddress } = req.body;
-    const priced = await priceCart(req.user._id, deliveryAddress);
+    const { deliveryAddress, couponCode } = req.body;
+    const priced = await priceCart(req.user._id, deliveryAddress, couponCode);
     res.json({
       success: true, items: priced.items, subtotal: priced.subtotal, deliveryFee: priced.deliveryFee,
       total: priced.total, totalWeightKg: priced.totalWeightKg, largeOrderWarning: priced.largeOrderWarning,
       distanceKm: priced.distanceKm, estimatedDeliveryMinutes: priced.estimatedDeliveryMinutes,
       minOrderForFreeDelivery: priced.minOrderForFreeDelivery, deliveryFeeBelowMinimum: priced.deliveryFeeBelowMinimum,
+      couponCode: priced.couponCode, couponDiscount: priced.couponDiscount,
     });
   } catch (err) {
     if (err.statusCode) {
@@ -674,8 +705,8 @@ const getQuote = async (req, res) => {
 /** POST /express/orders/create-razorpay */
 const createRazorpayOrder = async (req, res) => {
   try {
-    const { deliveryAddress, notes, deliverySlot } = req.body;
-    const priced = await priceCart(req.user._id, deliveryAddress);
+    const { deliveryAddress, notes, deliverySlot, couponCode } = req.body;
+    const priced = await priceCart(req.user._id, deliveryAddress, couponCode);
 
     const isDemo = !!req.user.isDemoAccount;
     const razorpay = isDemo ? null : getRazorpay();
@@ -702,7 +733,10 @@ const createRazorpayOrder = async (req, res) => {
         pincode: deliveryAddress.pincode || '',
         lat: deliveryAddress.lat, lng: deliveryAddress.lng,
       },
-      pricing: { subtotal: priced.subtotal, deliveryFee: priced.deliveryFee, total: priced.total },
+      pricing: {
+        subtotal: priced.subtotal, deliveryFee: priced.deliveryFee, total: priced.total,
+        couponCode: priced.couponCode || null, couponDiscount: priced.couponDiscount || 0,
+      },
       totalWeightKg: priced.totalWeightKg,
       deliverySlot: deliverySlot ? {
         date: deliverySlot.date || null,
@@ -760,6 +794,10 @@ const verifyPayment = async (req, res) => {
     order.orderStatus = 'confirmed';
     order.timeline.push({ status: 'confirmed', note: 'Payment received' });
     await order.save();
+
+    if (order.pricing?.couponCode) {
+      EptoFreshCoupon.updateOne({ code: order.pricing.couponCode }, { $inc: { usedCount: 1 } }).catch(() => {});
+    }
 
     // Deduct stock now that payment is confirmed. Money has already
     // changed hands at this point, so a stock shortfall (e.g. a POS sale at

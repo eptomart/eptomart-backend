@@ -33,9 +33,11 @@ const expressOrderSchema = new Schema({
   },
 
   pricing: {
-    subtotal:    { type: Number, default: 0 },
-    deliveryFee: { type: Number, default: 0 },
-    total:       { type: Number, default: 0 },
+    subtotal:       { type: Number, default: 0 },
+    deliveryFee:    { type: Number, default: 0 },
+    couponCode:     { type: String, default: null },
+    couponDiscount: { type: Number, default: 0 },
+    total:          { type: Number, default: 0 },
   },
 
   totalWeightKg: { type: Number, default: 0 },

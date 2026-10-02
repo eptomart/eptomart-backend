@@ -198,6 +198,32 @@ const listActiveStores = async (req, res) => {
   }
 };
 
+// ── Live delivery ETA for an already-selected store ──────────────────────
+// The customer's chosen store (and the ETA computed for it) is cached in
+// the frontend's localStorage so a returning visitor skips re-pinning
+// their location — but that means the cached estimatedDeliveryMinutes can
+// go stale (admin changes the delivery-time tiers) or be entirely missing
+// (the customer picked a store from the list without sharing their
+// location at all, so no distance was ever known). ExpressShop.jsx calls
+// this once on load — silently, using the browser's last-known/granted
+// geolocation — to refresh the "Delivery in ~X min" badge with a current
+// number instead of showing a stale or missing one indefinitely.
+const getStoreEta = async (req, res) => {
+  try {
+    const { storeId } = req.params;
+    const { lat, lng } = req.query;
+    if (lat == null || lng == null) return fail(res, 400, 'lat and lng are required');
+    const store = await ExpressStore.findOne({ _id: storeId, isActive: true, isArchived: false }).select('location').lean();
+    if (!store) return fail(res, 404, 'Store not found');
+    const config = await getMarginConfig();
+    const dKm = distanceKm({ lat: Number(lat), lng: Number(lng) }, store.location);
+    res.json({ success: true, distanceKm: dKm, estimatedDeliveryMinutes: computeDeliveryEta(dKm, config) });
+  } catch (err) {
+    console.error('[express.getStoreEta]', err);
+    fail(res, 500, 'Failed to compute delivery estimate');
+  }
+};
+
 // ── Online catalogue (admin-curated subset of Koyambedu Daily's catalog,
 // per store) — separate from getCatalogue below, which is driven by
 // ExpressStoreProduct's physical stock/availability. This one is driven by
@@ -823,7 +849,7 @@ const cancelMyOrder = async (req, res) => {
 
 module.exports = {
   getStatus, getActiveBanners, findNearestStore, getCatalogue,
-  listActiveStores, getOnlineCatalogue, getOnlineCatalogueItem,
+  listActiveStores, getStoreEta, getOnlineCatalogue, getOnlineCatalogueItem,
   getCart, addToCart, updateCartItem, clearCart,
   getQuote, createRazorpayOrder, verifyPayment,
   getMyOrders, getMyOrder, cancelMyOrder,

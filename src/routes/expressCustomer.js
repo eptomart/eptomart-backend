@@ -13,6 +13,7 @@ router.get ('/status',                     ctrl.getStatus);
 router.get ('/banners',                    ctrl.getActiveBanners);
 router.post('/nearest-store',              ctrl.findNearestStore);
 router.get ('/active-stores',              ctrl.listActiveStores);
+router.get ('/stores/:storeId/eta',        ctrl.getStoreEta);
 router.get ('/stores/:storeId/catalogue',  ctrl.getCatalogue);
 router.get ('/stores/:storeId/online-catalogue', ctrl.getOnlineCatalogue);
 router.get ('/stores/:storeId/online-catalogue/:productId', ctrl.getOnlineCatalogueItem);

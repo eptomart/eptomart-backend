@@ -69,6 +69,16 @@ const expressProductSchema = new mongoose.Schema({
   // needs a weight-equivalent for logistics-cost distribution).
   // e.g. 10 bunches of coriander = 1 kg  ->  unitsPerKg = 10
   unitsPerKg: { type: Number, default: null },
+  // Smallest quantity a customer can order/add in one step — admin-set per
+  // product (e.g. radish can only be ordered starting from 0.25 kg). The
+  // customer-facing stepper (ExpressShop.jsx) starts the "Add" action at
+  // this quantity and increments/decrements by it from then on, replacing
+  // what used to be one hardcoded 250g/500g/1kg set for every kg product.
+  // Only meaningful for isWeightBased (kg/gram/litre-style) products —
+  // piece/dozen/bunch-style items always step by whole units regardless of
+  // this value. Default 0.25 preserves the previous global behaviour
+  // (250 g minimum) for every product saved before this field existed.
+  minOrderQty: { type: Number, default: 0.25, min: 0.01 },
   // Admin-entered procurement cost, per kg (or per unit for non-weight items
   // that don't have a unitsPerKg conversion, e.g. price per piece)
   procurementBaseCost: { type: Number, required: true, min: 0 },

@@ -514,9 +514,12 @@ async function nextFreePlu(series) {
 
 const createProduct = async (req, res) => {
   try {
-    const { koyambeduProductId, unit, isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct } = req.body;
+    const { koyambeduProductId, unit, isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct, minOrderQty } = req.body;
     if (!koyambeduProductId || procurementBaseCost == null) {
       return fail(res, 400, 'koyambeduProductId and procurementBaseCost are required');
+    }
+    if (minOrderQty != null && (!Number.isFinite(Number(minOrderQty)) || Number(minOrderQty) <= 0)) {
+      return fail(res, 400, 'minOrderQty must be a positive number');
     }
     const koyambeduProduct = await KoyambeduProduct.findById(koyambeduProductId).lean();
     if (!koyambeduProduct) return fail(res, 404, 'Koyambedu product not found');
@@ -531,6 +534,7 @@ const createProduct = async (req, res) => {
       koyambeduProduct: koyambeduProductId,
       unit: unit || koyambeduProduct.unit || 'kg',
       isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct,
+      minOrderQty: minOrderQty != null ? Number(minOrderQty) : undefined,
       plu: plu || undefined, // omit rather than null — keeps the sparse unique index happy
     });
     const populated = await product.populate('koyambeduProduct', KOYAMBEDU_PRODUCT_FIELDS);
@@ -583,9 +587,12 @@ const adminAssignProductToStore = async (req, res) => {
   try {
     const {
       storeId, koyambeduProductId, unit, isWeightBased, unitsPerKg,
-      procurementBaseCost, customMarginPct, stockQty, priceOverride, note,
+      procurementBaseCost, customMarginPct, minOrderQty, stockQty, priceOverride, note,
     } = req.body;
     if (!storeId || !koyambeduProductId) return fail(res, 400, 'storeId and koyambeduProductId are required');
+    if (minOrderQty != null && (!Number.isFinite(Number(minOrderQty)) || Number(minOrderQty) <= 0)) {
+      return fail(res, 400, 'minOrderQty must be a positive number');
+    }
 
     let product = await ExpressProduct.findOne({ koyambeduProduct: koyambeduProductId });
     if (!product) {
@@ -599,8 +606,14 @@ const adminAssignProductToStore = async (req, res) => {
         koyambeduProduct: koyambeduProductId,
         unit: unit || koyambeduProduct.unit || 'kg',
         isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct,
+        minOrderQty: minOrderQty != null ? Number(minOrderQty) : undefined,
         plu: plu || undefined, // omit rather than null — keeps the sparse unique index happy
       });
+    } else if (minOrderQty != null) {
+      // Product already linked — still let the admin update its minimum
+      // order quantity from this same single-screen "assign to store" form.
+      product.minOrderQty = Number(minOrderQty);
+      await product.save();
     }
 
     const delta = Number(stockQty) || 0;
@@ -644,7 +657,7 @@ const updateProduct = async (req, res) => {
     const { productId } = req.params;
     // koyambeduProduct is intentionally not editable here — to relink a
     // different Koyambedu product, delete and re-create the listing instead.
-    const fields = ['unit', 'isWeightBased', 'unitsPerKg', 'procurementBaseCost', 'customMarginPct', 'isActive'];
+    const fields = ['unit', 'isWeightBased', 'unitsPerKg', 'procurementBaseCost', 'customMarginPct', 'minOrderQty', 'isActive'];
     const update = {};
     fields.forEach(f => { if (req.body[f] !== undefined) update[f] = req.body[f]; });
 
@@ -1386,12 +1399,15 @@ const createNativeProduct = async (req, res) => {
   try {
     const {
       name, description, unit, category, image,
-      procurementBaseCost, isWeightBased, unitsPerKg, customMarginPct,
+      procurementBaseCost, isWeightBased, unitsPerKg, customMarginPct, minOrderQty,
       isCombo, comboContents,
     } = req.body;
 
     if (!name || !name.trim()) return fail(res, 400, 'Name is required');
     if (procurementBaseCost == null || procurementBaseCost === '') return fail(res, 400, 'Cost price is required');
+    if (minOrderQty != null && minOrderQty !== '' && (!Number.isFinite(Number(minOrderQty)) || Number(minOrderQty) <= 0)) {
+      return fail(res, 400, 'minOrderQty must be a positive number');
+    }
     if (isCombo && (!Array.isArray(comboContents) || comboContents.length === 0)) {
       return fail(res, 400, 'Add at least one item to the combo');
     }
@@ -1414,6 +1430,7 @@ const createNativeProduct = async (req, res) => {
       isWeightBased, unitsPerKg,
       procurementBaseCost: Number(procurementBaseCost),
       customMarginPct: customMarginPct || null,
+      minOrderQty: (minOrderQty != null && minOrderQty !== '') ? Number(minOrderQty) : undefined,
       isCombo: !!isCombo,
       comboContents: isCombo
         ? comboContents.map(c => ({ product: c.product, name: c.name, unit: c.unit, qty: Number(c.qty) || 0 }))

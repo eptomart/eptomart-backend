@@ -213,7 +213,7 @@ const getOnlineCatalogue = async (req, res) => {
 
     const listings = await ExpressOnlineListing.find({ store: storeId, isEnabled: true, price: { $ne: null } })
       .populate({ path: 'koyambeduProduct', select: 'name description images category', populate: { path: 'category', select: 'name' } })
-      .populate({ path: 'product', select: 'unit name description image category isCombo' })
+      .populate({ path: 'product', select: 'unit name description image category isCombo isWeightBased minOrderQty' })
       .lean();
 
     const productIds = listings.map(l => l.product?._id).filter(Boolean);
@@ -248,6 +248,8 @@ const getOnlineCatalogue = async (req, res) => {
               ? (display?.image || null)
               : (display?.images?.find(i => i.isPrimary)?.url || display?.images?.[0]?.url || null),
             isCombo: !!l.product.isCombo,
+            isWeightBased: l.product.isWeightBased !== false,
+            minOrderQty: l.product.minOrderQty || 0.25,
           },
           stockQty: stockByProduct[String(l.product._id)] || 0,
           pricePerUnit: l.price,
@@ -291,7 +293,7 @@ const getOnlineCatalogueItem = async (req, res) => {
 
     const listing = await ExpressOnlineListing.findOne({ store: storeId, product: productId, isEnabled: true, price: { $ne: null } })
       .populate({ path: 'koyambeduProduct', select: 'name description images category', populate: { path: 'category', select: 'name' } })
-      .populate({ path: 'product', select: 'unit name description image category isCombo comboContents' })
+      .populate({ path: 'product', select: 'unit name description image category isCombo comboContents isWeightBased minOrderQty' })
       .lean();
     if (!listing || !listing.product) return fail(res, 404, 'Product not available at this store');
 
@@ -315,6 +317,8 @@ const getOnlineCatalogueItem = async (req, res) => {
           : (display?.images?.find(i => i.isPrimary)?.url || display?.images?.[0]?.url || null),
         isCombo: !!listing.product.isCombo,
         comboContents: listing.product.isCombo ? (listing.product.comboContents || []) : [],
+        isWeightBased: listing.product.isWeightBased !== false,
+        minOrderQty: listing.product.minOrderQty || 0.25,
       },
       stockQty: stockDoc?.stockQty || 0,
       pricePerUnit: listing.price,
@@ -362,6 +366,8 @@ const getCatalogue = async (req, res) => {
             category: kb.category?.name || null,
             unit: sp.product.unit,
             image: kb.images?.find(i => i.isPrimary)?.url || kb.images?.[0]?.url || null,
+            isWeightBased: sp.product.isWeightBased !== false,
+            minOrderQty: sp.product.minOrderQty || 0.25,
           },
           stockQty: sp.stockQty,
           // A per-store price override (admin-set when assigning this

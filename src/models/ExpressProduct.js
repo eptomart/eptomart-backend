@@ -79,6 +79,13 @@ const expressProductSchema = new mongoose.Schema({
   // this value. Default 0.25 preserves the previous global behaviour
   // (250 g minimum) for every product saved before this field existed.
   minOrderQty: { type: Number, default: 0.25, min: 0.01 },
+  // Merchant-set cap on how much of this product one customer can carry in
+  // a single order — a business rule (e.g. "max 2 kg of onions per order"),
+  // entirely distinct from stockQty (physical availability at a store).
+  // Null = no cap, so an unconfigured product behaves exactly as before
+  // (only the stock level limits quantity). Enforced in addToCart/
+  // updateCartItem alongside, not instead of, the existing stock check.
+  maxOrderQty: { type: Number, default: null, min: 0.01 },
   // Admin-entered procurement cost, per kg (or per unit for non-weight items
   // that don't have a unitsPerKg conversion, e.g. price per piece)
   procurementBaseCost: { type: Number, required: true, min: 0 },

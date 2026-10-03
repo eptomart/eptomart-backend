@@ -202,7 +202,10 @@ const updateDeliverySlots = async (req, res) => {
 const updateDeliveryFeeConfig = async (req, res) => {
   try {
     const { storeId } = req.params;
-    const { minOrderForFreeDelivery, deliveryFeeBelowMinimum } = req.body || {};
+    const {
+      minOrderForFreeDelivery, deliveryFeeBelowMinimum,
+      maxDeliveryDistanceKm, freeDeliveryDistanceKm, distanceStepKm, distanceChargePerStep,
+    } = req.body || {};
 
     const store = await ExpressStore.findById(storeId);
     if (!store) return fail(res, 404, 'Store not found');
@@ -216,6 +219,33 @@ const updateDeliveryFeeConfig = async (req, res) => {
       const v = Number(deliveryFeeBelowMinimum);
       if (!Number.isFinite(v) || v < 0) return fail(res, 400, 'deliveryFeeBelowMinimum must be a non-negative number');
       store.deliveryFeeConfig.deliveryFeeBelowMinimum = v;
+    }
+    // Hard delivery-range cutoff for this store — '' or null clears the
+    // override so it falls back to the global ExpressMarginConfig default
+    // again (see resolveDeliveryFeeConfig).
+    if (maxDeliveryDistanceKm !== undefined) {
+      if (maxDeliveryDistanceKm === '' || maxDeliveryDistanceKm === null) {
+        store.deliveryFeeConfig.maxDeliveryDistanceKm = null;
+      } else {
+        const v = Number(maxDeliveryDistanceKm);
+        if (!Number.isFinite(v) || v < 0) return fail(res, 400, 'maxDeliveryDistanceKm must be a non-negative number');
+        store.deliveryFeeConfig.maxDeliveryDistanceKm = v;
+      }
+    }
+    if (freeDeliveryDistanceKm !== undefined) {
+      const v = Number(freeDeliveryDistanceKm);
+      if (!Number.isFinite(v) || v < 0) return fail(res, 400, 'freeDeliveryDistanceKm must be a non-negative number');
+      store.deliveryFeeConfig.freeDeliveryDistanceKm = v;
+    }
+    if (distanceStepKm !== undefined) {
+      const v = Number(distanceStepKm);
+      if (!Number.isFinite(v) || v <= 0) return fail(res, 400, 'distanceStepKm must be a positive number');
+      store.deliveryFeeConfig.distanceStepKm = v;
+    }
+    if (distanceChargePerStep !== undefined) {
+      const v = Number(distanceChargePerStep);
+      if (!Number.isFinite(v) || v < 0) return fail(res, 400, 'distanceChargePerStep must be a non-negative number');
+      store.deliveryFeeConfig.distanceChargePerStep = v;
     }
     await store.save();
 
@@ -514,12 +544,18 @@ async function nextFreePlu(series) {
 
 const createProduct = async (req, res) => {
   try {
-    const { koyambeduProductId, unit, isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct, minOrderQty } = req.body;
+    const { koyambeduProductId, unit, isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct, minOrderQty, maxOrderQty } = req.body;
     if (!koyambeduProductId || procurementBaseCost == null) {
       return fail(res, 400, 'koyambeduProductId and procurementBaseCost are required');
     }
     if (minOrderQty != null && (!Number.isFinite(Number(minOrderQty)) || Number(minOrderQty) <= 0)) {
       return fail(res, 400, 'minOrderQty must be a positive number');
+    }
+    if (maxOrderQty != null && maxOrderQty !== '' && (!Number.isFinite(Number(maxOrderQty)) || Number(maxOrderQty) <= 0)) {
+      return fail(res, 400, 'maxOrderQty must be a positive number');
+    }
+    if (minOrderQty != null && maxOrderQty != null && maxOrderQty !== '' && Number(maxOrderQty) < Number(minOrderQty)) {
+      return fail(res, 400, 'maxOrderQty cannot be less than minOrderQty');
     }
     const koyambeduProduct = await KoyambeduProduct.findById(koyambeduProductId).lean();
     if (!koyambeduProduct) return fail(res, 404, 'Koyambedu product not found');
@@ -535,6 +571,7 @@ const createProduct = async (req, res) => {
       unit: unit || koyambeduProduct.unit || 'kg',
       isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct,
       minOrderQty: minOrderQty != null ? Number(minOrderQty) : undefined,
+      maxOrderQty: (maxOrderQty != null && maxOrderQty !== '') ? Number(maxOrderQty) : undefined,
       plu: plu || undefined, // omit rather than null — keeps the sparse unique index happy
     });
     const populated = await product.populate('koyambeduProduct', KOYAMBEDU_PRODUCT_FIELDS);
@@ -587,11 +624,17 @@ const adminAssignProductToStore = async (req, res) => {
   try {
     const {
       storeId, koyambeduProductId, unit, isWeightBased, unitsPerKg,
-      procurementBaseCost, customMarginPct, minOrderQty, stockQty, priceOverride, note,
+      procurementBaseCost, customMarginPct, minOrderQty, maxOrderQty, stockQty, priceOverride, note,
     } = req.body;
     if (!storeId || !koyambeduProductId) return fail(res, 400, 'storeId and koyambeduProductId are required');
     if (minOrderQty != null && (!Number.isFinite(Number(minOrderQty)) || Number(minOrderQty) <= 0)) {
       return fail(res, 400, 'minOrderQty must be a positive number');
+    }
+    if (maxOrderQty != null && maxOrderQty !== '' && (!Number.isFinite(Number(maxOrderQty)) || Number(maxOrderQty) <= 0)) {
+      return fail(res, 400, 'maxOrderQty must be a positive number');
+    }
+    if (minOrderQty != null && maxOrderQty != null && maxOrderQty !== '' && Number(maxOrderQty) < Number(minOrderQty)) {
+      return fail(res, 400, 'maxOrderQty cannot be less than minOrderQty');
     }
 
     let product = await ExpressProduct.findOne({ koyambeduProduct: koyambeduProductId });
@@ -607,12 +650,14 @@ const adminAssignProductToStore = async (req, res) => {
         unit: unit || koyambeduProduct.unit || 'kg',
         isWeightBased, unitsPerKg, procurementBaseCost, customMarginPct,
         minOrderQty: minOrderQty != null ? Number(minOrderQty) : undefined,
+        maxOrderQty: (maxOrderQty != null && maxOrderQty !== '') ? Number(maxOrderQty) : undefined,
         plu: plu || undefined, // omit rather than null — keeps the sparse unique index happy
       });
-    } else if (minOrderQty != null) {
-      // Product already linked — still let the admin update its minimum
+    } else if (minOrderQty != null || maxOrderQty != null) {
+      // Product already linked — still let the admin update its min/max
       // order quantity from this same single-screen "assign to store" form.
-      product.minOrderQty = Number(minOrderQty);
+      if (minOrderQty != null) product.minOrderQty = Number(minOrderQty);
+      if (maxOrderQty != null) product.maxOrderQty = maxOrderQty === '' ? null : Number(maxOrderQty);
       await product.save();
     }
 
@@ -657,9 +702,15 @@ const updateProduct = async (req, res) => {
     const { productId } = req.params;
     // koyambeduProduct is intentionally not editable here — to relink a
     // different Koyambedu product, delete and re-create the listing instead.
-    const fields = ['unit', 'isWeightBased', 'unitsPerKg', 'procurementBaseCost', 'customMarginPct', 'minOrderQty', 'isActive'];
+    const fields = ['unit', 'isWeightBased', 'unitsPerKg', 'procurementBaseCost', 'customMarginPct', 'minOrderQty', 'maxOrderQty', 'isActive'];
     const update = {};
-    fields.forEach(f => { if (req.body[f] !== undefined) update[f] = req.body[f]; });
+    fields.forEach(f => {
+      if (req.body[f] === undefined) return;
+      // maxOrderQty is nullable (min: 0.01) — an empty string must clear it
+      // to null, not get saved literally (which would fail the min
+      // validator) or saved as an empty string.
+      update[f] = (f === 'maxOrderQty' && req.body[f] === '') ? null : req.body[f];
+    });
 
     const product = await ExpressProduct.findByIdAndUpdate(productId, update, { new: true, runValidators: true })
       .populate('koyambeduProduct', KOYAMBEDU_PRODUCT_FIELDS);
@@ -1399,7 +1450,7 @@ const createNativeProduct = async (req, res) => {
   try {
     const {
       name, description, unit, category, image,
-      procurementBaseCost, isWeightBased, unitsPerKg, customMarginPct, minOrderQty,
+      procurementBaseCost, isWeightBased, unitsPerKg, customMarginPct, minOrderQty, maxOrderQty,
       isCombo, comboContents,
     } = req.body;
 
@@ -1407,6 +1458,12 @@ const createNativeProduct = async (req, res) => {
     if (procurementBaseCost == null || procurementBaseCost === '') return fail(res, 400, 'Cost price is required');
     if (minOrderQty != null && minOrderQty !== '' && (!Number.isFinite(Number(minOrderQty)) || Number(minOrderQty) <= 0)) {
       return fail(res, 400, 'minOrderQty must be a positive number');
+    }
+    if (maxOrderQty != null && maxOrderQty !== '' && (!Number.isFinite(Number(maxOrderQty)) || Number(maxOrderQty) <= 0)) {
+      return fail(res, 400, 'maxOrderQty must be a positive number');
+    }
+    if (minOrderQty != null && minOrderQty !== '' && maxOrderQty != null && maxOrderQty !== '' && Number(maxOrderQty) < Number(minOrderQty)) {
+      return fail(res, 400, 'maxOrderQty cannot be less than minOrderQty');
     }
     if (isCombo && (!Array.isArray(comboContents) || comboContents.length === 0)) {
       return fail(res, 400, 'Add at least one item to the combo');
@@ -1431,6 +1488,7 @@ const createNativeProduct = async (req, res) => {
       procurementBaseCost: Number(procurementBaseCost),
       customMarginPct: customMarginPct || null,
       minOrderQty: (minOrderQty != null && minOrderQty !== '') ? Number(minOrderQty) : undefined,
+      maxOrderQty: (maxOrderQty != null && maxOrderQty !== '') ? Number(maxOrderQty) : undefined,
       isCombo: !!isCombo,
       comboContents: isCombo
         ? comboContents.map(c => ({ product: c.product, name: c.name, unit: c.unit, qty: Number(c.qty) || 0 }))

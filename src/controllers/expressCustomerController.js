@@ -17,7 +17,7 @@ const ExpressOnlineListing = require('../models/ExpressOnlineListing');
 const ExpressBanner       = require('../models/ExpressBanner');
 const ExpressHoldWaitlist = require('../models/ExpressHoldWaitlist');
 const EptoFreshCoupon     = require('../models/EptoFreshCoupon');
-const { computeSellingPrice, toKgEquivalent, distanceKm, computeDeliveryFee, computeDeliveryEta, roundRupee } = require('../services/expressPricingService');
+const { computeSellingPrice, toKgEquivalent, distanceKm, computeDeliveryFee, computeDistanceSurcharge, computeDeliveryEta, roundRupee } = require('../services/expressPricingService');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
 
@@ -68,6 +68,15 @@ function resolveDeliveryFeeConfig(store, config) {
   return {
     minOrderForFreeDelivery: store?.deliveryFeeConfig?.minOrderForFreeDelivery ?? config.minOrderForFreeDelivery ?? 0,
     deliveryFeeBelowMinimum: store?.deliveryFeeConfig?.deliveryFeeBelowMinimum ?? config.deliveryFeeBelowMinimum ?? 0,
+    // Per-store hard delivery-range cutoff — null/undefined (not yet
+    // configured for this store) falls back to the global default.
+    maxDeliveryDistanceKm: store?.deliveryFeeConfig?.maxDeliveryDistanceKm ?? config.maxDeliveryDistanceKm ?? 12,
+    // Distance surcharge tiering — see computeDistanceSurcharge. Every
+    // field here defaults to "surcharge disabled" so a store an admin
+    // hasn't touched never silently starts charging extra for distance.
+    freeDeliveryDistanceKm: store?.deliveryFeeConfig?.freeDeliveryDistanceKm ?? 0,
+    distanceStepKm: store?.deliveryFeeConfig?.distanceStepKm ?? 1,
+    distanceChargePerStep: store?.deliveryFeeConfig?.distanceChargePerStep ?? 0,
   };
 }
 
@@ -274,7 +283,7 @@ const getOnlineCatalogue = async (req, res) => {
 
     const listings = await ExpressOnlineListing.find({ store: storeId, isEnabled: true, price: { $ne: null } })
       .populate({ path: 'koyambeduProduct', select: 'name description images category', populate: { path: 'category', select: 'name' } })
-      .populate({ path: 'product', select: 'unit name description image category isCombo isWeightBased minOrderQty' })
+      .populate({ path: 'product', select: 'unit name description image category isCombo isWeightBased minOrderQty maxOrderQty' })
       .lean();
 
     const productIds = listings.map(l => l.product?._id).filter(Boolean);
@@ -311,6 +320,7 @@ const getOnlineCatalogue = async (req, res) => {
             isCombo: !!l.product.isCombo,
             isWeightBased: l.product.isWeightBased !== false,
             minOrderQty: l.product.minOrderQty || 0.25,
+            maxOrderQty: l.product.maxOrderQty || null,
           },
           stockQty: stockByProduct[String(l.product._id)] || 0,
           pricePerUnit: l.price,
@@ -333,7 +343,10 @@ const getOnlineCatalogue = async (req, res) => {
       delivery: {
         minOrderForFreeDelivery: feeConfig.minOrderForFreeDelivery,
         deliveryFeeBelowMinimum: feeConfig.deliveryFeeBelowMinimum,
-        maxDeliveryDistanceKm: config.maxDeliveryDistanceKm,
+        maxDeliveryDistanceKm: feeConfig.maxDeliveryDistanceKm,
+        freeDeliveryDistanceKm: feeConfig.freeDeliveryDistanceKm,
+        distanceStepKm: feeConfig.distanceStepKm,
+        distanceChargePerStep: feeConfig.distanceChargePerStep,
       },
       catalogue,
     });
@@ -360,7 +373,7 @@ const getOnlineCatalogueItem = async (req, res) => {
 
     const listing = await ExpressOnlineListing.findOne({ store: storeId, product: productId, isEnabled: true, price: { $ne: null } })
       .populate({ path: 'koyambeduProduct', select: 'name description images category', populate: { path: 'category', select: 'name' } })
-      .populate({ path: 'product', select: 'unit name description image category isCombo comboContents isWeightBased minOrderQty' })
+      .populate({ path: 'product', select: 'unit name description image category isCombo comboContents isWeightBased minOrderQty maxOrderQty' })
       .lean();
     if (!listing || !listing.product) return fail(res, 404, 'Product not available at this store');
 
@@ -386,6 +399,7 @@ const getOnlineCatalogueItem = async (req, res) => {
         comboContents: listing.product.isCombo ? (listing.product.comboContents || []) : [],
         isWeightBased: listing.product.isWeightBased !== false,
         minOrderQty: listing.product.minOrderQty || 0.25,
+        maxOrderQty: listing.product.maxOrderQty || null,
       },
       stockQty: stockDoc?.stockQty || 0,
       pricePerUnit: listing.price,
@@ -435,6 +449,7 @@ const getCatalogue = async (req, res) => {
             image: kb.images?.find(i => i.isPrimary)?.url || kb.images?.[0]?.url || null,
             isWeightBased: sp.product.isWeightBased !== false,
             minOrderQty: sp.product.minOrderQty || 0.25,
+            maxOrderQty: sp.product.maxOrderQty || null,
           },
           stockQty: sp.stockQty,
           // A per-store price override (admin-set when assigning this
@@ -546,6 +561,12 @@ const addToCart = async (req, res) => {
         ? `Only ${storeProduct.stockQty} of "${productName}" available — you already have ${existing.quantity} in your cart.`
         : `Only ${storeProduct.stockQty} of "${productName}" left in stock.`);
     }
+    // Merchant-set per-order cap (maxOrderQty) — a business rule distinct
+    // from stock availability, checked in addition to it, not instead of it.
+    const maxOrderQty = storeProduct.product.maxOrderQty;
+    if (maxOrderQty != null && requestedTotal > maxOrderQty) {
+      return fail(res, 400, `You can order at most ${maxOrderQty}${storeProduct.product.unit === 'kg' ? ' kg' : ''} of "${productName}" per order.`);
+    }
     if (existing) {
       existing.quantity += Number(quantity);
     } else {
@@ -586,9 +607,14 @@ const updateCartItem = async (req, res) => {
       // nothing stopping them, only discovering the mismatch much later as
       // a confusing "only N left" error at checkout. Validate here instead,
       // at the moment the quantity actually changes.
-      const storeProduct = await ExpressStoreProduct.findOne({ store: cart.store, product: productId }).select('stockQty').lean();
+      const storeProduct = await ExpressStoreProduct.findOne({ store: cart.store, product: productId })
+        .select('stockQty product').populate({ path: 'product', select: 'maxOrderQty unit' }).lean();
       if (storeProduct && Number(quantity) > storeProduct.stockQty) {
         return fail(res, 400, `Only ${storeProduct.stockQty} of "${item.name}" left in stock.`);
+      }
+      const maxOrderQty = storeProduct?.product?.maxOrderQty;
+      if (maxOrderQty != null && Number(quantity) > maxOrderQty) {
+        return fail(res, 400, `You can order at most ${maxOrderQty}${storeProduct.product.unit === 'kg' ? ' kg' : ''} of "${item.name}" per order.`);
       }
       item.quantity = Number(quantity);
     }
@@ -658,11 +684,15 @@ async function priceCart(userId, deliveryAddress, couponCode) {
   // Distance-based delivery fee + hard out-of-range cutoff. Beyond
   // maxDeliveryDistanceKm we don't silently fail — we flag it specially so
   // the frontend can offer a "call us for a custom order" option instead.
+  // feeConfig is resolved here (not further down, where it used to be) so
+  // the hard cutoff itself can use a per-store override, not just the
+  // global default.
+  const feeConfig = resolveDeliveryFeeConfig(store, config);
   const distKm = distanceKm(
     { lat: Number(deliveryAddress.lat), lng: Number(deliveryAddress.lng) },
     store.location
   );
-  const maxKm = config.maxDeliveryDistanceKm || 12;
+  const maxKm = feeConfig.maxDeliveryDistanceKm;
   if (Number.isFinite(distKm) && distKm > maxKm) {
     const err = new Error(`You're ${distKm} km from this store, beyond our ${maxKm} km delivery range.`);
     err.statusCode = 400; err.outOfRange = true; err.distanceKm = distKm; err.maxDeliveryDistanceKm = maxKm;
@@ -682,6 +712,9 @@ async function priceCart(userId, deliveryAddress, couponCode) {
     const sp = byProductId.get(String(line.product));
     if (!sp || !sp.product) { const err = new Error(`"${line.name}" is no longer available.`); err.statusCode = 400; throw err; }
     if (sp.stockQty < line.quantity) { const err = new Error(`Only ${sp.stockQty} of "${line.name}" left in stock.`); err.statusCode = 400; throw err; }
+    if (sp.product.maxOrderQty != null && line.quantity > sp.product.maxOrderQty) {
+      const err = new Error(`You can order at most ${sp.product.maxOrderQty} of "${line.name}" per order.`); err.statusCode = 400; throw err;
+    }
 
     const pricing = computeSellingPrice(sp.product, config, 1);
     const unitPrice = roundRupee(sp.priceOverride ?? pricing.sellingPricePerUnit);
@@ -706,8 +739,14 @@ async function priceCart(userId, deliveryAddress, couponCode) {
   }
 
   const roundedSubtotal = roundRupee(subtotal);
-  const feeConfig = resolveDeliveryFeeConfig(store, config);
-  const deliveryFee = computeDeliveryFee(roundedSubtotal, feeConfig);
+  // Delivery fee = value-based fee (free above minOrderForFreeDelivery,
+  // else a flat fee) PLUS the distance surcharge beyond the store's free
+  // radius — the two stack, they don't replace each other. A store with no
+  // distance surcharge configured (the default) gets distanceSurcharge = 0,
+  // so its delivery fee is unchanged from before this feature existed.
+  const valueFee = computeDeliveryFee(roundedSubtotal, feeConfig);
+  const distanceSurcharge = computeDistanceSurcharge(distKm, feeConfig);
+  const deliveryFee = roundRupee(valueFee + distanceSurcharge);
   const { couponDiscount, appliedCode } = await applyCoupon(couponCode, roundedSubtotal);
   const total = Math.max(0, roundRupee(roundedSubtotal + deliveryFee - couponDiscount));
   return {
@@ -715,6 +754,12 @@ async function priceCart(userId, deliveryAddress, couponCode) {
     largeOrderWarning: totalWeightKg > threshold, distanceKm: distKm,
     estimatedDeliveryMinutes: computeDeliveryEta(distKm, config),
     minOrderForFreeDelivery: feeConfig.minOrderForFreeDelivery, deliveryFeeBelowMinimum: feeConfig.deliveryFeeBelowMinimum,
+    // Breakdown so the frontend can show the customer exactly why the fee
+    // is what it is (e.g. "₹18 delivery fee: 1 km beyond your free 5 km
+    // radius, charged per 2 km"), instead of just a single opaque number.
+    valueFee, distanceSurcharge,
+    freeDeliveryDistanceKm: feeConfig.freeDeliveryDistanceKm, distanceStepKm: feeConfig.distanceStepKm,
+    distanceChargePerStep: feeConfig.distanceChargePerStep, maxDeliveryDistanceKm: maxKm,
     couponCode: appliedCode, couponDiscount,
   };
 }
@@ -729,6 +774,9 @@ const getQuote = async (req, res) => {
       total: priced.total, totalWeightKg: priced.totalWeightKg, largeOrderWarning: priced.largeOrderWarning,
       distanceKm: priced.distanceKm, estimatedDeliveryMinutes: priced.estimatedDeliveryMinutes,
       minOrderForFreeDelivery: priced.minOrderForFreeDelivery, deliveryFeeBelowMinimum: priced.deliveryFeeBelowMinimum,
+      valueFee: priced.valueFee, distanceSurcharge: priced.distanceSurcharge,
+      freeDeliveryDistanceKm: priced.freeDeliveryDistanceKm, distanceStepKm: priced.distanceStepKm,
+      distanceChargePerStep: priced.distanceChargePerStep, maxDeliveryDistanceKm: priced.maxDeliveryDistanceKm,
       couponCode: priced.couponCode, couponDiscount: priced.couponDiscount,
     });
   } catch (err) {

@@ -125,6 +125,29 @@ function computeDeliveryFee(subtotal, feeConfig) {
 }
 
 /**
+ * Distance-based delivery SURCHARGE — layered on top of computeDeliveryFee
+ * above, not a replacement for it. The first feeConfig.freeDeliveryDistanceKm
+ * of distance costs nothing extra; every full feeConfig.distanceStepKm
+ * beyond that adds one more feeConfig.distanceChargePerStep. A step that's
+ * only partially used still counts as a full step (Math.ceil) — e.g. with a
+ * 5km free radius and a 2km step, a customer at 6km is 1km into the first
+ * step, which still rounds up to one full ₹-per-step charge.
+ * Returns 0 (no surcharge at all) when distanceChargePerStep isn't
+ * configured (0 or missing) — this is the default for every store an admin
+ * hasn't tuned, so delivery fees stay purely value-based until opted in.
+ */
+function computeDistanceSurcharge(distanceKmValue, feeConfig) {
+  const chargePerStep = Number(feeConfig?.distanceChargePerStep ?? 0);
+  if (!chargePerStep || !Number.isFinite(distanceKmValue)) return 0;
+  const freeKm = Number(feeConfig?.freeDeliveryDistanceKm ?? 0);
+  const stepKm = Number(feeConfig?.distanceStepKm ?? 0) || 1; // guard against a 0 step causing Infinity steps
+  const extraKm = distanceKmValue - freeKm;
+  if (extraKm <= 0) return 0;
+  const steps = Math.ceil(extraKm / stepKm);
+  return roundRupee(steps * chargePerStep);
+}
+
+/**
  * Estimated delivery time (minutes) for a given distance from the store,
  * using the admin-configured deliveryTimeTiers (see ExpressMarginConfig).
  * Tiers are evaluated in ascending maxDistanceKm order; the first tier the
@@ -147,6 +170,7 @@ module.exports = {
   computeSellingPrice,
   distanceKm,
   computeDeliveryFee,
+  computeDistanceSurcharge,
   computeDeliveryEta,
   roundRupee,
 };

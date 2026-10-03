@@ -79,14 +79,30 @@ const expressStoreSchema = new mongoose.Schema({
   },
   // Per-store minimum-order delivery fee rule. Applies irrespective of the
   // customer's distance from the store (a nearby customer ordering below
-  // the minimum is charged exactly like a far one) — distance only governs
-  // the separate hard maxDeliveryDistanceKm cutoff (ExpressMarginConfig),
-  // never whether this fee applies. Defaults mirror the previous global
+  // the minimum is charged exactly like a far one) — distance has its own,
+  // separate surcharge below. Defaults mirror the previous global
   // ExpressMarginConfig values so behaviour for unconfigured stores is
   // unchanged until admin tunes a specific store.
   deliveryFeeConfig: {
     minOrderForFreeDelivery: { type: Number, default: 199, min: 0 },
     deliveryFeeBelowMinimum: { type: Number, default: 29, min: 0 },
+    // Hard cutoff beyond which this store won't deliver at all — null means
+    // "not configured for this store", so resolveDeliveryFeeConfig falls
+    // back to the global ExpressMarginConfig.maxDeliveryDistanceKm. Admin
+    // can still override it per store (e.g. a busier store with its own
+    // delivery fleet might serve a wider radius than the platform default).
+    maxDeliveryDistanceKm: { type: Number, default: null, min: 0 },
+    // Distance-based delivery SURCHARGE, layered on top of the value-based
+    // fee above, not a replacement for it. The first freeDeliveryDistanceKm
+    // of distance costs nothing extra; every full distanceStepKm beyond that
+    // adds one more distanceChargePerStep to the delivery fee. Example from
+    // the business requirement: first 5km free, then +₹18 for every
+    // additional 2km (so 6km → one step → +₹18, 8km → two steps → +₹36).
+    // distanceChargePerStep defaults to 0 (i.e. disabled) so an unconfigured
+    // store's delivery fee behaves exactly as before — purely value-based.
+    freeDeliveryDistanceKm: { type: Number, default: 5, min: 0 },
+    distanceStepKm: { type: Number, default: 2, min: 0.1 },
+    distanceChargePerStep: { type: Number, default: 0, min: 0 },
   },
   // Who last flipped isActive, and when — for the audit trail (section 22)
   lastStatusChange: {

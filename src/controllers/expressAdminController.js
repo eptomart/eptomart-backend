@@ -25,7 +25,7 @@ const KoyambeduProduct       = require('../models/KoyambeduProduct');
 const KoyambeduCategory      = require('../models/KoyambeduCategory');
 const Analytics              = require('../models/Analytics');
 const { computeLogisticsCostPerKg, computeSellingPrice } = require('../services/expressPricingService');
-const { notifyExpressBuyer } = require('./expressCustomerController');
+const { notifyExpressBuyer, confirmExpressPayment, getRazorpay } = require('./expressCustomerController');
 // Reuses the same Claude helper already powering the seller product-
 // description generator (aiController.js) and the Fruit Basket admin one
 // (fruitBasketController.js) — no new SDK, no new env var.
@@ -1432,6 +1432,55 @@ const adminOrdersPnL = async (req, res) => {
   }
 };
 
+// Manual fallback for the rare order the payment.captured webhook (see
+// expressRazorpayWebhook) also never reaches — admin looks up the payment
+// directly from Razorpay's own API (never trusts the payment id blindly)
+// and only then calls the same confirmExpressPayment every other
+// confirmation path uses. Mirrors Koyambedu's adminManualVerifyPayment.
+const adminManualVerifyExpressPayment = async (req, res) => {
+  try {
+    const { razorpayPaymentId } = req.body;
+    if (!razorpayPaymentId?.trim()) return fail(res, 400, 'Razorpay Payment ID is required');
+
+    const order = await ExpressOrder.findById(req.params.orderId);
+    if (!order) return fail(res, 404, 'Order not found');
+    if (order.paymentStatus === 'paid') {
+      return res.json({ success: true, message: 'Order is already marked paid', orderId: order.orderId });
+    }
+    if (!order.razorpayOrderId) {
+      return fail(res, 400, 'This order never had a Razorpay order created for it — nothing to reconcile');
+    }
+
+    const razorpay = getRazorpay();
+    if (!razorpay) return fail(res, 503, 'Payment gateway not configured');
+
+    let payment;
+    try {
+      payment = await razorpay.payments.fetch(razorpayPaymentId.trim());
+    } catch (err) {
+      return fail(res, 400, `Razorpay could not find that payment ID: ${err.message || err}`);
+    }
+
+    if (payment.status !== 'captured') {
+      return fail(res, 400, `Razorpay reports this payment as "${payment.status}", not captured — refusing to mark paid`);
+    }
+    if (payment.order_id !== order.razorpayOrderId) {
+      return fail(res, 400, 'This payment belongs to a different Razorpay order — refusing to mark paid');
+    }
+    const expectedPaise = Math.round((order.pricing?.total || 0) * 100);
+    if (payment.amount !== expectedPaise) {
+      return fail(res, 400, `Amount mismatch — order total is ₹${order.pricing?.total} but Razorpay payment is ₹${payment.amount / 100}. Refusing to mark paid automatically.`);
+    }
+
+    await confirmExpressPayment(order, { razorpayPaymentId: payment.id, razorpaySignature: null });
+    console.log('[Express] Admin', req.user?._id, 'manually reconciled order', order.orderId, 'with Razorpay payment', payment.id);
+    res.json({ success: true, message: 'Payment verified with Razorpay and order confirmed!', orderId: order.orderId });
+  } catch (err) {
+    console.error('[express.adminManualVerifyExpressPayment]', err);
+    fail(res, 500, 'Failed to verify payment');
+  }
+};
+
 // ── Visitors + Carts (mirrors fruitBasketController's adminGetVisitors /
 // adminGetUserCarts patterns — same shared Analytics collection, same
 // per-vertical path-prefix filter, same cart-value aggregation shape) ────
@@ -2061,6 +2110,7 @@ module.exports = {
   listExpenses, createExpense, deleteExpense,
   getFinanceDashboard, adminGetVisitors, adminGetCarts,
   adminListOrders, adminGetOrder, adminUpdateOrderStatus, adminSetOrderCharges, adminOrdersPnL,
+  adminManualVerifyExpressPayment,
   adminListOnlineCatalog, adminSetOnlineListing, adminSetNativeOnlineListing, adminBulkSetOnlineListing,
   listBanners, createBanner, updateBanner, toggleBannerActive, deleteBanner,
 };

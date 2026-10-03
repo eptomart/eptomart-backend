@@ -92,6 +92,10 @@ router.patch('/orders/:orderId/charges',    protectAdmin, ctrl.adminSetOrderChar
 // Bill-wise + overall profit report (online orders)
 router.get('/orders-pnl', protectAdmin, ctrl.adminOrdersPnL);
 
+// Manual fallback payment reconciliation (see expressRazorpayWebhook for
+// the automatic path)
+router.post('/orders/:orderId/manual-verify-payment', protectAdmin, ctrl.adminManualVerifyExpressPayment);
+
 // Visitors + Carts
 router.get('/visitors', protectAdmin, ctrl.adminGetVisitors);
 router.get('/carts',    protectAdmin, ctrl.adminGetCarts);

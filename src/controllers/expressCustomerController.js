@@ -905,6 +905,65 @@ const createRazorpayOrder = async (req, res) => {
   }
 };
 
+// ── Shared payment confirmation ─────────────────────────────────────────
+// Used by verifyPayment (the normal client-callback path, below),
+// expressRazorpayWebhook, and expressAdminController's manual-verify
+// endpoint — all three "something told us this order is actually paid"
+// entry points converge here so stock deduction, the razorpayFee snapshot,
+// the buyer notification, and the cart clear only ever happen once, in one
+// place, instead of three near-identical copies drifting apart over time.
+// Mirrors Koyambedu Daily's confirmKoyambeduPayment for the same reason.
+async function confirmExpressPayment(order, { razorpayPaymentId, razorpaySignature }) {
+  order.paymentStatus = 'paid';
+  order.razorpayPaymentId = razorpayPaymentId;
+  order.razorpaySignature = razorpaySignature || null;
+  order.orderStatus = 'confirmed';
+  order.timeline.push({ status: 'confirmed', note: 'Payment received' });
+  // Razorpay's own cut — flat 2% of what the customer actually paid,
+  // online payments only (never for demo orders, which never really pay
+  // Razorpay anything). Matches the same rate Koyambedu Daily's P&L uses
+  // (RAZORPAY_FEE_PERCENT) for consistency across verticals.
+  if (!order.isDemoOrder) {
+    order.pricing.razorpayFee = Math.round(order.pricing.total * 2) / 100;
+  }
+  await order.save();
+  notifyExpressBuyer(order, 'confirmed').catch(() => {});
+
+  if (order.pricing?.couponCode) {
+    EptoFreshCoupon.updateOne({ code: order.pricing.couponCode }, { $inc: { usedCount: 1 } }).catch(() => {});
+  }
+
+  // Deduct stock now that payment is confirmed. Money has already
+  // changed hands at this point, so a stock shortfall (e.g. a POS sale at
+  // the same store sold the last unit between checkout and payment
+  // confirmation) must not block the order — clamp to zero and flag it
+  // for the Store Manager to reconcile, rather than silently going
+  // negative (which $inc alone would allow, bypassing the schema's
+  // min: 0 validator).
+  let stockShortfall = false;
+  for (const item of order.items) {
+    const updated = await ExpressStoreProduct.findOneAndUpdate(
+      { store: order.store, product: item.product, stockQty: { $gte: item.quantity } },
+      { $inc: { stockQty: -item.quantity } }
+    );
+    if (!updated) {
+      await ExpressStoreProduct.findOneAndUpdate({ store: order.store, product: item.product }, { stockQty: 0 });
+      stockShortfall = true;
+    }
+  }
+  if (stockShortfall) {
+    order.notes = (order.notes ? order.notes + ' | ' : '') + 'Stock shortfall at payment time — verify before fulfilling.';
+    await order.save();
+  }
+
+  // Clear the cart that was just checked out — best-effort: whoever placed
+  // this order (there's always a buyer on an ExpressOrder) gets their cart
+  // cleared, same as the inline version this replaced.
+  await ExpressCart.findOneAndUpdate({ user: order.buyer }, { items: [] });
+
+  return order;
+}
+
 /** POST /express/orders/verify-payment */
 const verifyPayment = async (req, res) => {
   try {
@@ -927,56 +986,62 @@ const verifyPayment = async (req, res) => {
       }
     }
 
-    order.paymentStatus = 'paid';
-    order.razorpayPaymentId = razorpayPaymentId;
-    order.razorpaySignature = razorpaySignature;
-    order.orderStatus = 'confirmed';
-    order.timeline.push({ status: 'confirmed', note: 'Payment received' });
-    // Razorpay's own cut — flat 2% of what the customer actually paid,
-    // online payments only (never for demo orders, which never really pay
-    // Razorpay anything). Matches the same rate Koyambedu Daily's P&L uses
-    // (RAZORPAY_FEE_PERCENT) for consistency across verticals.
-    if (!order.isDemoOrder) {
-      order.pricing.razorpayFee = Math.round(order.pricing.total * 2) / 100;
-    }
-    await order.save();
-    notifyExpressBuyer(order, 'confirmed').catch(() => {});
-
-    if (order.pricing?.couponCode) {
-      EptoFreshCoupon.updateOne({ code: order.pricing.couponCode }, { $inc: { usedCount: 1 } }).catch(() => {});
-    }
-
-    // Deduct stock now that payment is confirmed. Money has already
-    // changed hands at this point, so a stock shortfall (e.g. a POS sale at
-    // the same store sold the last unit between checkout and payment
-    // confirmation) must not block the order — clamp to zero and flag it
-    // for the Store Manager to reconcile, rather than silently going
-    // negative (which $inc alone would allow, bypassing the schema's
-    // min: 0 validator).
-    let stockShortfall = false;
-    for (const item of order.items) {
-      const updated = await ExpressStoreProduct.findOneAndUpdate(
-        { store: order.store, product: item.product, stockQty: { $gte: item.quantity } },
-        { $inc: { stockQty: -item.quantity } }
-      );
-      if (!updated) {
-        await ExpressStoreProduct.findOneAndUpdate({ store: order.store, product: item.product }, { stockQty: 0 });
-        stockShortfall = true;
-      }
-    }
-    if (stockShortfall) {
-      order.notes = (order.notes ? order.notes + ' | ' : '') + 'Stock shortfall at payment time — verify before fulfilling.';
-      await order.save();
-    }
-
-    // Clear the cart that was just checked out
-    await ExpressCart.findOneAndUpdate({ user: req.user._id }, { items: [] });
+    await confirmExpressPayment(order, { razorpayPaymentId, razorpaySignature });
 
     res.json({ success: true, message: 'Payment confirmed', orderId: order.orderId, id: order._id });
   } catch (err) {
     console.error('[express.verifyPayment]', err);
     fail(res, 500, 'Failed to verify payment');
   }
+};
+
+// ── POST /express/webhooks/razorpay ─────────────────────────────────────
+// Server-to-server safety net, mirroring Koyambedu Daily's own webhook
+// (koyambeduController.js): if the customer's browser/app never completes
+// the verify-payment call above (closed the tab, lost network, app crashed
+// right after Razorpay's checkout succeeded), the order would otherwise
+// sit at paymentStatus="pending" forever even though Razorpay actually
+// captured the money. Razorpay calls this URL directly from its own
+// servers on payment.captured, independent of the customer's device.
+//
+// Unlike Koyambedu's version, this verifies the signature against the
+// RAW request body (see the express.raw() middleware mounted for this
+// exact path in server.js, ahead of the global express.json() parser) —
+// re-stringifying an already-parsed JSON object is not guaranteed to
+// byte-match what Razorpay actually signed, so that shortcut is
+// deliberately not repeated here.
+const expressRazorpayWebhook = async (req, res) => {
+  try {
+    const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    if (!secret) {
+      // Fail closed, not open — an unconfigured secret must never be
+      // treated as "skip verification", or anyone could POST a fake
+      // payment.captured event and get an order marked paid for free.
+      console.error('[express.webhook] RAZORPAY_WEBHOOK_SECRET is not configured — rejecting webhook');
+      return res.status(500).json({ error: 'Webhook not configured' });
+    }
+    const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body));
+    const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+    const sig = req.headers['x-razorpay-signature'];
+    if (sig !== expected) return res.status(400).json({ error: 'Invalid signature' });
+
+    const payload = JSON.parse(rawBody.toString('utf8'));
+    if (payload.event === 'payment.captured') {
+      const payment = payload.payload?.payment?.entity;
+      const order = payment && await ExpressOrder.findOne({ razorpayOrderId: payment.order_id });
+      if (order && order.paymentStatus !== 'paid') {
+        console.log('[Express Webhook] Reconciling stuck order', order.orderId, 'via payment.captured webhook');
+        await confirmExpressPayment(order, { razorpayPaymentId: payment.id, razorpaySignature: null });
+      }
+    }
+  } catch (err) {
+    console.error('[express.webhook] Error:', err.message);
+  }
+  // Always 200 — Razorpay retries aggressively on anything else, and a
+  // transient error here (e.g. a momentary DB blip) isn't worth triggering
+  // a retry storm for; the admin manual-verify endpoint is the fallback
+  // for a webhook that genuinely never reconciled.
+  res.status(200).json({ received: true });
 };
 
 // ── My Orders ────────────────────────────────────────────────────────────
@@ -1036,7 +1101,7 @@ module.exports = {
   getStatus, getActiveBanners, findNearestStore, getCatalogue,
   listActiveStores, getStoreEta, getOnlineCatalogue, getOnlineCatalogueItem,
   getCart, addToCart, updateCartItem, clearCart,
-  getQuote, createRazorpayOrder, verifyPayment,
+  getQuote, createRazorpayOrder, verifyPayment, expressRazorpayWebhook, confirmExpressPayment, getRazorpay,
   getMyOrders, getMyOrder, cancelMyOrder,
   notifyExpressBuyer,
 };

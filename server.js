@@ -193,6 +193,13 @@ app.use(cors({
 
 // ─── General Middleware ───────────────────────
 app.use(compression());
+// Express's Razorpay webhook needs the ORIGINAL raw request bytes to verify
+// Razorpay's HMAC signature (re-stringifying an already-parsed JSON object
+// is not guaranteed to byte-match what Razorpay actually signed) — so this
+// one path gets express.raw() ahead of the global express.json() below.
+// Express/body-parser skip re-parsing a body that's already been consumed,
+// so every other route is unaffected.
+app.use('/api/express/webhooks/razorpay', express.raw({ type: 'application/json' }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());

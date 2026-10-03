@@ -26,6 +26,12 @@ router.delete('/cart/clear', protect, ctrl.clearCart);
 router.post('/quote',                       protect, ctrl.getQuote);
 router.post('/orders/create-razorpay',      protect, ctrl.createRazorpayOrder);
 router.post('/orders/verify-payment',       protect, ctrl.verifyPayment);
+// Server-to-server webhook — no auth middleware (Razorpay calls this
+// directly); authenticity is verified inside via the raw-body HMAC check
+// against RAZORPAY_WEBHOOK_SECRET. The matching express.raw() body-parser
+// override for this exact path is mounted in server.js, ahead of the
+// global express.json() middleware.
+router.post('/webhooks/razorpay',           ctrl.expressRazorpayWebhook);
 router.get ('/my-orders',                   protect, ctrl.getMyOrders);
 router.get ('/my-orders/:orderId',          protect, ctrl.getMyOrder);
 router.post('/orders/:orderId/cancel',      protect, ctrl.cancelMyOrder);

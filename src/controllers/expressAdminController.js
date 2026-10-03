@@ -25,6 +25,7 @@ const KoyambeduProduct       = require('../models/KoyambeduProduct');
 const KoyambeduCategory      = require('../models/KoyambeduCategory');
 const Analytics              = require('../models/Analytics');
 const { computeLogisticsCostPerKg, computeSellingPrice } = require('../services/expressPricingService');
+const { notifyExpressBuyer } = require('./expressCustomerController');
 // Reuses the same Claude helper already powering the seller product-
 // description generator (aiController.js) and the Fruit Basket admin one
 // (fruitBasketController.js) — no new SDK, no new env var.
@@ -934,8 +935,14 @@ const updateMarginConfig = async (req, res) => {
     const {
       platformChargePct, salesmanChargePct, packingChargePct, largeOrderThresholdKg, largeOrderAction, maxDeliveryDistanceKm,
       freeDeliveryRadiusKm, minOrderForFreeDelivery, deliveryFeeBelowMinimum, customOrderPhone, deliveryTimeTiers,
+      platformFeeAmount,
     } = req.body;
     const update = { updatedBy: req.user?.name || 'Admin' };
+    if (platformFeeAmount !== undefined) {
+      const v = Number(platformFeeAmount);
+      if (!Number.isFinite(v) || v < 0) return fail(res, 400, 'platformFeeAmount must be a non-negative number');
+      update.platformFeeAmount = v;
+    }
     if (platformChargePct != null) update.platformChargePct = platformChargePct;
     if (salesmanChargePct != null) update.salesmanChargePct = salesmanChargePct;
     if (packingChargePct != null) update.packingChargePct = packingChargePct;
@@ -1242,6 +1249,189 @@ const getFinanceDashboard = async (req, res) => {
   }
 };
 
+// ── Admin-wide Orders dashboard (all stores) ───────────────────────────
+// Separate from expressManagerController's listMyOrders/updateOrderStatus,
+// which are correctly scoped to the logged-in manager's own store only.
+// This gives the admin a single cross-store view, plus the ability to
+// enter transportCharge/packingCharge per bill — the admin-entered costs
+// the bill-wise/overall P&L report (below) is built from.
+const ADMIN_ORDER_STEPS = ['placed', 'confirmed', 'preparing', 'out_for_delivery', 'delivered'];
+
+const adminListOrders = async (req, res) => {
+  try {
+    const { storeId, status, from, to, search, limit = 100 } = req.query;
+    const filter = {};
+    if (storeId) filter.store = storeId;
+    if (status) filter.orderStatus = status;
+    if (from || to) {
+      filter.createdAt = {};
+      if (from) filter.createdAt.$gte = new Date(from);
+      if (to) filter.createdAt.$lte = new Date(to);
+    }
+    if (search && search.trim()) {
+      filter.orderId = { $regex: search.trim(), $options: 'i' };
+    }
+
+    const orders = await ExpressOrder.find(filter)
+      .populate('buyer', 'name phone')
+      .populate('store', 'name code')
+      .sort({ createdAt: -1 })
+      .limit(Math.min(500, Number(limit) || 100))
+      .lean();
+
+    res.json({ success: true, orders });
+  } catch (err) {
+    console.error('[express.adminListOrders]', err);
+    fail(res, 500, 'Failed to load orders');
+  }
+};
+
+const adminGetOrder = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const order = await ExpressOrder.findById(orderId)
+      .populate('buyer', 'name phone')
+      .populate('store', 'name code address')
+      .populate('items.product', 'name unit')
+      .lean();
+    if (!order) return fail(res, 404, 'Order not found');
+    res.json({ success: true, order });
+  } catch (err) {
+    console.error('[express.adminGetOrder]', err);
+    fail(res, 500, 'Failed to load order');
+  }
+};
+
+// Admin gets the same forward-only guard as the manager dashboard, plus
+// the ability to cancel from any non-terminal state (a manager cannot).
+const adminUpdateOrderStatus = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { status, note } = req.body;
+    const order = await ExpressOrder.findById(orderId);
+    if (!order) return fail(res, 404, 'Order not found');
+    if (order.orderStatus === 'cancelled') return fail(res, 400, 'Order was already cancelled');
+    if (order.orderStatus === 'delivered' && status !== 'delivered') {
+      return fail(res, 400, 'Order is already delivered');
+    }
+
+    if (status === 'cancelled') {
+      order.orderStatus = 'cancelled';
+      order.cancelReason = note || order.cancelReason || 'Cancelled by admin';
+    } else {
+      if (!ADMIN_ORDER_STEPS.includes(status)) return fail(res, 400, 'Invalid status');
+      const currentIdx = ADMIN_ORDER_STEPS.indexOf(order.orderStatus);
+      const nextIdx = ADMIN_ORDER_STEPS.indexOf(status);
+      if (currentIdx !== -1 && nextIdx <= currentIdx) {
+        return fail(res, 400, `Order is already at "${order.orderStatus}" or further along`);
+      }
+      order.orderStatus = status;
+    }
+
+    order.timeline.push({ status, note: note || `Marked ${status} by admin` });
+    await order.save();
+    notifyExpressBuyer(order, status).catch(() => {});
+
+    res.json({ success: true, order });
+  } catch (err) {
+    console.error('[express.adminUpdateOrderStatus]', err);
+    fail(res, 500, 'Failed to update order status');
+  }
+};
+
+// Lets the admin enter the real-world transport/packing cost for a bill
+// after the fact (these are never auto-calculated) — feeds directly into
+// the bill-wise/overall profit report below.
+const adminSetOrderCharges = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { transportCharge, packingCharge } = req.body;
+    const order = await ExpressOrder.findById(orderId);
+    if (!order) return fail(res, 404, 'Order not found');
+
+    if (transportCharge !== undefined) {
+      const v = transportCharge === '' || transportCharge === null ? null : Number(transportCharge);
+      if (v !== null && (!Number.isFinite(v) || v < 0)) return fail(res, 400, 'Invalid transport charge');
+      order.pricing.transportCharge = v;
+    }
+    if (packingCharge !== undefined) {
+      const v = packingCharge === '' || packingCharge === null ? null : Number(packingCharge);
+      if (v !== null && (!Number.isFinite(v) || v < 0)) return fail(res, 400, 'Invalid packing charge');
+      order.pricing.packingCharge = v;
+    }
+    await order.save();
+    res.json({ success: true, order });
+  } catch (err) {
+    console.error('[express.adminSetOrderCharges]', err);
+    fail(res, 500, 'Failed to update bill charges');
+  }
+};
+
+// ── Bill-wise + overall profit report for Express online orders ───────
+// Separate from getFinanceDashboard above (which nets online + POS + losses
+// + other expenses into one store-wide P&L). This one is deliberately
+// order-level: every paid online order is its own row, so the admin can see
+// exactly which bill was profitable and why, using the snapshot fields
+// captured at order time (itemsProcurementCost, platformFee, razorpayFee)
+// plus whatever transportCharge/packingCharge they entered via the Orders
+// tab (adminSetOrderCharges above). platformFee is treated as ordinary
+// pass-through revenue (it's money the customer paid that's already inside
+// pricing.total), never subtracted as a cost of its own.
+const adminOrdersPnL = async (req, res) => {
+  try {
+    const { storeId, from, to } = req.query;
+    const filter = { paymentStatus: 'paid', isDemoOrder: { $ne: true } };
+    if (storeId) filter.store = storeId;
+    if (from || to) {
+      filter.createdAt = {};
+      if (from) filter.createdAt.$gte = new Date(from);
+      if (to) filter.createdAt.$lte = new Date(to);
+    }
+
+    const orders = await ExpressOrder.find(filter)
+      .populate('store', 'name code')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const bills = orders.map(o => {
+      const p = o.pricing || {};
+      const revenue = p.total || 0;
+      const itemsProcurementCost = p.itemsProcurementCost || 0;
+      const transportCharge = p.transportCharge || 0;
+      const packingCharge = p.packingCharge || 0;
+      const razorpayFee = p.razorpayFee || 0;
+      const profit = Math.round((revenue - itemsProcurementCost - transportCharge - packingCharge - razorpayFee) * 100) / 100;
+      return {
+        orderId: o.orderId,
+        _id: o._id,
+        store: o.store ? { _id: o.store._id, name: o.store.name } : null,
+        createdAt: o.createdAt,
+        revenue, itemsProcurementCost, transportCharge, packingCharge, razorpayFee,
+        platformFee: p.platformFee || 0,
+        chargesEntered: p.transportCharge != null && p.packingCharge != null,
+        profit,
+      };
+    });
+
+    const totals = bills.reduce((t, b) => ({
+      revenue: t.revenue + b.revenue,
+      itemsProcurementCost: t.itemsProcurementCost + b.itemsProcurementCost,
+      transportCharge: t.transportCharge + b.transportCharge,
+      packingCharge: t.packingCharge + b.packingCharge,
+      razorpayFee: t.razorpayFee + b.razorpayFee,
+      profit: t.profit + b.profit,
+    }), { revenue: 0, itemsProcurementCost: 0, transportCharge: 0, packingCharge: 0, razorpayFee: 0, profit: 0 });
+    Object.keys(totals).forEach(k => { totals[k] = Math.round(totals[k] * 100) / 100; });
+    totals.billCount = bills.length;
+    totals.pendingChargesCount = bills.filter(b => !b.chargesEntered).length;
+
+    res.json({ success: true, bills, totals });
+  } catch (err) {
+    console.error('[express.adminOrdersPnL]', err);
+    fail(res, 500, 'Failed to load orders P&L');
+  }
+};
+
 // ── Visitors + Carts (mirrors fruitBasketController's adminGetVisitors /
 // adminGetUserCarts patterns — same shared Analytics collection, same
 // per-vertical path-prefix filter, same cart-value aggregation shape) ────
@@ -1382,7 +1572,7 @@ const adminListOnlineCatalog = async (req, res) => {
     const store = await ExpressStore.findById(storeId).lean();
     if (!store) return fail(res, 404, 'Store not found');
 
-    const [koyambeduProducts, nativeProducts, listings] = await Promise.all([
+    const [koyambeduProducts, nativeProducts, listings, resolvedKoyambeduLinks] = await Promise.all([
       KoyambeduProduct.find({ isActive: true })
         .select('name unit currentPrice images category')
         .populate('category', 'name')
@@ -1393,6 +1583,13 @@ const adminListOnlineCatalog = async (req, res) => {
         .sort({ name: 1 })
         .lean(),
       ExpressOnlineListing.find({ store: storeId }).lean(),
+      // Only exists once a Koyambedu-linked product has been resolved into
+      // its own ExpressProduct at least once (see resolveExpressProduct) —
+      // used purely to prefill the procurement-cost input below with
+      // whatever was last set, if anything.
+      ExpressProduct.find({ koyambeduProduct: { $exists: true } })
+        .select('koyambeduProduct procurementBaseCost')
+        .lean(),
     ]);
 
     const listingByKoyambeduProduct = Object.fromEntries(
@@ -1400,6 +1597,9 @@ const adminListOnlineCatalog = async (req, res) => {
     );
     const listingByProduct = Object.fromEntries(
       listings.filter(l => l.product && !l.koyambeduProduct).map(l => [String(l.product), l])
+    );
+    const procurementCostByKoyambeduProduct = Object.fromEntries(
+      resolvedKoyambeduLinks.map(p => [String(p.koyambeduProduct), p.procurementBaseCost])
     );
 
     const nativeItems = nativeProducts.map(np => {
@@ -1413,8 +1613,10 @@ const adminListOnlineCatalog = async (req, res) => {
         image: np.image || null,
         isCombo: !!np.isCombo,
         wholesalePrice: np.procurementBaseCost || 0,
+        procurementBaseCost: np.procurementBaseCost || 0,
         isEnabled: listing?.isEnabled || false,
         price: listing?.price ?? null,
+        mrp: listing?.mrp ?? null,
       };
     });
 
@@ -1428,8 +1630,10 @@ const adminListOnlineCatalog = async (req, res) => {
         category: kb.category?.name || null,
         image: kb.images?.find(i => i.isPrimary)?.url || kb.images?.[0]?.url || null,
         wholesalePrice: kb.currentPrice || 0,
+        procurementBaseCost: procurementCostByKoyambeduProduct[String(kb._id)] || 0,
         isEnabled: listing?.isEnabled || false,
         price: listing?.price ?? null,
+        mrp: listing?.mrp ?? null,
       };
     });
 
@@ -1592,7 +1796,7 @@ const searchExpressProducts = async (req, res) => {
 // either { koyambeduProductId } or { expressProductId } (native product) —
 // exactly one of the two, never both. The native path never reads or
 // writes anything in the KoyambeduProduct collection.
-async function upsertOnlineListing(storeId, ref, { isEnabled, price }, userId) {
+async function upsertOnlineListing(storeId, ref, { isEnabled, price, mrp, procurementBaseCost }, userId) {
   // Must be wrapped in $set — a plain object with no atomic operators is
   // rejected (or, on some driver/server combos, applied as a full document
   // replacement) by findOneAndUpdate, which would wipe out this document's
@@ -1603,12 +1807,26 @@ async function upsertOnlineListing(storeId, ref, { isEnabled, price }, userId) {
   const priceProvided = price !== undefined && price !== null && price !== '';
   if (priceProvided) set.price = Math.round(Number(price)); // whole rupees only — no paise
   if (isEnabled !== undefined) set.isEnabled = !!isEnabled;
+  // MRP is purely a "show a discount" display field — '' / null clears it.
+  if (mrp !== undefined) set.mrp = (mrp === null || mrp === '') ? null : Math.round(Number(mrp));
 
   if (ref.expressProductId) {
     // ── Native product/combo — entirely within Express ──────────────────
     const product = await ExpressProduct.findOne({ _id: ref.expressProductId, koyambeduProduct: { $exists: false } }).lean();
     if (!product) throw new Error('Express product not found');
     set.product = product._id;
+
+    // Let the admin set/update the procurement cost right from this
+    // "turn item on" flow, instead of making them open the separate
+    // Products tab form. Only touches the field when a value was actually
+    // provided — never silently zeroes out an existing cost.
+    if (procurementBaseCost !== undefined && procurementBaseCost !== '') {
+      const pbc = Number(procurementBaseCost);
+      if (Number.isFinite(pbc) && pbc >= 0 && pbc !== product.procurementBaseCost) {
+        await ExpressProduct.updateOne({ _id: product._id }, { $set: { procurementBaseCost: pbc } });
+        product.procurementBaseCost = pbc;
+      }
+    }
 
     if (isEnabled && !priceProvided) {
       const existing = await ExpressOnlineListing.findOne({ store: storeId, product: product._id }).select('price').lean();
@@ -1633,6 +1851,15 @@ async function upsertOnlineListing(storeId, ref, { isEnabled, price }, userId) {
     const product = await resolveExpressProduct(koyambeduProductId);
     if (!product) throw new Error('Koyambedu product not found');
     set.product = product._id;
+
+    // Same inline procurement-cost entry as the native-product branch above.
+    if (procurementBaseCost !== undefined && procurementBaseCost !== '') {
+      const pbc = Number(procurementBaseCost);
+      if (Number.isFinite(pbc) && pbc >= 0 && pbc !== product.procurementBaseCost) {
+        await ExpressProduct.updateOne({ _id: product._id }, { $set: { procurementBaseCost: pbc } });
+        product.procurementBaseCost = pbc;
+      }
+    }
 
     // No price typed by the admin — default to the Koyambedu wholesale
     // price plus DEFAULT_ONLINE_MARKUP_PERCENT, so the product is usable
@@ -1833,6 +2060,7 @@ module.exports = {
   listAuditLog,
   listExpenses, createExpense, deleteExpense,
   getFinanceDashboard, adminGetVisitors, adminGetCarts,
+  adminListOrders, adminGetOrder, adminUpdateOrderStatus, adminSetOrderCharges, adminOrdersPnL,
   adminListOnlineCatalog, adminSetOnlineListing, adminSetNativeOnlineListing, adminBulkSetOnlineListing,
   listBanners, createBanner, updateBanner, toggleBannerActive, deleteBanner,
 };

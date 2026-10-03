@@ -35,9 +35,27 @@ const expressOrderSchema = new Schema({
   pricing: {
     subtotal:       { type: Number, default: 0 },
     deliveryFee:    { type: Number, default: 0 },
+    // Flat global platform fee charged to the customer at checkout (see
+    // ExpressMarginConfig.platformFeeAmount) — snapshotted here so a later
+    // change to the global setting never rewrites what this customer was
+    // actually charged.
+    platformFee:    { type: Number, default: 0 },
     couponCode:     { type: String, default: null },
     couponDiscount: { type: Number, default: 0 },
     total:          { type: Number, default: 0 },
+    // ── Profit/P&L fields (section: bill-wise + overall store profit) ──
+    // itemsProcurementCost is a snapshot of what this order's items cost
+    // Express to procure, computed at order time from each ExpressProduct's
+    // procurementBaseCost — never recomputed later even if that cost
+    // changes, so historical P&L stays accurate. transportCharge and
+    // packingCharge are entered by the admin per order/bill (this order's
+    // actual delivery-partner and packing cost), not auto-calculated.
+    // razorpayFee is Razorpay's own cut, auto-computed from the standard
+    // ~2% + GST rate on online (non-demo, non-COD) payments only.
+    itemsProcurementCost: { type: Number, default: 0 },
+    transportCharge:      { type: Number, default: null },
+    packingCharge:         { type: Number, default: null },
+    razorpayFee:           { type: Number, default: 0 },
   },
 
   totalWeightKg: { type: Number, default: 0 },

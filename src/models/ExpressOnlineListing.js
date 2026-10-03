@@ -32,6 +32,13 @@ const expressOnlineListingSchema = new Schema({
   // Koyambedu Daily price (shown to admin only as a wholesale reference)
   // and ExpressStoreProduct.priceOverride (the POS/manager-facing price).
   price:            { type: Number, default: null, min: 0 },
+  // Optional "strike-through" maximum price for this store, shown to the
+  // customer alongside `price` as a discount (e.g. "MRP ₹50, ₹40 — 20% off")
+  // when it's set and genuinely higher than the selling price. Null = no
+  // MRP configured, so the item just shows its plain price with no
+  // discount badge — this is purely a display feature, never used in any
+  // pricing/profit calculation.
+  mrp:              { type: Number, default: null, min: 0 },
   updatedBy:        { type: Schema.Types.ObjectId, ref: 'User' },
   updatedAt:        Date,
 }, { timestamps: true });

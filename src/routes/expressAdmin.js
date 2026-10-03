@@ -82,6 +82,16 @@ router.delete('/expenses/:expenseId', protectAdmin, ctrl.deleteExpense);
 // Finance Dashboard (profit / loss)
 router.get('/finance-dashboard', protectAdmin, ctrl.getFinanceDashboard);
 
+// Orders (cross-store admin view — see expressManagerController for the
+// store-scoped manager equivalent, left untouched)
+router.get  ('/orders',                     protectAdmin, ctrl.adminListOrders);
+router.get  ('/orders/:orderId',            protectAdmin, ctrl.adminGetOrder);
+router.patch('/orders/:orderId/status',     protectAdmin, ctrl.adminUpdateOrderStatus);
+router.patch('/orders/:orderId/charges',    protectAdmin, ctrl.adminSetOrderCharges);
+
+// Bill-wise + overall profit report (online orders)
+router.get('/orders-pnl', protectAdmin, ctrl.adminOrdersPnL);
+
 // Visitors + Carts
 router.get('/visitors', protectAdmin, ctrl.adminGetVisitors);
 router.get('/carts',    protectAdmin, ctrl.adminGetCarts);

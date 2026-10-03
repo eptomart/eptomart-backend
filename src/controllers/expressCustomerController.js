@@ -18,6 +18,7 @@ const ExpressBanner       = require('../models/ExpressBanner');
 const ExpressHoldWaitlist = require('../models/ExpressHoldWaitlist');
 const EptoFreshCoupon     = require('../models/EptoFreshCoupon');
 const { computeSellingPrice, toKgEquivalent, distanceKm, computeDeliveryFee, computeDistanceSurcharge, computeDeliveryEta, roundRupee } = require('../services/expressPricingService');
+const { sendTemplateWhatsApp } = require('../utils/sendWhatsApp');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
 
@@ -109,6 +110,36 @@ async function recordHoldInterest(storeId, userId, cart, deliveryAddress) {
   } catch (err) {
     // Never let waitlist logging break the actual checkout-gate response.
     console.error('[express.recordHoldInterest]', err);
+  }
+}
+
+// Order-status WhatsApp notification to the buyer — mirrors Koyambedu
+// Daily's own _notifyBuyer/waSend pattern exactly (same Meta WhatsApp
+// template env var, same {name, orderId, status, detail} shape) so the
+// customer experience is identical across verticals. order.deliveryAddress
+// already carries name/phone captured at checkout, so no extra User lookup
+// is needed here (unlike Koyambedu, which looks up buyer.phone from User).
+const EXPRESS_STATUS_MESSAGES = {
+  confirmed:         ['Order Confirmed ✅',       (o) => `Your Eptomart Express order #${o.orderId} is confirmed and being prepared.`],
+  preparing:         ['Being Prepared 📦',        (o) => `Order #${o.orderId} is being packed at the store.`],
+  out_for_delivery:  ['On the Way 🚚',            (o) => `Order #${o.orderId} is out for delivery.`],
+  delivered:         ['Delivered! 🎉',            (o) => `Order #${o.orderId} has been delivered. Thank you for shopping with Eptomart Express!`],
+  cancelled:         ['Order Cancelled ❌',       (o) => `Order #${o.orderId} was cancelled.${o.cancelReason ? ` Reason: ${o.cancelReason}` : ''}`],
+};
+async function notifyExpressBuyer(order, status) {
+  try {
+    const phone = order.deliveryAddress?.phone;
+    if (!phone) return;
+    const tpl = process.env.META_WHATSAPP_STATUS_TEMPLATE;
+    if (!tpl) return;
+    const [label, detailFn] = EXPRESS_STATUS_MESSAGES[status] || [status, () => ''];
+    const params = [order.deliveryAddress?.name || 'Customer', order.orderId, label, detailFn(order)];
+    const r = await sendTemplateWhatsApp(phone, tpl, [
+      { type: 'body', parameters: params.map(t => ({ type: 'text', text: String(t) })) },
+    ]);
+    if (!r.success) console.warn('[Express WA] Failed to notify', phone, r.error);
+  } catch (err) {
+    console.error('[express.notifyExpressBuyer]', err.message);
   }
 }
 
@@ -324,6 +355,11 @@ const getOnlineCatalogue = async (req, res) => {
           },
           stockQty: stockByProduct[String(l.product._id)] || 0,
           pricePerUnit: l.price,
+          // Display-only "strike-through" MRP + discount badge — only sent
+          // when it's genuinely higher than the selling price, so the
+          // frontend never has to re-check that itself.
+          mrp: (l.mrp && l.mrp > l.price) ? l.mrp : null,
+          discountPercent: (l.mrp && l.mrp > l.price) ? Math.round(((l.mrp - l.price) / l.mrp) * 100) : 0,
         };
       })
       .filter(it => it.product.name); // drop anything that somehow has no display name
@@ -403,6 +439,8 @@ const getOnlineCatalogueItem = async (req, res) => {
       },
       stockQty: stockDoc?.stockQty || 0,
       pricePerUnit: listing.price,
+      mrp: (listing.mrp && listing.mrp > listing.price) ? listing.mrp : null,
+      discountPercent: (listing.mrp && listing.mrp > listing.price) ? Math.round(((listing.mrp - listing.price) / listing.mrp) * 100) : 0,
     });
   } catch (err) {
     console.error('[express.getOnlineCatalogueItem]', err);
@@ -708,6 +746,7 @@ async function priceCart(userId, deliveryAddress, couponCode) {
   const items = [];
   let subtotal = 0;
   let totalWeightKg = 0;
+  let itemsProcurementCost = 0;
   for (const line of cart.items) {
     const sp = byProductId.get(String(line.product));
     if (!sp || !sp.product) { const err = new Error(`"${line.name}" is no longer available.`); err.statusCode = 400; throw err; }
@@ -721,6 +760,9 @@ async function priceCart(userId, deliveryAddress, couponCode) {
     const lineTotal = roundRupee(unitPrice * line.quantity);
     subtotal += lineTotal;
     totalWeightKg += toKgEquivalent(sp.product, line.quantity);
+    // Snapshot of what this line actually cost Express to procure+ship, for
+    // bill-wise/overall profit reporting — see pricing.itemsProcurementCost.
+    itemsProcurementCost += Math.round(pricing.baseCostPerUnit * line.quantity * 100) / 100;
 
     items.push({
       // Name comes from the cart line's own snapshot (captured from the
@@ -748,9 +790,14 @@ async function priceCart(userId, deliveryAddress, couponCode) {
   const distanceSurcharge = computeDistanceSurcharge(distKm, feeConfig);
   const deliveryFee = roundRupee(valueFee + distanceSurcharge);
   const { couponDiscount, appliedCode } = await applyCoupon(couponCode, roundedSubtotal);
-  const total = Math.max(0, roundRupee(roundedSubtotal + deliveryFee - couponDiscount));
+  // Flat platform fee — global, admin-set (0 disables it), charged to the
+  // customer alongside the delivery fee rather than quietly folded into it,
+  // so it's always shown as its own line item.
+  const platformFee = roundRupee(config.platformFeeAmount ?? 75);
+  const total = Math.max(0, roundRupee(roundedSubtotal + deliveryFee + platformFee - couponDiscount));
   return {
-    cart, items, subtotal: roundedSubtotal, deliveryFee, total, totalWeightKg,
+    cart, items, subtotal: roundedSubtotal, deliveryFee, platformFee, total, totalWeightKg,
+    itemsProcurementCost: Math.round(itemsProcurementCost * 100) / 100,
     largeOrderWarning: totalWeightKg > threshold, distanceKm: distKm,
     estimatedDeliveryMinutes: computeDeliveryEta(distKm, config),
     minOrderForFreeDelivery: feeConfig.minOrderForFreeDelivery, deliveryFeeBelowMinimum: feeConfig.deliveryFeeBelowMinimum,
@@ -774,6 +821,7 @@ const getQuote = async (req, res) => {
       total: priced.total, totalWeightKg: priced.totalWeightKg, largeOrderWarning: priced.largeOrderWarning,
       distanceKm: priced.distanceKm, estimatedDeliveryMinutes: priced.estimatedDeliveryMinutes,
       minOrderForFreeDelivery: priced.minOrderForFreeDelivery, deliveryFeeBelowMinimum: priced.deliveryFeeBelowMinimum,
+      platformFee: priced.platformFee,
       valueFee: priced.valueFee, distanceSurcharge: priced.distanceSurcharge,
       freeDeliveryDistanceKm: priced.freeDeliveryDistanceKm, distanceStepKm: priced.distanceStepKm,
       distanceChargePerStep: priced.distanceChargePerStep, maxDeliveryDistanceKm: priced.maxDeliveryDistanceKm,
@@ -824,8 +872,9 @@ const createRazorpayOrder = async (req, res) => {
         lat: deliveryAddress.lat, lng: deliveryAddress.lng,
       },
       pricing: {
-        subtotal: priced.subtotal, deliveryFee: priced.deliveryFee, total: priced.total,
+        subtotal: priced.subtotal, deliveryFee: priced.deliveryFee, platformFee: priced.platformFee, total: priced.total,
         couponCode: priced.couponCode || null, couponDiscount: priced.couponDiscount || 0,
+        itemsProcurementCost: priced.itemsProcurementCost || 0,
       },
       totalWeightKg: priced.totalWeightKg,
       deliverySlot: deliverySlot ? {
@@ -883,7 +932,15 @@ const verifyPayment = async (req, res) => {
     order.razorpaySignature = razorpaySignature;
     order.orderStatus = 'confirmed';
     order.timeline.push({ status: 'confirmed', note: 'Payment received' });
+    // Razorpay's own cut — flat 2% of what the customer actually paid,
+    // online payments only (never for demo orders, which never really pay
+    // Razorpay anything). Matches the same rate Koyambedu Daily's P&L uses
+    // (RAZORPAY_FEE_PERCENT) for consistency across verticals.
+    if (!order.isDemoOrder) {
+      order.pricing.razorpayFee = Math.round(order.pricing.total * 2) / 100;
+    }
     await order.save();
+    notifyExpressBuyer(order, 'confirmed').catch(() => {});
 
     if (order.pricing?.couponCode) {
       EptoFreshCoupon.updateOne({ code: order.pricing.couponCode }, { $inc: { usedCount: 1 } }).catch(() => {});
@@ -981,4 +1038,5 @@ module.exports = {
   getCart, addToCart, updateCartItem, clearCart,
   getQuote, createRazorpayOrder, verifyPayment,
   getMyOrders, getMyOrder, cancelMyOrder,
+  notifyExpressBuyer,
 };

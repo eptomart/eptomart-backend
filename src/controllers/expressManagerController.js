@@ -14,6 +14,7 @@ const ExpressAuditLog         = require('../models/ExpressAuditLog');
 const ExpressStockLog         = require('../models/ExpressStockLog');
 const ExpressMarginConfig     = require('../models/ExpressMarginConfig');
 const { computeSellingPrice } = require('../services/expressPricingService');
+const { notifyExpressBuyer } = require('./expressCustomerController');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
 
@@ -312,6 +313,7 @@ const updateOrderStatus = async (req, res) => {
     order.orderStatus = status;
     order.timeline.push({ status, note: note || `Marked ${status} by ${req.manager.name}` });
     await order.save();
+    notifyExpressBuyer(order, status).catch(() => {});
 
     res.json({ success: true, order });
   } catch (err) {

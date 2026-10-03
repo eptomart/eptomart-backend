@@ -45,6 +45,11 @@ const expressMarginConfigSchema = new mongoose.Schema({
   minOrderForFreeDelivery: { type: Number, default: 199, min: 0 },
   deliveryFeeBelowMinimum: { type: Number, default: 29, min: 0 },
 
+  // Flat platform fee charged to the customer at checkout, shown as its own
+  // line item alongside the delivery fee — admin-configurable, set to 0 to
+  // disable it entirely for every store (it's global, not per-store).
+  platformFeeAmount: { type: Number, default: 75, min: 0 },
+
   // Shown to the customer when they're beyond maxDeliveryDistanceKm instead
   // of a dead-end error — a phone/WhatsApp number they can call for a
   // custom (manually arranged) order. Null/empty hides the call-to-action.

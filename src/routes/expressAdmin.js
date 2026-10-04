@@ -92,6 +92,12 @@ router.patch('/orders/:orderId/charges',    protectAdmin, ctrl.adminSetOrderChar
 // Bill-wise + overall profit report (online orders)
 router.get('/orders-pnl', protectAdmin, ctrl.adminOrdersPnL);
 
+// Copy items store → store, and AI-drafted customer replies (draft only —
+// sending goes through the existing WhatsApp inbox reply endpoint after the
+// admin confirms)
+router.post('/stores/copy-items',  protectAdmin, ctrl.adminCopyStoreItems);
+router.post('/messages/draft-reply', protectAdmin, ctrl.adminDraftReply);
+
 // Manual fallback payment reconciliation (see expressRazorpayWebhook for
 // the automatic path)
 router.post('/orders/:orderId/manual-verify-payment', protectAdmin, ctrl.adminManualVerifyExpressPayment);

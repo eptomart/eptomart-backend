@@ -21,6 +21,8 @@ const ExpressBill            = require('../models/ExpressBill');
 const ExpressOnlineListing   = require('../models/ExpressOnlineListing');
 const ExpressBanner          = require('../models/ExpressBanner');
 const ExpressHoldWaitlist    = require('../models/ExpressHoldWaitlist');
+const WhatsAppInboundMessage = require('../models/WhatsAppInboundMessage');
+const User                   = require('../models/User');
 const KoyambeduProduct       = require('../models/KoyambeduProduct');
 const KoyambeduCategory      = require('../models/KoyambeduCategory');
 const Analytics              = require('../models/Analytics');
@@ -1481,6 +1483,123 @@ const adminManualVerifyExpressPayment = async (req, res) => {
   }
 };
 
+// ── Copy items store → store (super admin) ─────────────────────────────
+// Copies what a store SELLS (its online listings: active/inactive state,
+// selling price, MRP) plus its inventory allocation rows (availability and
+// price override) to one or more target stores. Stock is deliberately NOT
+// copied — each target starts at 0 and adds its own, since stock is
+// physical and belongs to one store. Items the target already has are
+// skipped unless overwrite is true (then only price/MRP/state are updated,
+// never the target's stock).
+const adminCopyStoreItems = async (req, res) => {
+  try {
+    const { sourceStoreId, targetStoreIds, productIds, overwrite } = req.body;
+    if (!sourceStoreId || !Array.isArray(targetStoreIds) || !targetStoreIds.length) {
+      return fail(res, 400, 'sourceStoreId and at least one target store are required');
+    }
+    const targets = targetStoreIds.filter(id => String(id) !== String(sourceStoreId));
+    if (!targets.length) return fail(res, 400, 'Target store must differ from the source store');
+
+    const [source, targetDocs] = await Promise.all([
+      ExpressStore.findById(sourceStoreId).lean(),
+      ExpressStore.find({ _id: { $in: targets } }).select('_id name').lean(),
+    ]);
+    if (!source) return fail(res, 404, 'Source store not found');
+    if (targetDocs.length !== targets.length) return fail(res, 404, 'One or more target stores were not found');
+
+    const onlyIds = Array.isArray(productIds) && productIds.length ? new Set(productIds.map(String)) : null;
+    const [listings, storeProducts] = await Promise.all([
+      ExpressOnlineListing.find({ store: sourceStoreId }).lean(),
+      ExpressStoreProduct.find({ store: sourceStoreId }).lean(),
+    ]);
+    const pick = (productId) => !onlyIds || (productId && onlyIds.has(String(productId)));
+
+    const summary = [];
+    for (const target of targetDocs) {
+      let copied = 0, skipped = 0, updated = 0;
+
+      for (const l of listings.filter(x => pick(x.product))) {
+        const key = l.koyambeduProduct
+          ? { store: target._id, koyambeduProduct: l.koyambeduProduct }
+          : { store: target._id, product: l.product };
+        const existing = await ExpressOnlineListing.findOne(key).lean();
+        const data = { product: l.product, isEnabled: l.isEnabled, price: l.price, mrp: l.mrp ?? null, updatedBy: req.user?._id, updatedAt: new Date() };
+        if (existing && !overwrite) { skipped++; continue; }
+        await ExpressOnlineListing.findOneAndUpdate(key, { $set: data, $setOnInsert: key }, { upsert: true, setDefaultsOnInsert: true });
+        existing ? updated++ : copied++;
+      }
+
+      for (const sp of storeProducts.filter(x => pick(x.product))) {
+        const key = { store: target._id, product: sp.product };
+        const existing = await ExpressStoreProduct.findOne(key).lean();
+        if (existing && !overwrite) continue;
+        const set = { isAvailable: sp.isAvailable, priceOverride: sp.priceOverride ?? null };
+        await ExpressStoreProduct.findOneAndUpdate(
+          key,
+          { $set: set, $setOnInsert: { ...key, stockQty: 0 } },
+          { upsert: true, setDefaultsOnInsert: true }
+        );
+      }
+      summary.push({ storeId: target._id, storeName: target.name, copied, updated, skipped });
+    }
+
+    await logAudit({
+      actorType: 'admin', actorName: req.user?.name || 'Admin', action: 'store.copy-items',
+      store: sourceStoreId, meta: { targets, selected: onlyIds ? onlyIds.size : 'all', overwrite: !!overwrite },
+    });
+    res.json({ success: true, summary });
+  } catch (err) {
+    console.error('[express.adminCopyStoreItems]', err);
+    fail(res, 500, 'Failed to copy items');
+  }
+};
+
+// ── AI-drafted customer reply (never sends — admin reviews + confirms) ──
+const REPLY_SYSTEM = `You write WhatsApp replies on behalf of Eptomart Express, a same-day grocery delivery service in India.
+Rules:
+- Tone: dignified, warm, professional, concise (3-6 short lines). No slang, no emojis except at most one gentle one if the customer used one.
+- Begin exactly with "Dear {{SALUTATION}}," — the literal placeholder {{SALUTATION}} stays in the text; it is replaced later.
+- Address the customer's actual question or concern directly. Never invent order status, prices, refunds or promises you were not given. If details are missing, politely say the team is checking and will update shortly.
+- Close with "Warm regards,\\nTeam Eptomart Express".
+- Reply in the same language as the customer (English if unclear).
+Return ONLY JSON: {"title":"Mr."|"Ms."|"","draft":"..."} where title is your best inference from the first name ("" if genuinely unclear).`;
+
+const adminDraftReply = async (req, res) => {
+  try {
+    const { messageId } = req.body;
+    const msg = await WhatsAppInboundMessage.findById(messageId).lean();
+    if (!msg) return fail(res, 404, 'Message not found');
+
+    const last10 = String(msg.from || '').replace(/\D/g, '').slice(-10);
+    const user = last10 ? await User.findOne({ phone: { $regex: `${last10}$` } }).select('name').lean() : null;
+    const name = (user?.name || msg.profileName || '').trim();
+    const recent = user ? await ExpressOrder.findOne({ buyer: user._id }).sort({ createdAt: -1 })
+      .select('orderId orderStatus paymentStatus pricing.total createdAt').lean() : null;
+
+    const prompt = [
+      `Customer name: ${name || 'unknown'}`,
+      `Customer message: ${msg.text || msg.mediaCaption || `[${msg.type} message]`}`,
+      recent ? `Their latest Express order: ${recent.orderId}, status ${recent.orderStatus}, payment ${recent.paymentStatus}, total Rs.${recent.pricing?.total}` : 'No Express order found for this number.',
+    ].join('\n');
+
+    const result = await callClaude({
+      system: REPLY_SYSTEM,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 400,
+      temperature: 0.4,
+    });
+    let parsed;
+    try { parsed = JSON.parse(result.text.trim().replace(/^```json|```$/g, '')); }
+    catch { parsed = { title: '', draft: result.text.trim() }; }
+
+    const first = name.split(/\s+/)[0] || '';
+    res.json({ success: true, customerName: name, firstName: first, title: parsed.title || '', draft: parsed.draft });
+  } catch (err) {
+    console.error('[express.adminDraftReply]', err);
+    fail(res, 500, 'Failed to draft reply');
+  }
+};
+
 // ── Visitors + Carts (mirrors fruitBasketController's adminGetVisitors /
 // adminGetUserCarts patterns — same shared Analytics collection, same
 // per-vertical path-prefix filter, same cart-value aggregation shape) ────
@@ -1650,6 +1769,14 @@ const adminListOnlineCatalog = async (req, res) => {
     const procurementCostByKoyambeduProduct = Object.fromEntries(
       resolvedKoyambeduLinks.map(p => [String(p.koyambeduProduct), p.procurementBaseCost])
     );
+    // For the Product Management tab: the resolved ExpressProduct id (needed
+    // to add stock — null until a Koyambedu product has been turned online
+    // at least once) and this store's current physical stock per product.
+    const productIdByKoyambeduProduct = Object.fromEntries(
+      resolvedKoyambeduLinks.map(p => [String(p.koyambeduProduct), p._id])
+    );
+    const storeStock = await ExpressStoreProduct.find({ store: storeId }).select('product stockQty').lean();
+    const stockByProduct = Object.fromEntries(storeStock.map(s => [String(s.product), s.stockQty || 0]));
 
     const nativeItems = nativeProducts.map(np => {
       const listing = listingByProduct[String(np._id)];
@@ -1663,6 +1790,8 @@ const adminListOnlineCatalog = async (req, res) => {
         isCombo: !!np.isCombo,
         wholesalePrice: np.procurementBaseCost || 0,
         procurementBaseCost: np.procurementBaseCost || 0,
+        productId: np._id,
+        stockQty: stockByProduct[String(np._id)] || 0,
         isEnabled: listing?.isEnabled || false,
         price: listing?.price ?? null,
         mrp: listing?.mrp ?? null,
@@ -1680,6 +1809,8 @@ const adminListOnlineCatalog = async (req, res) => {
         image: kb.images?.find(i => i.isPrimary)?.url || kb.images?.[0]?.url || null,
         wholesalePrice: kb.currentPrice || 0,
         procurementBaseCost: procurementCostByKoyambeduProduct[String(kb._id)] || 0,
+        productId: productIdByKoyambeduProduct[String(kb._id)] || null,
+        stockQty: stockByProduct[String(productIdByKoyambeduProduct[String(kb._id)])] || 0,
         isEnabled: listing?.isEnabled || false,
         price: listing?.price ?? null,
         mrp: listing?.mrp ?? null,
@@ -2110,7 +2241,7 @@ module.exports = {
   listExpenses, createExpense, deleteExpense,
   getFinanceDashboard, adminGetVisitors, adminGetCarts,
   adminListOrders, adminGetOrder, adminUpdateOrderStatus, adminSetOrderCharges, adminOrdersPnL,
-  adminManualVerifyExpressPayment,
+  adminManualVerifyExpressPayment, adminCopyStoreItems, adminDraftReply,
   adminListOnlineCatalog, adminSetOnlineListing, adminSetNativeOnlineListing, adminBulkSetOnlineListing,
   listBanners, createBanner, updateBanner, toggleBannerActive, deleteBanner,
 };

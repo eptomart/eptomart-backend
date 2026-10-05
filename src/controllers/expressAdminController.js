@@ -1525,7 +1525,7 @@ const adminCopyStoreItems = async (req, res) => {
         const existing = await ExpressOnlineListing.findOne(key).lean();
         const data = { product: l.product, isEnabled: l.isEnabled, price: l.price, mrp: l.mrp ?? null, updatedBy: req.user?._id, updatedAt: new Date() };
         if (existing && !overwrite) { skipped++; continue; }
-        await ExpressOnlineListing.findOneAndUpdate(key, { $set: data, $setOnInsert: key }, { upsert: true, setDefaultsOnInsert: true });
+        await ExpressOnlineListing.findOneAndUpdate(key, { $set: data, $setOnInsert: { store: target._id } }, { upsert: true, setDefaultsOnInsert: true });
         existing ? updated++ : copied++;
       }
 
@@ -2020,7 +2020,10 @@ async function upsertOnlineListing(storeId, ref, { isEnabled, price, mrp, procur
 
     return ExpressOnlineListing.findOneAndUpdate(
       { store: storeId, product: product._id },
-      { $set: set, $setOnInsert: { store: storeId, product: product._id } },
+      // `product` is already in `set` (and in the filter), so it must NOT
+      // also appear in $setOnInsert — Mongo rejects the same path in two
+      // operators ("would create a conflict at 'product'").
+      { $set: set, $setOnInsert: { store: storeId } },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
   }

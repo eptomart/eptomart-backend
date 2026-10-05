@@ -18,7 +18,7 @@ const ExpressBanner       = require('../models/ExpressBanner');
 const ExpressHoldWaitlist = require('../models/ExpressHoldWaitlist');
 const EptoFreshCoupon     = require('../models/EptoFreshCoupon');
 const { computeSellingPrice, toKgEquivalent, distanceKm, computeDeliveryFee, computeDistanceSurcharge, computeDeliveryEta, roundRupee } = require('../services/expressPricingService');
-const { sendTemplateWhatsApp } = require('../utils/sendWhatsApp');
+const { sendTemplateWhatsApp, sendMetaWhatsApp } = require('../utils/sendWhatsApp');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
 
@@ -140,6 +140,41 @@ async function notifyExpressBuyer(order, status) {
     if (!r.success) console.warn('[Express WA] Failed to notify', phone, r.error);
   } catch (err) {
     console.error('[express.notifyExpressBuyer]', err.message);
+  }
+}
+
+// New-order alert to the Express admin's WhatsApp. Sent when payment is
+// confirmed (i.e. a real, paid order — not just a cart or pending checkout).
+// Number is EXPRESS_ADMIN_WHATSAPP (digits, env) and defaults to the owner's
+// number. Uses the same approved status template as customer updates (so it
+// can reach the admin even outside Meta's 24h window); if no template is
+// configured it falls back to free text, which only arrives if the admin has
+// messaged the business number in the last 24h.
+const EXPRESS_ADMIN_WHATSAPP_DEFAULT = '9500050027';
+async function notifyExpressAdminNewOrder(order) {
+  try {
+    if (order.isDemoOrder) return; // demo-account test orders are not real orders
+    const adminPhone = process.env.EXPRESS_ADMIN_WHATSAPP || EXPRESS_ADMIN_WHATSAPP_DEFAULT;
+    const store = await ExpressStore.findById(order.store).select('name').lean();
+    const items = (order.items || []).map(i => `${i.name} x${i.quantity}${i.unit ? ' ' + i.unit : ''}`).join(', ');
+    const slot = order.deliverySlot?.label ? ` | Slot: ${order.deliverySlot.label}` : '';
+    const detail = `Store: ${store?.name || '—'} | Customer: ${order.deliveryAddress?.name || '—'} (${order.deliveryAddress?.phone || '—'}) | Total: Rs.${order.pricing?.total} | Items: ${items}${slot}`
+      .replace(/[\n\t]+/g, ' ').slice(0, 900);
+
+    const tpl = process.env.META_WHATSAPP_STATUS_TEMPLATE;
+    let r;
+    if (tpl) {
+      r = await sendTemplateWhatsApp(adminPhone, tpl, [
+        { type: 'body', parameters: ['Admin', order.orderId, 'New Express Order 🔔', detail].map(t => ({ type: 'text', text: String(t) })) },
+      ]);
+    }
+    if (!r || !r.success) {
+      r = await sendMetaWhatsApp(adminPhone,
+        `🔔 *New Eptomart Express order #${order.orderId}*\n${detail.split(' | ').join('\n')}`);
+    }
+    if (!r.success) console.warn('[Express WA] Admin new-order alert failed:', r.error);
+  } catch (err) {
+    console.error('[express.notifyExpressAdminNewOrder]', err.message);
   }
 }
 
@@ -958,6 +993,7 @@ async function confirmExpressPayment(order, { razorpayPaymentId, razorpaySignatu
   }
   await order.save();
   notifyExpressBuyer(order, 'confirmed').catch(() => {});
+  notifyExpressAdminNewOrder(order).catch(() => {});
 
   if (order.pricing?.couponCode) {
     EptoFreshCoupon.updateOne({ code: order.pricing.couponCode }, { $inc: { usedCount: 1 } }).catch(() => {});

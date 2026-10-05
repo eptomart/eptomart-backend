@@ -1562,38 +1562,62 @@ Rules:
 - Address the customer's actual question or concern directly. Never invent order status, prices, refunds or promises you were not given. If details are missing, politely say the team is checking and will update shortly.
 - Close with "Warm regards,\\nTeam Eptomart Express".
 - Reply in the same language as the customer (English if unclear).
-Return ONLY JSON: {"title":"Mr."|"Ms."|"","draft":"..."} where title is your best inference from the first name ("" if genuinely unclear).`;
+- A customer does NOT need an existing order. If there is no order on file, never mention that. If the message is just a greeting or unclear ("hi", "hello", "help"), reply with a warm greeting and the line "How may we help you today?". If they ask about ordering, products, delivery areas or timings, answer only what you were told in the context; otherwise say the team will confirm shortly.
+- If the admin gives an instruction (e.g. "tell him delivery by 5 PM", "make it shorter", "apologise for the delay"), follow it and rewrite the full draft accordingly.
+Return ONLY JSON: {"title":"Mr."|"Ms."|"","draft":"...","note":"one short sentence to the admin about what you did or need"} where title is your best inference from the first name ("" if genuinely unclear).`;
 
 const adminDraftReply = async (req, res) => {
   try {
-    const { messageId } = req.body;
+    const { messageId, instruction, history, currentDraft } = req.body;
     const msg = await WhatsAppInboundMessage.findById(messageId).lean();
     if (!msg) return fail(res, 404, 'Message not found');
 
     const last10 = String(msg.from || '').replace(/\D/g, '').slice(-10);
     const user = last10 ? await User.findOne({ phone: { $regex: `${last10}$` } }).select('name').lean() : null;
     const name = (user?.name || msg.profileName || '').trim();
-    const recent = user ? await ExpressOrder.findOne({ buyer: user._id }).sort({ createdAt: -1 })
-      .select('orderId orderStatus paymentStatus pricing.total createdAt').lean() : null;
+    // Context only — an order is optional. Up to 3 recent Express orders
+    // with items, so the AI can answer "where is my order / what did I buy".
+    const orders = user ? await ExpressOrder.find({ buyer: user._id }).sort({ createdAt: -1 }).limit(3)
+      .select('orderId orderStatus paymentStatus pricing.total createdAt items.name items.quantity items.unit deliverySlot').lean() : [];
+
+    const orderLines = orders.length
+      ? orders.map(o => `- ${o.orderId} (${new Date(o.createdAt).toLocaleDateString('en-IN')}): ${o.orderStatus}, payment ${o.paymentStatus}, Rs.${o.pricing?.total}, delivery slot ${o.deliverySlot?.label || o.deliverySlot?.date || 'n/a'}; items: ${(o.items || []).map(i => `${i.name} ${i.quantity}${i.unit || ''}`).join(', ')}`).join('\n')
+      : 'No Express orders on file for this number (this is fine — they may be a new or prospective customer).';
 
     const prompt = [
       `Customer name: ${name || 'unknown'}`,
       `Customer message: ${msg.text || msg.mediaCaption || `[${msg.type} message]`}`,
-      recent ? `Their latest Express order: ${recent.orderId}, status ${recent.orderStatus}, payment ${recent.paymentStatus}, total Rs.${recent.pricing?.total}` : 'No Express order found for this number.',
+      `Recent Express orders:\n${orderLines}`,
     ].join('\n');
+
+    const turns = [{ role: 'user', content: prompt }];
+    if (Array.isArray(history)) {
+      for (const h of history.slice(-10)) {
+        if (h && (h.role === 'user' || h.role === 'assistant') && h.content) turns.push({ role: h.role, content: String(h.content).slice(0, 2000) });
+      }
+    }
+    if (instruction && String(instruction).trim()) {
+      turns.push({ role: 'user', content: `Admin instruction: ${String(instruction).trim()}${currentDraft ? `\n\nCurrent draft:\n${currentDraft}` : ''}\n\nReturn the updated JSON.` });
+    }
+    // Messages must alternate and end on a user turn.
+    const merged = turns.reduce((acc, t) => {
+      const prev = acc[acc.length - 1];
+      if (prev && prev.role === t.role) prev.content += `\n\n${t.content}`; else acc.push({ ...t });
+      return acc;
+    }, []);
 
     const result = await callClaude({
       system: REPLY_SYSTEM,
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 400,
+      messages: merged,
+      max_tokens: 500,
       temperature: 0.4,
     });
     let parsed;
     try { parsed = JSON.parse(result.text.trim().replace(/^```json|```$/g, '')); }
-    catch { parsed = { title: '', draft: result.text.trim() }; }
+    catch { parsed = { title: '', draft: result.text.trim(), note: '' }; }
 
     const first = name.split(/\s+/)[0] || '';
-    res.json({ success: true, customerName: name, firstName: first, title: parsed.title || '', draft: parsed.draft });
+    res.json({ success: true, customerName: name, firstName: first, title: parsed.title || '', draft: parsed.draft, note: parsed.note || '', raw: result.text });
   } catch (err) {
     console.error('[express.adminDraftReply]', err);
     fail(res, 500, 'Failed to draft reply');

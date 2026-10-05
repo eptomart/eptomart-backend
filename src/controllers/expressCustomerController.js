@@ -601,6 +601,10 @@ const addToCart = async (req, res) => {
     }
     // Merchant-set per-order cap (maxOrderQty) — a business rule distinct
     // from stock availability, checked in addition to it, not instead of it.
+    const minOrderQty = storeProduct.product.minOrderQty;
+    if (minOrderQty != null && requestedTotal < minOrderQty) {
+      return fail(res, 400, `Minimum order for "${productName}" is ${minOrderQty}${storeProduct.product.unit === 'kg' ? ' kg' : ''}.`);
+    }
     const maxOrderQty = storeProduct.product.maxOrderQty;
     if (maxOrderQty != null && requestedTotal > maxOrderQty) {
       return fail(res, 400, `You can order at most ${maxOrderQty}${storeProduct.product.unit === 'kg' ? ' kg' : ''} of "${productName}" per order.`);
@@ -646,7 +650,11 @@ const updateCartItem = async (req, res) => {
       // a confusing "only N left" error at checkout. Validate here instead,
       // at the moment the quantity actually changes.
       const storeProduct = await ExpressStoreProduct.findOne({ store: cart.store, product: productId })
-        .select('stockQty product').populate({ path: 'product', select: 'maxOrderQty unit' }).lean();
+        .select('stockQty product').populate({ path: 'product', select: 'minOrderQty maxOrderQty unit' }).lean();
+      const minQ = storeProduct?.product?.minOrderQty;
+      if (minQ != null && Number(quantity) < minQ) {
+        return fail(res, 400, `Minimum order for "${item.name}" is ${minQ}${storeProduct.product.unit === 'kg' ? ' kg' : ''}.`);
+      }
       if (storeProduct && Number(quantity) > storeProduct.stockQty) {
         return fail(res, 400, `Only ${storeProduct.stockQty} of "${item.name}" left in stock.`);
       }

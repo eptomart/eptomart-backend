@@ -1771,7 +1771,7 @@ const adminListOnlineCatalog = async (req, res) => {
         .sort({ name: 1 })
         .lean(),
       ExpressProduct.find({ koyambeduProduct: { $exists: false }, isActive: true })
-        .select('name unit procurementBaseCost image category isCombo')
+        .select('name unit procurementBaseCost image category isCombo minOrderQty maxOrderQty')
         .sort({ name: 1 })
         .lean(),
       ExpressOnlineListing.find({ store: storeId }).lean(),
@@ -1780,9 +1780,12 @@ const adminListOnlineCatalog = async (req, res) => {
       // used purely to prefill the procurement-cost input below with
       // whatever was last set, if anything.
       ExpressProduct.find({ koyambeduProduct: { $exists: true } })
-        .select('koyambeduProduct procurementBaseCost')
+        .select('koyambeduProduct procurementBaseCost minOrderQty maxOrderQty')
         .lean(),
     ]);
+    const limitsByKoyambeduProduct = Object.fromEntries(
+      resolvedKoyambeduLinks.map(p => [String(p.koyambeduProduct), { min: p.minOrderQty ?? null, max: p.maxOrderQty ?? null }])
+    );
 
     const listingByKoyambeduProduct = Object.fromEntries(
       listings.filter(l => l.koyambeduProduct).map(l => [String(l.koyambeduProduct), l])
@@ -1815,6 +1818,8 @@ const adminListOnlineCatalog = async (req, res) => {
         wholesalePrice: np.procurementBaseCost || 0,
         procurementBaseCost: np.procurementBaseCost || 0,
         productId: np._id,
+        minOrderQty: np.minOrderQty ?? null,
+        maxOrderQty: np.maxOrderQty ?? null,
         stockQty: stockByProduct[String(np._id)] || 0,
         isEnabled: listing?.isEnabled || false,
         price: listing?.price ?? null,
@@ -1834,6 +1839,8 @@ const adminListOnlineCatalog = async (req, res) => {
         wholesalePrice: kb.currentPrice || 0,
         procurementBaseCost: procurementCostByKoyambeduProduct[String(kb._id)] || 0,
         productId: productIdByKoyambeduProduct[String(kb._id)] || null,
+        minOrderQty: limitsByKoyambeduProduct[String(kb._id)]?.min ?? null,
+        maxOrderQty: limitsByKoyambeduProduct[String(kb._id)]?.max ?? null,
         stockQty: stockByProduct[String(productIdByKoyambeduProduct[String(kb._id)])] || 0,
         isEnabled: listing?.isEnabled || false,
         price: listing?.price ?? null,

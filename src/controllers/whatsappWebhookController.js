@@ -172,7 +172,19 @@ exports.replyToMessage = async (req, res) => {
   }
 
   // Send free-text reply via Meta Cloud API
-  await sendMetaWhatsApp(original.from, text.trim());
+  // sendMetaWhatsApp never throws — it resolves { success:false, error } — so
+  // the result MUST be checked, otherwise failures look like "Reply sent".
+  const sent = await sendMetaWhatsApp(original.from, text.trim());
+  if (!sent || sent.success === false) {
+    const reason = sent?.error || 'Unknown error';
+    console.error('[WhatsApp reply] send failed:', reason, 'code=', sent?.code);
+    const friendly =
+      /not configured/i.test(reason) ? 'WhatsApp is not configured on the server (META_WHATSAPP_TOKEN / META_WHATSAPP_PHONE_NUMBER_ID missing).'
+      : sent?.code === 190 || /token|OAuth|session/i.test(reason) ? 'WhatsApp access token expired or invalid — generate a new permanent token in Meta and update META_WHATSAPP_TOKEN.'
+      : sent?.code === 131047 || /24|re-engagement/i.test(reason) ? 'Outside the 24-hour window — Meta only allows templates now.'
+      : `WhatsApp rejected the message: ${reason}`;
+    return res.status(502).json({ success: false, message: friendly });
+  }
 
   // Update message record
   await WhatsAppInboundMessage.findByIdAndUpdate(req.params.id, {

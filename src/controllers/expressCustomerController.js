@@ -558,9 +558,19 @@ async function buildCartResponse(cart, config) {
   const totalWeightKg = Math.round((await computeCartWeightKg(cart)) * 100) / 100;
   const subtotal = roundRupee(cart.items.reduce((sum, i) => sum + i.price * i.quantity, 0));
   const threshold = config.largeOrderThresholdKg || 12;
+  // The cart belongs to ONE store (the one its items were added from). Send the
+  // name/hold state so the app can tell the customer when they are browsing a
+  // different store than the one their cart (and checkout) is actually tied to.
+  let storeName = null, storeIsPaused = false;
+  try {
+    const st = await ExpressStore.findById(cart.store).select('name isPaused isActive').lean();
+    if (st) { storeName = st.name; storeIsPaused = !!st.isPaused || !st.isActive; }
+  } catch { /* non-blocking */ }
   return {
     _id: cart._id,
     store: cart.store,
+    storeName,
+    storeIsPaused,
     items: cart.items,
     // Number of DIFFERENT items in the cart (not the sum of quantities —
     // 2.5 kg of tomato is one item, not 2.5).

@@ -1520,6 +1520,7 @@ const adminManualVerifyExpressPayment = async (req, res) => {
 const adminCopyStoreItems = async (req, res) => {
   try {
     const { sourceStoreId, targetStoreIds, productIds, overwrite } = req.body;
+    const copyStock = req.body.copyStock !== false; // default: copy stock too
     if (!sourceStoreId || !Array.isArray(targetStoreIds) || !targetStoreIds.length) {
       return fail(res, 400, 'sourceStoreId and at least one target store are required');
     }
@@ -1559,10 +1560,15 @@ const adminCopyStoreItems = async (req, res) => {
         const key = { store: target._id, product: sp.product };
         const existing = await ExpressStoreProduct.findOne(key).lean();
         if (existing && !overwrite) continue;
+        // Mirror the source store: availability, price override AND stock.
+        // (copyStock=false keeps the old behaviour of leaving the target's
+        // stock at 0 / untouched.)
         const set = { isAvailable: sp.isAvailable, priceOverride: sp.priceOverride ?? null };
+        const insert = { ...key };
+        if (copyStock) set.stockQty = sp.stockQty || 0; else insert.stockQty = 0;
         await ExpressStoreProduct.findOneAndUpdate(
           key,
-          { $set: set, $setOnInsert: { ...key, stockQty: 0 } },
+          { $set: set, $setOnInsert: insert },
           { upsert: true, setDefaultsOnInsert: true }
         );
       }

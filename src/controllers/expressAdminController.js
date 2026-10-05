@@ -891,6 +891,32 @@ const addStock = async (req, res) => {
   }
 };
 
+// One-touch "out of stock" — zeroes the store's stock for the given products
+// so customers immediately see them as Out of stock online. Items stay
+// listed/active (re-stock later with Add Stock). Not logged as a "loss" in the
+// stock report, since nothing was wasted — it's recorded in the audit log.
+// POST /express/admin/stores/:storeId/mark-out-of-stock  { productIds: [] }
+const markOutOfStock = async (req, res) => {
+  try {
+    const { storeId } = req.params;
+    const productIds = Array.isArray(req.body.productIds) ? req.body.productIds.filter(Boolean) : [];
+    if (!productIds.length) return fail(res, 400, 'productIds is required');
+
+    const result = await ExpressStoreProduct.updateMany(
+      { store: storeId, product: { $in: productIds }, stockQty: { $gt: 0 } },
+      { $set: { stockQty: 0 } }
+    );
+    await logAudit({
+      actorType: 'admin', actorName: req.user?.name || 'Admin', action: 'stock.mark_out_of_stock',
+      store: storeId, meta: { productIds, modified: result.modifiedCount ?? result.nModified ?? 0 },
+    });
+    res.json({ success: true, updated: result.modifiedCount ?? result.nModified ?? 0 });
+  } catch (err) {
+    console.error('[express.markOutOfStock]', err);
+    fail(res, 500, 'Failed to mark out of stock');
+  }
+};
+
 // Report of every manual stock movement (admin additions + store manager
 // losses) — the "report" the admin asked for alongside stock allocation.
 const listStockLogs = async (req, res) => {
@@ -2275,7 +2301,7 @@ module.exports = {
   listExpenses, createExpense, deleteExpense,
   getFinanceDashboard, adminGetVisitors, adminGetCarts,
   adminListOrders, adminGetOrder, adminUpdateOrderStatus, adminSetOrderCharges, adminOrdersPnL,
-  adminManualVerifyExpressPayment, adminCopyStoreItems, adminDraftReply,
+  adminManualVerifyExpressPayment, adminCopyStoreItems, adminDraftReply, markOutOfStock,
   adminListOnlineCatalog, adminSetOnlineListing, adminSetNativeOnlineListing, adminBulkSetOnlineListing,
   listBanners, createBanner, updateBanner, toggleBannerActive, deleteBanner,
 };

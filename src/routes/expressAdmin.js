@@ -59,6 +59,7 @@ router.get   ('/stores/:storeId/products/print-list',   protectAdmin, ctrl.listS
 router.post  ('/stores/:storeId/products',              protectAdmin, ctrl.upsertStoreProduct);
 router.delete('/stores/:storeId/products/:productId',   protectAdmin, ctrl.removeStoreProduct);
 router.post  ('/stores/:storeId/products/:productId/add-stock', protectAdmin, ctrl.addStock);
+router.post  ('/stores/:storeId/mark-out-of-stock', protectAdmin, ctrl.markOutOfStock);
 
 // Combined "pick Koyambedu product → assign to store with stock + price" flow
 router.post  ('/products/assign-to-store', protectAdmin, ctrl.adminAssignProductToStore);

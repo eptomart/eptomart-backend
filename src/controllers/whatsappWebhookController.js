@@ -174,7 +174,10 @@ exports.replyToMessage = async (req, res) => {
   // Send free-text reply via Meta Cloud API
   // sendMetaWhatsApp never throws — it resolves { success:false, error } — so
   // the result MUST be checked, otherwise failures look like "Reply sent".
-  const sent = await sendMetaWhatsApp(original.from, text.trim());
+  console.log(`[WhatsApp reply] sending to ${original.from} (msg ${req.params.id}, ${hoursSince.toFixed(1)}h old)`);
+  let sent;
+  try { sent = await sendMetaWhatsApp(original.from, text.trim()); }
+  catch (e) { sent = { success: false, error: e.message }; }
   if (!sent || sent.success === false) {
     const reason = sent?.error || 'Unknown error';
     console.error('[WhatsApp reply] send failed:', reason, 'code=', sent?.code);

@@ -840,6 +840,28 @@ const getQuote = async (req, res) => {
   }
 };
 
+/** POST /express/visit — records an Express page view (optionally authed) */
+const trackVisit = async (req, res) => {
+  try {
+    const Analytics = require('../models/Analytics');
+    const { parseUserAgent, getClientIp } = require('../utils/generateOtp');
+    const raw = String(req.body?.page || '').slice(0, 120);
+    const page = '/express' + (raw && raw !== '/' ? (raw.startsWith('/') ? raw : '/' + raw) : '/shop').replace(/^\/express/, '');
+    const ua = req.headers['user-agent'] || '';
+    const { browser, os, device } = parseUserAgent(ua);
+    await Analytics.create({
+      sessionId: req.headers['x-session-id'] || `express-${Date.now()}`,
+      ip: getClientIp(req), page, referrer: req.headers.referer || '',
+      userAgent: ua.substring(0, 200), browser, os, device,
+      isBot: /bot|crawler|spider/i.test(ua),
+      userId: req.user?._id || null, timestamp: new Date(),
+    });
+    res.json({ success: true });
+  } catch (err) {
+    res.json({ success: false }); // never surface analytics failures
+  }
+};
+
 /** POST /express/orders/create-razorpay */
 const createRazorpayOrder = async (req, res) => {
   try {
@@ -1098,6 +1120,7 @@ const cancelMyOrder = async (req, res) => {
 };
 
 module.exports = {
+  trackVisit,
   getStatus, getActiveBanners, findNearestStore, getCatalogue,
   listActiveStores, getStoreEta, getOnlineCatalogue, getOnlineCatalogueItem,
   getCart, addToCart, updateCartItem, clearCart,

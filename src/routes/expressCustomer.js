@@ -7,7 +7,12 @@
 const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/expressCustomerController');
-const { protect } = require('../middleware/auth');
+const { protect, optionalAuth } = require('../middleware/auth');
+
+// Page-view beacon: the generic API tracker runs before auth (so it never
+// knows WHO the visitor is) and only sees API GETs. The Express pages call
+// this so visits are recorded per screen, tied to the logged-in user.
+router.post('/visit', optionalAuth, ctrl.trackVisit);
 
 router.get ('/status',                     ctrl.getStatus);
 router.get ('/banners',                    ctrl.getActiveBanners);

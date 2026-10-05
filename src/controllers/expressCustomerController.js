@@ -562,7 +562,9 @@ async function buildCartResponse(cart, config) {
     _id: cart._id,
     store: cart.store,
     items: cart.items,
-    itemCount: cart.items.reduce((sum, i) => sum + i.quantity, 0),
+    // Number of DIFFERENT items in the cart (not the sum of quantities —
+    // 2.5 kg of tomato is one item, not 2.5).
+    itemCount: cart.items.length,
     subtotal,
     totalWeightKg,
     largeOrderWarning: totalWeightKg > threshold,

@@ -35,6 +35,7 @@ const crypto                = require('crypto');
 const {
   sendTemplateWhatsApp,
   sendOrderStatusWhatsApp,
+  sendMetaWhatsApp,
 } = require('../utils/sendWhatsApp');
 
 // ── Delivery constants ───────────────────────
@@ -5604,7 +5605,8 @@ const generateProcurementInvoice = async (req, res) => {
         } else {
           msg += `Prices matched estimated rates — no wallet adjustment needed.`;
         }
-        await sendTemplateWhatsApp(phone, msg);
+        const r = await sendMetaWhatsApp(phone, msg);
+        if (!r?.success) console.warn('[KBD WA] Invoice message failed for', phone, r?.error);
       } catch (_) {}
     });
 

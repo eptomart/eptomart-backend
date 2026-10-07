@@ -254,3 +254,62 @@ exports.markAllRead = async (req, res) => {
   });
   res.json({ success: true, message: 'All messages marked as read' });
 };
+
+
+// ── GET /api/koyambedu/admin/whatsapp/messages/export?from=ISO&to=ISO ───────
+// Excel export of received messages within a date-time range (IST display).
+exports.exportMessages = async (req, res) => {
+  try {
+    const ExcelJS = require('exceljs');
+    const from = req.query.from ? new Date(req.query.from) : null;
+    const to   = req.query.to   ? new Date(req.query.to)   : null;
+    if ((from && isNaN(from)) || (to && isNaN(to))) {
+      return res.status(400).json({ success: false, message: 'Invalid date/time' });
+    }
+    const filter = {};
+    if (from || to) {
+      filter.sentAt = {};
+      if (from) filter.sentAt.$gte = from;
+      if (to)   filter.sentAt.$lte = to;
+    }
+    if (req.query.phone) filter.from = req.query.phone;
+
+    const msgs = await WhatsAppInboundMessage.find(filter).sort({ sentAt: 1 }).limit(50000).lean();
+    const ist = (d) => d ? new Date(d).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }) : '';
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('WhatsApp Messages');
+    ws.columns = [
+      { header: 'Received (IST)', key: 'sentAt', width: 22 },
+      { header: 'Phone', key: 'from', width: 16 },
+      { header: 'Name', key: 'name', width: 22 },
+      { header: 'Type', key: 'type', width: 10 },
+      { header: 'Message', key: 'text', width: 70 },
+      { header: 'Location', key: 'loc', width: 28 },
+      { header: 'Read', key: 'read', width: 7 },
+      { header: 'Replied (IST)', key: 'repliedAt', width: 22 },
+      { header: 'Our Reply', key: 'reply', width: 50 },
+    ];
+    ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF16A34A' } };
+    ws.views = [{ state: 'frozen', ySplit: 1 }];
+    for (const m of msgs) {
+      const text = [m.text, m.mediaCaption].filter(Boolean).join(' — ') || (m.type !== 'text' ? `[${m.type}]` : '');
+      ws.addRow({
+        sentAt: ist(m.sentAt), from: m.from, name: m.profileName || '', type: m.type || 'text',
+        text, loc: m.locationLat != null ? `${m.locationName || ''} (${m.locationLat}, ${m.locationLng})`.trim() : '',
+        read: m.isRead ? 'Yes' : 'No', repliedAt: ist(m.repliedAt), reply: m.replyText || '',
+      });
+    }
+    ws.getColumn('text').alignment = { wrapText: true, vertical: 'top' };
+    ws.getColumn('reply').alignment = { wrapText: true, vertical: 'top' };
+
+    const buf = await wb.xlsx.writeBuffer();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="eptomart-whatsapp-messages.xlsx"');
+    res.send(Buffer.from(buf));
+  } catch (err) {
+    console.error('[whatsapp.exportMessages]', err);
+    res.status(500).json({ success: false, message: 'Export failed' });
+  }
+};

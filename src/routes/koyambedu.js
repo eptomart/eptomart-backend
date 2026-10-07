@@ -403,6 +403,7 @@ router.patch('/admin/schedule/:id/slots/:slotKey/capacity',       protectSuperAd
 // ══════════════════════════════════════════════
 const waCtrl = require('../controllers/whatsappWebhookController');
 router.get   ('/admin/whatsapp/messages',           protectSuperAdmin, waCtrl.listMessages);
+router.get   ('/admin/whatsapp/messages/export',    protectSuperAdmin, waCtrl.exportMessages);
 router.get   ('/admin/whatsapp/messages/:id/media', protectSuperAdmin, waCtrl.getMedia);
 router.patch ('/admin/whatsapp/messages/:id/read',  protectSuperAdmin, waCtrl.markRead);
 router.post  ('/admin/whatsapp/messages/:id/reply', protectSuperAdmin, waCtrl.replyToMessage);

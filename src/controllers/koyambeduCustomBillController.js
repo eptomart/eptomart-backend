@@ -108,3 +108,59 @@ exports.remove = async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 };
+
+// POST /custom-bills/parse { text } — turn pasted text (a WhatsApp order, a
+// handwritten list typed out, a copied bill…) into structured bill fields.
+// Nothing is saved; the admin reviews/edits the result in the form first.
+// Never invents a price: if the text has none, price comes back null.
+const { callClaude } = require('../utils/claudeApi');
+
+const PARSE_SYSTEM = `You convert pasted text into a bill. Return ONLY JSON, no prose, in this exact shape:
+{"customerName":"","location":"","items":[{"name":"","unit":"","qty":0,"price":null}]}
+Rules:
+- One entry per product line. Ignore greetings, totals, bill numbers, dates, payment notes.
+- "name" is the product only (e.g. "Tomato nattu"), without numbering, quantity or price.
+- "unit" is kg, g, pcs, bunch, dozen, ltr, pack, box etc. Convert grams to kg when written as g/gm (500 g -> qty 0.5, unit kg). If no unit is given use "".
+- "qty" is a number. "price" is the PER-UNIT rate as a number. If the text only gives a line amount (e.g. "2 kg = 92"), set price = amount / qty. If no price/amount is present set price to null. NEVER guess a price.
+- "customerName"/"location": only if explicitly stated (e.g. "Name:", "Customer:", "Location:", "Area:"), otherwise "".
+- Keep the original spelling of product names.`;
+
+exports.parseText = async (req, res) => {
+  try {
+    const text = String(req.body.text || '').trim();
+    if (!text) return res.status(400).json({ success: false, message: 'Paste some text first' });
+    if (text.length > 6000) return res.status(400).json({ success: false, message: 'Text is too long (max 6000 characters)' });
+
+    const result = await callClaude({
+      system: PARSE_SYSTEM,
+      messages: [{ role: 'user', content: text }],
+      max_tokens: 1500,
+      temperature: 0,
+    });
+    let parsed;
+    try {
+      const raw = result.text.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+      parsed = JSON.parse(raw);
+    } catch {
+      return res.status(422).json({ success: false, message: 'Could not read that text as a bill' });
+    }
+    const items = (Array.isArray(parsed.items) ? parsed.items : [])
+      .map(it => ({
+        name: String(it?.name || '').trim(),
+        unit: String(it?.unit || '').trim(),
+        qty: Number(it?.qty),
+        price: it?.price === null || it?.price === undefined || it?.price === '' ? null : Number(it.price),
+      }))
+      .filter(it => it.name && Number.isFinite(it.qty) && it.qty > 0)
+      .map(it => ({ ...it, price: Number.isFinite(it.price) ? round2(it.price) : null }));
+    res.json({
+      success: true,
+      customerName: String(parsed.customerName || '').trim(),
+      location: String(parsed.location || '').trim(),
+      items,
+    });
+  } catch (err) {
+    console.error('[koyambedu.customBill.parse]', err.message);
+    res.status(503).json({ success: false, message: 'AI reading is unavailable right now' });
+  }
+};

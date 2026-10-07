@@ -10,6 +10,7 @@ const { protectAdmin } = require('../middleware/adminAuth');
 
 router.get   ('/',    protectAdmin, ctrl.list);
 router.post  ('/',    protectAdmin, ctrl.create);
+router.post  ('/parse', protectAdmin, ctrl.parseText);
 router.put   ('/:id', protectAdmin, ctrl.update);
 router.delete('/:id', protectAdmin, ctrl.remove);
 

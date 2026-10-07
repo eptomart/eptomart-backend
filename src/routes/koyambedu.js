@@ -56,6 +56,7 @@ router.use('/combos', koyambeduComboRoutes);
 router.use('/home-tabs', koyambeduHomeTabsRoutes);
 router.use('/bulk-harvest', koyambeduBulkHarvestRoutes);
 router.use('/news', koyambeduNewsRoutes);
+router.use('/custom-bills', require('./koyambeduCustomBills'));
 
 // ══════════════════════════════════════════════
 // DEV SETTINGS — public read, superAdmin write

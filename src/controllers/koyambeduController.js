@@ -505,7 +505,7 @@ const checkDeliveryAvailability = async (req, res) => {
     });
   }
 
-  const distanceKm = haversineKm(Number(lat), Number(lng), KOYAMBEDU_LAT, KOYAMBEDU_LNG);
+  const { distanceKm, hubName } = await KoyambeduSettings.distanceFromNearestHub(Number(lat), Number(lng));
 
   // Cart-composition-aware small-order charges (see computeKoyambeduCharges):
   // light carts — ≤10 bunches AND ≤5kg of non-bunch items (or ≤12kg with no
@@ -565,6 +565,7 @@ const checkDeliveryAvailability = async (req, res) => {
     success:       true,
     available:     true,
     distanceKm:    kmRounded,
+    hubName,
     deliveryCharge:         charges.deliveryCharge,
     originalDeliveryCharge: charges.originalDeliveryCharge,
     platformFee:            previewPlatformFee,
@@ -867,10 +868,7 @@ const placeOrder = async (req, res) => {
   const todayISO  = nowIST.toISOString().split('T')[0];
 
   // ── 2. Distance check ─────────────────────────────────────
-  const distanceKm = haversineKm(
-    Number(buyerLocation.lat), Number(buyerLocation.lng),
-    KOYAMBEDU_LAT, KOYAMBEDU_LNG
-  );
+  const { distanceKm, hubName } = await KoyambeduSettings.distanceFromNearestHub(Number(buyerLocation.lat), Number(buyerLocation.lng));
   // ── 3. Address ────────────────────────────────────────────
   if (!shippingAddress?.fullName || !shippingAddress?.addressLine1 || !shippingAddress?.pincode) {
     return res.status(400).json({ success: false, message: 'Full shipping address required' });
@@ -1162,6 +1160,7 @@ const placeOrder = async (req, res) => {
     subtotal,
     deliveryCharge,
     deliveryDistance: Math.round(distanceKm * 10) / 10,
+    deliveryHub: hubName,
     platformFee: finalPlatformFee,
     packingLogisticsFee: packingCharge,
     discount:       couponDiscount,

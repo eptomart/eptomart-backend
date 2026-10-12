@@ -85,6 +85,24 @@ const koyambeduSettingsSchema = new mongoose.Schema({
     updatedAt:     { type: Date },
   },
 
+  // ── Delivery Hubs ──────────────────────────────────────────────────
+  // Super Admin controlled. Delivery distance (and therefore delivery charge)
+  // is measured from the NEAREST ACTIVE hub instead of always from the
+  // Koyambedu market. A hub is either mapped from an Eptomart Express store
+  // (expressStore set — coordinates copied from that store) or a custom pin.
+  // With no active hubs, distance falls back to the Koyambedu market so
+  // behaviour is unchanged until the admin adds a hub.
+  hubs: {
+    type: [{
+      name:         { type: String, required: true, trim: true },
+      lat:          { type: Number, required: true },
+      lng:          { type: Number, required: true },
+      expressStore: { type: mongoose.Schema.Types.ObjectId, ref: 'ExpressStore', default: null },
+      isActive:     { type: Boolean, default: true },
+    }],
+    default: [],
+  },
+
 }, { timestamps: true });
 
 /** Upsert the global lastProductUpdateTime */
@@ -94,6 +112,26 @@ koyambeduSettingsSchema.statics.touchPriceUpdate = async function(userId, userNa
     { lastProductUpdateTime: new Date(), lastProductUpdateBy: userId, lastProductUpdateByName: userName },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
+};
+
+const _KB_LAT = 13.0748, _KB_LNG = 80.2136;
+const _hav = (lat1, lon1, lat2, lon2) => {
+  const R = 6371, r = Math.PI / 180;
+  const dLat = (lat2 - lat1) * r, dLon = (lon2 - lon1) * r;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+/** Distance from (lat,lng) to the nearest active hub → { distanceKm, hubName }. Falls back to Koyambedu market. */
+koyambeduSettingsSchema.statics.distanceFromNearestHub = async function(lat, lng) {
+  const doc = await this.findOne({ key: 'global' }).select('hubs').lean();
+  const hubs = (doc?.hubs || []).filter(h => h.isActive !== false && Number.isFinite(h.lat) && Number.isFinite(h.lng));
+  if (!hubs.length) return { distanceKm: _hav(lat, lng, _KB_LAT, _KB_LNG), hubName: 'Koyambedu' };
+  let best = null;
+  for (const h of hubs) {
+    const d = _hav(lat, lng, h.lat, h.lng);
+    if (!best || d < best.distanceKm) best = { distanceKm: d, hubName: h.name };
+  }
+  return best;
 };
 
 /** Get the global settings doc (creates if missing) */

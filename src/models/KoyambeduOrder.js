@@ -291,6 +291,7 @@ const koyambeduOrderSchema = new Schema({
     subtotal:            { type: Number, default: 0 },
     deliveryCharge:      { type: Number, default: 249 },
     deliveryDistance:    { type: Number, default: 0 },
+    deliveryHub:         { type: String, default: '' },  // hub the distance was measured from
     platformFee:         { type: Number, default: 15 },
     packingLogisticsFee: { type: Number, default: 0 },
     serviceFee:          { type: Number, default: 0 },  // legacy

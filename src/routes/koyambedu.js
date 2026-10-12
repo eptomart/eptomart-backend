@@ -401,6 +401,9 @@ router.patch('/admin/schedule/:id/slots/:slotKey/capacity',       protectSuperAd
 // ══════════════════════════════════════════════
 // WHATSAPP INBOX — Super Admin only
 // ══════════════════════════════════════════════
+const hubCtrl = require('../controllers/koyambeduHubController');
+router.get('/admin/hubs', protectSuperAdmin, hubCtrl.list);
+router.put('/admin/hubs', protectSuperAdmin, hubCtrl.save);
 const waCtrl = require('../controllers/whatsappWebhookController');
 router.get   ('/admin/whatsapp/messages',           protectSuperAdmin, waCtrl.listMessages);
 router.get   ('/admin/whatsapp/messages/export',    protectSuperAdmin, waCtrl.exportMessages);

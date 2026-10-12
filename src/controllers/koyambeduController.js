@@ -992,7 +992,6 @@ const placeOrder = async (req, res) => {
         }
       }
     } else {
-      const KoyambeduSettings = require('../models/KoyambeduSettings');
       const sameDay = await KoyambeduSettings.getSameDayDelivery();
       if (!sameDay.enabled) {
         return res.status(400).json({ success: false, message: 'Same-day delivery is currently unavailable. Please choose tomorrow\'s delivery instead.' });
@@ -1012,7 +1011,6 @@ const placeOrder = async (req, res) => {
   // Both minimums are Super-Admin managed and kept independent: combo carts
   // use KoyambeduComboSettings.minOrderValue, normal carts use
   // KoyambeduSettings.orderMinimum.value (replaces the old hardcoded ₹799).
-  const KoyambeduSettings = require('../models/KoyambeduSettings');
   let normalOrderMinDoc = null;
   if (!comboActive) {
     normalOrderMinDoc = await KoyambeduSettings.getOrderMinimum();

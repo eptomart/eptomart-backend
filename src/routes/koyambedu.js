@@ -109,6 +109,7 @@ router.get ('/slots',                  ctrl.getDeliverySlots);
 
 // ── Delivery Schedule (public: available slots for checkout) ──
 router.get('/schedule/available',      optionalAuth, schedCtrl.getAvailableSlots);
+router.get('/schedule/config',         schedCtrl.getPublicConfig);
 
 // ══════════════════════════════════════════════
 // DELIVERY CHECK — auth optional (returns weight-based charge if logged in)
@@ -392,6 +393,9 @@ router.patch('/seller-admin/special-requests/:id',   protectSellerAdmin, ctrl.up
 // DELIVERY SCHEDULE MANAGEMENT — Super Admin only
 // ══════════════════════════════════════════════
 router.get  ('/admin/schedule/stats',                             protectSuperAdmin, schedCtrl.getScheduleStats);
+router.get  ('/admin/schedule/config',                            protectSuperAdmin, schedCtrl.adminGetConfig);
+router.put  ('/admin/schedule/config',                            protectSuperAdmin, schedCtrl.adminSaveConfig);
+router.post ('/admin/schedule/advance-open',                      protectSuperAdmin, schedCtrl.setAdvanceOpen);
 router.get  ('/admin/schedule',                                   protectSuperAdmin, schedCtrl.adminGetSchedules);
 router.post ('/admin/schedule/generate',                          protectSuperAdmin, schedCtrl.generateSchedules);
 router.patch('/admin/schedule/:id/status',                        protectSuperAdmin, schedCtrl.toggleDateStatus);

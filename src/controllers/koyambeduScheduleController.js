@@ -5,6 +5,18 @@
 // ============================================================
 const KoyambeduDeliverySchedule = require('../models/KoyambeduDeliverySchedule');
 const KoyambeduOrder = require('../models/KoyambeduOrder');
+const KoyambeduSettings = require('../models/KoyambeduSettings');
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Whole days from today (IST) to dateISO. */
+const daysFromToday = (dateISO) => Math.round((new Date(dateISO + 'T00:00:00Z') - new Date(istDateISO() + 'T00:00:00Z')) / DAY_MS);
+/** Bookable = today..today+advanceDays-1, or a later date the admin opened for pre-booking. */
+const isBookable = (dateISO, cfg, sched) => {
+  const d = daysFromToday(dateISO);
+  if (d < 0) return false;
+  if (d < cfg.advanceDays) return true;
+  return !!(sched && sched.advanceOpen && sched.status === 'open');
+};
 
 // ── Helpers ──────────────────────────────────────────────────
 /** IST offset = UTC+5:30 */
@@ -41,7 +53,12 @@ exports.getAvailableSlots = async (req, res) => {
     const isToday = dateISO === today;
     const hour    = istHour();
 
+    const cfg   = await KoyambeduSettings.getScheduleConfig();
     const sched = await KoyambeduDeliverySchedule.getOrCreate(dateISO);
+
+    if (!isBookable(dateISO, cfg, sched)) {
+      return res.json({ success: true, available: [], scheduleStatus: 'closed', notBookable: true });
+    }
 
     // Sync live order counts
     await syncOrderCounts(sched);
@@ -53,7 +70,7 @@ exports.getAvailableSlots = async (req, res) => {
 
     const available = sched.slots
       .filter(sl => {
-        if (!sl.isEnabled) return false;
+        if (!KoyambeduDeliverySchedule.slotEffective(sl, cfg.disabledSlots)) return false;
         if (sl.currentOrders >= sl.maxCapacity) return false;
         // For today: slot must not have already started
         if (isToday && hour >= sl.startHour) return false;
@@ -103,13 +120,20 @@ exports.adminGetSchedules = async (req, res) => {
       countMap[k] = c.count;
     });
 
+    const cfg = await KoyambeduSettings.getScheduleConfig();
     scheds = scheds.map(s => ({
       ...s,
-      slots: s.slots.map(sl => ({
-        ...sl,
-        currentOrders: countMap[`${s.dateISO}::${sl.key}`] || 0,
-        remaining:     sl.maxCapacity - (countMap[`${s.dateISO}::${sl.key}`] || 0),
-      })),
+      inWindow: daysFromToday(s.dateISO) >= 0 && daysFromToday(s.dateISO) < cfg.advanceDays,
+      slots: s.slots.map(sl => {
+        const eff = KoyambeduDeliverySchedule.slotEffective(sl, cfg.disabledSlots);
+        return {
+          ...sl,
+          globalOff:     cfg.disabledSlots.includes(sl.key),
+          isEnabled:     eff,            // effective state the UI shows
+          currentOrders: countMap[`${s.dateISO}::${sl.key}`] || 0,
+          remaining:     sl.maxCapacity - (countMap[`${s.dateISO}::${sl.key}`] || 0),
+        };
+      }),
     }));
 
     // Filter by slotStatus if provided
@@ -152,7 +176,7 @@ exports.adminGetSchedules = async (req, res) => {
 // POST /api/koyambedu/admin/schedule/generate  { days: 14 }
 exports.generateSchedules = async (req, res) => {
   try {
-    const days  = Math.min(parseInt(req.body.days) || 14, 60);
+    const days  = Math.min(parseInt(req.body.days) || 14, 90);
     const today = istDateISO();
     const created = [];
 
@@ -214,9 +238,9 @@ exports.toggleDateStatus = async (req, res) => {
 exports.toggleSlotStatus = async (req, res) => {
   try {
     const { slotKey } = req.params;
-    const { isEnabled } = req.body;
-    if (typeof isEnabled !== 'boolean') {
-      return res.status(400).json({ success: false, message: 'isEnabled must be boolean' });
+    const { isEnabled, reset } = req.body;
+    if (!reset && typeof isEnabled !== 'boolean') {
+      return res.status(400).json({ success: false, message: 'isEnabled must be boolean (or reset: true)' });
     }
     const sched = await KoyambeduDeliverySchedule.findById(req.params.id);
     if (!sched) return res.status(404).json({ success: false, message: 'Schedule not found' });
@@ -224,24 +248,30 @@ exports.toggleSlotStatus = async (req, res) => {
     const slot = sched.slots.find(s => s.key === slotKey);
     if (!slot) return res.status(404).json({ success: false, message: 'Slot not found' });
 
-    const prev = slot.isEnabled;
-    slot.isEnabled    = isEnabled;
+    const prev = slot.override || (slot.isEnabled === false ? 'off' : 'global');
+    if (reset) {                      // follow the global switch again
+      slot.override  = null;
+      slot.isEnabled = true;
+    } else {                          // explicit day-level decision (beats the global switch)
+      slot.override  = isEnabled ? 'on' : 'off';
+      slot.isEnabled = isEnabled;
+    }
     slot.updatedBy    = req.user._id;
     slot.updatedByName= req.user.name || req.user.email;
     slot.updatedAt    = new Date();
     sched.updatedBy   = req.user._id;
 
-    sched.addAudit(isEnabled ? 'slot_enabled' : 'slot_disabled', {
+    sched.addAudit(reset ? 'slot_reset_to_global' : (isEnabled ? 'slot_enabled' : 'slot_disabled'), {
       slotKey,
-      field:         'isEnabled',
+      field:         'override',
       prevValue:     prev,
-      newValue:      isEnabled,
+      newValue:      reset ? 'global' : (isEnabled ? 'on' : 'off'),
       updatedBy:     req.user._id,
       updatedByName: req.user.name || req.user.email,
     });
     await sched.save();
 
-    res.json({ success: true, slot, message: `${slotKey} is now ${isEnabled ? 'enabled' : 'disabled'}` });
+    res.json({ success: true, slot, message: reset ? `${slotKey} now follows the global setting` : `${slotKey} is now ${isEnabled ? 'enabled' : 'disabled'} for this day` });
   } catch (err) {
     console.error('[Schedule] toggleSlotStatus error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -328,7 +358,11 @@ exports.validateSlotForOrder = async (dateISO, slotKey) => {
   const isToday = dateISO === today;
   const hour   = istHour();
 
+  const cfg   = await KoyambeduSettings.getScheduleConfig();
   const sched = await KoyambeduDeliverySchedule.getOrCreate(dateISO);
+  if (!isBookable(dateISO, cfg, sched)) {
+    return { valid: false, message: 'Bookings are not open for the selected date yet. Please choose an available date.' };
+  }
   if (sched.status !== 'open') {
     return { valid: false, message: 'Delivery is not available for the selected date.' };
   }
@@ -337,7 +371,7 @@ exports.validateSlotForOrder = async (dateISO, slotKey) => {
   if (!slot) {
     return { valid: false, message: 'Invalid delivery slot.' };
   }
-  if (!slot.isEnabled) {
+  if (!KoyambeduDeliverySchedule.slotEffective(slot, cfg.disabledSlots)) {
     return { valid: false, message: `The selected delivery slot (${slot.label}) is no longer available. Please choose another slot.` };
   }
 
@@ -357,4 +391,91 @@ exports.validateSlotForOrder = async (dateISO, slotKey) => {
   }
 
   return { valid: true };
+};
+
+
+// ── 9. Public: bookable dates beyond tomorrow ────────────────
+// GET /api/koyambedu/schedule/config → { advanceDays, laterDates: [{ dateISO }] }
+// Dates from day-after-tomorrow up to the booking window, plus any date the
+// admin opened for pre-booking. Today/tomorrow stay as the existing tabs.
+exports.getPublicConfig = async (req, res) => {
+  try {
+    const cfg = await KoyambeduSettings.getScheduleConfig();
+    const today = istDateISO();
+    const set = new Map();
+    for (let i = 2; i < cfg.advanceDays; i++) {
+      const d = new Date(today + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + i);
+      set.set(d.toISOString().slice(0, 10), true);
+    }
+    const extra = await KoyambeduDeliverySchedule.find({ advanceOpen: true, status: 'open', dateISO: { $gt: today } }).select('dateISO slots').lean();
+    for (const e of extra) if (daysFromToday(e.dateISO) >= 2) set.set(e.dateISO, true);
+    // Drop dates the admin closed or that have every slot off
+    const dates = [...set.keys()].sort();
+    const docs = await KoyambeduDeliverySchedule.find({ dateISO: { $in: dates } }).lean();
+    const byISO = new Map(docs.map(d => [d.dateISO, d]));
+    const laterDates = dates.filter(iso => {
+      const d = byISO.get(iso);
+      if (!d) return cfg.disabledSlots.length < 4;                    // not created yet → follows global switches
+      if (d.status === 'closed') return false;
+      return d.slots.some(sl => KoyambeduDeliverySchedule.slotEffective(sl, cfg.disabledSlots));
+    }).map(dateISO => ({ dateISO }));
+    res.json({ success: true, advanceDays: cfg.advanceDays, laterDates });
+  } catch (err) {
+    console.error('[Schedule] getPublicConfig error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// ── 10. Admin: booking window + global slot switches ─────────
+// GET/PUT /api/koyambedu/admin/schedule/config
+exports.adminGetConfig = async (req, res) => {
+  try {
+    const cfg = await KoyambeduSettings.getScheduleConfig();
+    const { DEFAULT_SLOTS } = require('../models/KoyambeduDeliverySchedule');
+    res.json({ success: true, ...cfg, slots: DEFAULT_SLOTS.map(s => ({ key: s.key, label: s.label })) });
+  } catch (err) { res.status(500).json({ success: false, message: 'Server error' }); }
+};
+
+exports.adminSaveConfig = async (req, res) => {
+  try {
+    const advanceDays = Math.floor(Number(req.body.advanceDays));
+    if (!Number.isFinite(advanceDays) || advanceDays < 1 || advanceDays > 90) {
+      return res.status(400).json({ success: false, message: 'Booking days must be between 1 and 90' });
+    }
+    const valid = ['slot1', 'slot2', 'slot3', 'slot4'];
+    const disabledSlots = (Array.isArray(req.body.disabledSlots) ? req.body.disabledSlots : []).filter(k => valid.includes(k));
+    await KoyambeduSettings.findOneAndUpdate(
+      { key: 'global' },
+      { $set: { 'scheduleConfig.advanceDays': advanceDays, 'scheduleConfig.disabledSlots': disabledSlots,
+                'scheduleConfig.updatedByName': req.user.name || req.user.email, 'scheduleConfig.updatedAt': new Date() } },
+      { upsert: true, setDefaultsOnInsert: true });
+    res.json({ success: true, advanceDays, disabledSlots, message: 'Booking settings saved' });
+  } catch (err) {
+    console.error('[Schedule] adminSaveConfig error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// ── 11. Admin: open / close ONE date for pre-booking (beyond the window) ──
+// POST /api/koyambedu/admin/schedule/advance-open { dateISO, advanceOpen }
+exports.setAdvanceOpen = async (req, res) => {
+  try {
+    const { dateISO } = req.body;
+    const open = req.body.advanceOpen !== false;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateISO || ''))) return res.status(400).json({ success: false, message: 'Valid date required' });
+    if (daysFromToday(dateISO) < 0) return res.status(400).json({ success: false, message: 'Date is in the past' });
+    if (daysFromToday(dateISO) > 365) return res.status(400).json({ success: false, message: 'Date too far ahead' });
+    const sched = await KoyambeduDeliverySchedule.getOrCreate(dateISO);
+    sched.advanceOpen = open;
+    if (open) sched.status = 'open';
+    sched.updatedBy = req.user._id;
+    sched.addAudit(open ? 'prebooking_opened' : 'prebooking_closed', {
+      field: 'advanceOpen', prevValue: !open, newValue: open, updatedBy: req.user._id, updatedByName: req.user.name || req.user.email,
+    });
+    await sched.save();
+    res.json({ success: true, schedule: sched, message: open ? `${dateISO} is open for pre-booking` : `${dateISO} pre-booking closed` });
+  } catch (err) {
+    console.error('[Schedule] setAdvanceOpen error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
 };

@@ -24,6 +24,9 @@ const slotSchema = new Schema({
   maxCapacity:  { type: Number, default: 100 },
   currentOrders:{ type: Number, default: 0 },       // cached; refreshed on admin view
   isEnabled:    { type: Boolean, default: true },
+  // Day-level override of the GLOBAL slot switch: 'on' = open this day even if the
+  // slot is off globally, 'off' = closed this day, null = follow the global switch.
+  override:     { type: String, enum: ['on', 'off', null], default: null },
   updatedBy:    { type: Schema.Types.ObjectId, ref: 'User' },
   updatedByName:{ type: String },
   updatedAt:    { type: Date },
@@ -46,6 +49,8 @@ const deliveryScheduleSchema = new Schema({
   // Human-readable ISO date for easy queries (e.g. "2026-07-08")
   dateISO:    { type: String, required: true, unique: true, index: true },
   status:     { type: String, enum: ['open','closed'], default: 'open' },
+  // Admin opened this date for pre-booking even though it is beyond the booking window
+  advanceOpen:{ type: Boolean, default: false },
   slots:      { type: [slotSchema], default: () => DEFAULT_SLOTS.map(s => ({ ...s })) },
   auditLog:   { type: [auditLogSchema], default: [] },
   createdBy:  { type: Schema.Types.ObjectId, ref: 'User' },
@@ -83,6 +88,14 @@ deliveryScheduleSchema.methods.addAudit = function(action, opts = {}) {
     updatedByName: opts.updatedByName || null,
     timestamp:     new Date(),
   });
+};
+
+/** Effective on/off for a slot on a day: day override → legacy per-day off → global switch. */
+deliveryScheduleSchema.statics.slotEffective = function(slot, disabledSlots = []) {
+  if (slot.override === 'on')  return true;
+  if (slot.override === 'off') return false;
+  if (slot.isEnabled === false) return false;      // legacy per-day switch-off
+  return !disabledSlots.includes(slot.key);
 };
 
 module.exports = mongoose.model('KoyambeduDeliverySchedule', deliveryScheduleSchema);

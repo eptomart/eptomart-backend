@@ -85,6 +85,19 @@ const koyambeduSettingsSchema = new mongoose.Schema({
     updatedAt:     { type: Date },
   },
 
+  // ── Booking window & global slot switches (Koyambedu Daily schedule) ──
+  // advanceDays = how many days customers can book, counting today
+  // (2 = today + tomorrow, 7 = a week ahead). disabledSlots = slot keys
+  // switched OFF for every day; a single day can still override a slot ON
+  // (see KoyambeduDeliverySchedule slot.override). A date beyond the window
+  // is bookable only if the admin opened it for pre-booking (schedule.advanceOpen).
+  scheduleConfig: {
+    advanceDays:   { type: Number, default: 2, min: 1, max: 90 },
+    disabledSlots: { type: [String], default: [] },
+    updatedByName: { type: String },
+    updatedAt:     { type: Date },
+  },
+
   // ── Delivery Hubs ──────────────────────────────────────────────────
   // Super Admin controlled. Delivery distance (and therefore delivery charge)
   // is measured from the NEAREST ACTIVE hub instead of always from the
@@ -112,6 +125,17 @@ koyambeduSettingsSchema.statics.touchPriceUpdate = async function(userId, userNa
     { lastProductUpdateTime: new Date(), lastProductUpdateBy: userId, lastProductUpdateByName: userName },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
+};
+
+/** Booking window + globally-off slots, with safe defaults. */
+koyambeduSettingsSchema.statics.getScheduleConfig = async function() {
+  const doc = await this.findOne({ key: 'global' }).select('scheduleConfig').lean();
+  const c = doc?.scheduleConfig || {};
+  const n = Number(c.advanceDays);
+  return {
+    advanceDays: Number.isFinite(n) && n >= 1 ? Math.min(90, Math.floor(n)) : 2,
+    disabledSlots: Array.isArray(c.disabledSlots) ? c.disabledSlots : [],
+  };
 };
 
 const _KB_LAT = 13.0748, _KB_LNG = 80.2136;

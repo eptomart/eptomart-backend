@@ -415,22 +415,29 @@ const listPOSUsers = async (req, res) => {
   }
 };
 
+const cleanPhone = (v) => String(v || '').replace(/\D/g, '').slice(-10);
+
 const createPOSUser = async (req, res) => {
   try {
-    const { name, username, pin, storeId } = req.body;
-    if (!name || !username || !pin || !storeId) {
-      return fail(res, 400, 'name, username, pin and storeId are required');
+    const { name, pin, storeId } = req.body;
+    const phone = cleanPhone(req.body.phone);
+    // Username is optional now — defaults to the mobile number
+    const username = String(req.body.username || phone || '').trim().toLowerCase();
+    if (!name || !pin || !storeId || !username) {
+      return fail(res, 400, 'name, mobile number, pin and store are required');
     }
+    if (req.body.phone && phone.length !== 10) return fail(res, 400, 'Enter a valid 10-digit mobile number');
+    if (!phone) return fail(res, 400, 'Mobile number is required');
     const store = await ExpressStore.findById(storeId);
     if (!store) return fail(res, 404, 'Store not found');
 
-    const posUser = await ExpressPOSUser.create({ name, username, pin, store: storeId });
+    const posUser = await ExpressPOSUser.create({ name, username, phone, pin, store: storeId });
     await logAudit({ actorType: 'admin', actorName: req.user?.name || 'Admin', action: 'pos.create', store: storeId, meta: { posName: name } });
 
     const safe = posUser.toObject(); delete safe.pin;
     res.status(201).json({ success: true, posUser: safe });
   } catch (err) {
-    if (err.code === 11000) return fail(res, 409, 'A POS user with this username already exists');
+    if (err.code === 11000) return fail(res, 409, 'A POS user with this mobile number or username already exists');
     console.error('[express.createPOSUser]', err);
     fail(res, 500, 'Failed to create POS user');
   }
@@ -439,18 +446,29 @@ const createPOSUser = async (req, res) => {
 const updatePOSUser = async (req, res) => {
   try {
     const { posUserId } = req.params;
-    const { name, isActive, pin } = req.body;
+    const { name, isActive, pin, storeId } = req.body;
     const posUser = await ExpressPOSUser.findById(posUserId);
     if (!posUser) return fail(res, 404, 'POS user not found');
 
     if (name != null) posUser.name = name;
     if (isActive != null) posUser.isActive = isActive;
     if (pin) posUser.pin = pin;
+    if (req.body.phone != null) {
+      const phone = cleanPhone(req.body.phone);
+      if (phone.length !== 10) return fail(res, 400, 'Enter a valid 10-digit mobile number');
+      posUser.phone = phone;
+    }
+    if (storeId) {
+      const store = await ExpressStore.findById(storeId);
+      if (!store) return fail(res, 404, 'Store not found');
+      posUser.store = storeId;
+    }
     await posUser.save();
 
     const safe = posUser.toObject(); delete safe.pin;
     res.json({ success: true, posUser: safe });
   } catch (err) {
+    if (err.code === 11000) return fail(res, 409, 'That mobile number is already assigned to another POS user');
     console.error('[express.updatePOSUser]', err);
     fail(res, 500, 'Failed to update POS user');
   }

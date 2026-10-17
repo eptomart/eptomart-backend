@@ -1,7 +1,7 @@
 // ============================================
 // EPTOMART EXPRESS — POS Bill Model
 // Covers spec sections 6, 17 & 18: POS users create bills, can hold up to
-// 4 at once, resume held bills, and complete a sale (which is billed and
+// 5 at once, resume held bills, and complete a sale (which is billed and
 // reflected in the store's sales records). A bill is "held" the moment
 // it's created — completing it is a separate explicit action, and voiding
 // frees up a held slot without it ever counting as a sale.
@@ -42,6 +42,10 @@ const expressBillSchema = new Schema({
 
   status: { type: String, enum: ['held', 'completed', 'voided'], default: 'held' },
   paymentMethod: { type: String, enum: ['cash', 'upi', 'card', null], default: null },
+  // Cash handling: what the customer handed over and the change given back.
+  // For UPI/card the amount received equals the total and change is 0.
+  amountTendered: { type: Number, default: null },
+  changeReturned: { type: Number, default: null },
   completedAt: Date,
 }, { timestamps: true });
 

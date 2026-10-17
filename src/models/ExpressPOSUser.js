@@ -12,6 +12,9 @@ const expressPOSUserSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   // POS staff log in with a short username + PIN at the counter, not a phone/OTP flow
   username: { type: String, required: true, unique: true, trim: true, lowercase: true },
+  // Mobile number assigned by Admin (10 digits). The POS user can log in with
+  // this number + PIN, and it identifies them at their assigned store.
+  phone: { type: String, trim: true, unique: true, sparse: true },
   pin: { type: String, required: true, minlength: 4, select: false }, // hashed
   store: { type: mongoose.Schema.Types.ObjectId, ref: 'ExpressStore', required: true },
   isActive: { type: Boolean, default: true },

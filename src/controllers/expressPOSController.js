@@ -10,10 +10,11 @@
 const ExpressStoreProduct = require('../models/ExpressStoreProduct');
 const ExpressMarginConfig = require('../models/ExpressMarginConfig');
 const ExpressBill         = require('../models/ExpressBill');
+const ExpressOrder        = require('../models/ExpressOrder');
 const { computeSellingPrice } = require('../services/expressPricingService');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
-const MAX_HELD_BILLS = 4;
+const MAX_HELD_BILLS = 5;
 
 async function getMarginConfig() {
   let config = await ExpressMarginConfig.findOne({ key: 'default' });
@@ -187,10 +188,21 @@ const applyDiscount = async (req, res) => {
 const completeBill = async (req, res) => {
   try {
     const { paymentMethod } = req.body;
+    if (!['cash', 'upi', 'card'].includes(paymentMethod)) return fail(res, 400, 'Select a payment mode (cash, UPI or card)');
     const bill = await ExpressBill.findOne({ _id: req.params.billId, posUser: req.posUser._id, createdAt: { $gte: req.posSessionAt } });
     if (!bill) return fail(res, 404, 'Bill not found');
     if (bill.status !== 'held') return fail(res, 400, 'Bill already processed');
     if (bill.items.length === 0) return fail(res, 400, 'Add at least one item before completing the sale');
+
+    // Cash: the amount handed over must cover the total; change = tendered - total.
+    // UPI / card: exact payment, no change.
+    let amountTendered = bill.total, changeReturned = 0;
+    if (paymentMethod === 'cash') {
+      amountTendered = Number(req.body.amountTendered);
+      if (!Number.isFinite(amountTendered)) return fail(res, 400, 'Enter the amount received from the customer');
+      if (amountTendered + 0.0001 < bill.total) return fail(res, 400, `Amount received (₹${amountTendered}) is less than the bill total (₹${bill.total})`);
+      changeReturned = Math.round((amountTendered - bill.total) * 100) / 100;
+    }
 
     // Atomic conditional deduction — each decrement only applies if enough
     // stock is still available at that exact moment, closing the race
@@ -213,7 +225,9 @@ const completeBill = async (req, res) => {
     }
 
     bill.status = 'completed';
-    bill.paymentMethod = paymentMethod || 'cash';
+    bill.paymentMethod = paymentMethod;
+    bill.amountTendered = amountTendered;
+    bill.changeReturned = changeReturned;
     bill.completedAt = new Date();
     await bill.save();
 
@@ -238,6 +252,50 @@ const voidBill = async (req, res) => {
   }
 };
 
+// ── Online orders for this POS user's store (view) ──────────────────────
+const listStoreOrders = async (req, res) => {
+  try {
+    const { status } = req.query;
+    const filter = { store: req.posUser.store };
+    if (status) filter.orderStatus = status;
+    const orders = await ExpressOrder.find(filter)
+      .populate('buyer', 'name phone')
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .lean();
+    res.json({ success: true, orders });
+  } catch (err) {
+    console.error('[expressPOS.listStoreOrders]', err);
+    fail(res, 500, 'Failed to load orders');
+  }
+};
+
+// ── Today's POS activity for the whole store (all counters) ─────────────
+const storeActivity = async (req, res) => {
+  try {
+    const IST = 5.5 * 60 * 60 * 1000;
+    const nowIST = new Date(Date.now() + IST);
+    const startUTC = new Date(Date.UTC(nowIST.getUTCFullYear(), nowIST.getUTCMonth(), nowIST.getUTCDate()) - IST);
+    const bills = await ExpressBill.find({ store: req.posUser.store, createdAt: { $gte: startUTC } })
+      .sort({ createdAt: -1 }).limit(200).lean();
+    const done = bills.filter(b => b.status === 'completed');
+    const sum = (arr) => Math.round(arr.reduce((t, b) => t + (b.total || 0), 0) * 100) / 100;
+    const byMode = (m) => sum(done.filter(b => b.paymentMethod === m));
+    res.json({
+      success: true,
+      totals: {
+        completed: done.length, held: bills.filter(b => b.status === 'held').length, voided: bills.filter(b => b.status === 'voided').length,
+        sales: sum(done), cash: byMode('cash'), upi: byMode('upi'), card: byMode('card'),
+      },
+      bills,
+    });
+  } catch (err) {
+    console.error('[expressPOS.storeActivity]', err);
+    fail(res, 500, 'Failed to load activity');
+  }
+};
+
 module.exports = {
+  listStoreOrders, storeActivity,
   listProducts, listMyBills, createBill, getBill, updateBillItem, applyDiscount, completeBill, voidBill,
 };

@@ -13,6 +13,8 @@ router.post('/login', authCtrl.login);
 router.get ('/me',    protectExpressPOS, authCtrl.me);
 
 router.get ('/products', protectExpressPOS, ctrl.listProducts);
+router.get ('/orders',   protectExpressPOS, ctrl.listStoreOrders);
+router.get ('/activity', protectExpressPOS, ctrl.storeActivity);
 
 router.get   ('/bills',              protectExpressPOS, ctrl.listMyBills);
 router.post  ('/bills',              protectExpressPOS, ctrl.createBill);

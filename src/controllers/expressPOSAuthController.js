@@ -8,17 +8,25 @@
 const jwt = require('jsonwebtoken');
 const ExpressPOSUser = require('../models/ExpressPOSUser');
 
+const normalizePhone = (v) => String(v || '').replace(/\D/g, '').slice(-10);
+
 const login = async (req, res) => {
   try {
-    const { username, pin } = req.body;
-    if (!username || !pin) return res.status(400).json({ success: false, message: 'Username and PIN are required' });
+    // Accepts the assigned mobile number OR the username, plus the PIN
+    const identifier = String(req.body.identifier || req.body.phone || req.body.username || '').trim();
+    const { pin } = req.body;
+    if (!identifier || !pin) return res.status(400).json({ success: false, message: 'Mobile number and PIN are required' });
 
-    const posUser = await ExpressPOSUser.findOne({ username: username.toLowerCase() }).select('+pin').populate('store', 'name code isActive');
-    if (!posUser) return res.status(401).json({ success: false, message: 'Invalid username or PIN' });
+    const digits = normalizePhone(identifier);
+    const looksLikePhone = /^\+?[\d\s-]{10,15}$/.test(identifier) && digits.length === 10;
+    const query = looksLikePhone ? { $or: [{ phone: digits }, { username: identifier.toLowerCase() }] } : { username: identifier.toLowerCase() };
+    const posUser = await ExpressPOSUser.findOne(query).select('+pin').populate('store', 'name code address city isActive');
+    if (!posUser) return res.status(401).json({ success: false, message: 'Invalid mobile number or PIN' });
     if (!posUser.isActive) return res.status(403).json({ success: false, message: 'Your account has been suspended. Contact Admin.' });
+    if (posUser.store && posUser.store.isActive === false) return res.status(403).json({ success: false, message: 'Your store is currently switched off. Contact Admin.' });
 
     const valid = await posUser.comparePin(pin);
-    if (!valid) return res.status(401).json({ success: false, message: 'Invalid username or PIN' });
+    if (!valid) return res.status(401).json({ success: false, message: 'Invalid mobile number or PIN' });
 
     posUser.lastLogin = new Date();
     await posUser.save();
@@ -35,7 +43,7 @@ const login = async (req, res) => {
 };
 
 const me = async (req, res) => {
-  const posUser = await ExpressPOSUser.findById(req.posUser._id).populate('store', 'name code isActive').select('-pin');
+  const posUser = await ExpressPOSUser.findById(req.posUser._id).populate('store', 'name code address city isActive').select('-pin');
   res.json({ success: true, posUser });
 };
 

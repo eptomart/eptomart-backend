@@ -15,6 +15,7 @@ router.get ('/me',    protectExpressPOS, authCtrl.me);
 router.get ('/products', protectExpressPOS, ctrl.listProducts);
 router.get ('/orders',   protectExpressPOS, ctrl.listStoreOrders);
 router.get ('/activity', protectExpressPOS, ctrl.storeActivity);
+router.post('/recognize', protectExpressPOS, ctrl.recognizeItem);
 
 router.get   ('/bills',              protectExpressPOS, ctrl.listMyBills);
 router.post  ('/bills',              protectExpressPOS, ctrl.createBill);

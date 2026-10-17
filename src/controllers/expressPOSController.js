@@ -30,7 +30,7 @@ const listProducts = async (req, res) => {
   try {
     const config = await getMarginConfig();
     const storeProducts = await ExpressStoreProduct.find({ store: req.posUser.store, isAvailable: true })
-      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } })
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name nameTamil' } })
       .lean();
 
     const products = storeProducts
@@ -38,6 +38,7 @@ const listProducts = async (req, res) => {
       .map(sp => ({
         _id: sp.product._id,
         name: sp.product.koyambeduProduct?.name || sp.product.name,
+        nameTamil: sp.product.koyambeduProduct?.nameTamil || sp.product.nameTamil || '',
         unit: sp.product.unit,
         stockQty: sp.stockQty,
         plu: sp.product.plu ?? null,
@@ -196,6 +197,16 @@ const completeBill = async (req, res) => {
 
     // Cash: the amount handed over must cover the total; change = tendered - total.
     // UPI / card: exact payment, no change.
+    // Optional customer details captured at checkout (all optional)
+    if (req.body.customerName != null) {
+      const n = String(req.body.customerName).trim();
+      bill.customerName = n || 'Walk-in Customer';
+    }
+    if (req.body.customerPhone != null) {
+      const ph = String(req.body.customerPhone).replace(/\D/g, '').slice(-10);
+      if (ph && ph.length !== 10) return fail(res, 400, 'Customer mobile number must be 10 digits (or leave it blank)');
+      bill.customerPhone = ph || undefined;
+    }
     let amountTendered = bill.total, changeReturned = 0;
     if (paymentMethod === 'cash') {
       amountTendered = Number(req.body.amountTendered);
@@ -295,7 +306,114 @@ const storeActivity = async (req, res) => {
   }
 };
 
+// ── Camera item recognition (item on the weighing scale) ────────────────
+// The POS camera frame goes to Claude vision together with this store's
+// in-stock catalogue. It returns ranked candidates + the weight shown on the
+// scale's display. Items that genuinely look alike (lemon / sweet lime, …)
+// come back flagged `ambiguous` so the cashier picks one; clear matches are
+// returned as a single confident match for the terminal to add automatically.
+const LOOKALIKE_GROUPS = [
+  ['lemon', 'sweet lime', 'mosambi', 'musambi', 'lime', 'எலுமிச்சை', 'சாத்துக்குடி'],
+  ['coriander', 'mint', 'curry leaf', 'parsley', 'கொத்தமல்லி', 'புதினா', 'கறிவேப்பிலை'],
+  ['green chilli', 'capsicum', 'பச்சை மிளகாய்', 'குடை மிளகாய்'],
+  ['small onion', 'shallot', 'sambar onion', 'சின்ன வெங்காயம்', 'onion', 'பெரிய வெங்காயம்'],
+  ['brinjal', 'eggplant', 'கத்தரிக்காய்'],
+  ['cluster beans', 'french beans', 'beans', 'கொத்தவரங்காய்', 'பீன்ஸ்'],
+  ['potato', 'sweet potato', 'உருளைக்கிழங்கு', 'சர்க்கரைவள்ளிக்கிழங்கு'],
+  ['guava', 'green apple', 'கொய்யா'],
+  ['pomegranate', 'apple', 'மாதுளை'],
+  ['carrot', 'radish', 'கேரட்', 'முள்ளங்கி'],
+];
+const normName = (p) => `${p.name || ''} ${p.nameTamil || ''}`.toLowerCase();
+const groupOf = (p) => {
+  const n = normName(p);
+  return LOOKALIKE_GROUPS.findIndex(g => g.some(k => n.includes(k)));
+};
+
+const recognizeItem = async (req, res) => {
+  try {
+    const { image } = req.body; // data URL or raw base64 (JPEG)
+    if (!image || typeof image !== 'string') return fail(res, 400, 'Image is required');
+    const b64 = image.replace(/^data:image\/\w+;base64,/, '');
+    if (b64.length > 4 * 1024 * 1024) return fail(res, 413, 'Image too large');
+
+    // Same catalogue the billing grid uses (in-stock only)
+    const config = await getMarginConfig();
+    const sps = await ExpressStoreProduct.find({ store: req.posUser.store, isAvailable: true, stockQty: { $gt: 0 } })
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name nameTamil' } }).lean();
+    const catalogue = sps.filter(sp => sp.product).map(sp => ({
+      _id: String(sp.product._id),
+      name: sp.product.koyambeduProduct?.name || sp.product.name,
+      nameTamil: sp.product.koyambeduProduct?.nameTamil || '',
+      unit: sp.product.unit,
+      plu: sp.product.plu ?? null,
+      stockQty: sp.stockQty,
+      price: sp.priceOverride ?? computeSellingPrice(sp.product, config, 1).sellingPricePerUnit,
+    }));
+    if (!catalogue.length) return fail(res, 400, 'No in-stock products to match against');
+
+    const { callClaude } = require('../utils/claudeApi');
+    const list = catalogue.map(c => `${c._id} | ${c.name}${c.nameTamil ? ' / ' + c.nameTamil : ''} | unit: ${c.unit}`).join('\n');
+    const system = `You are the produce-recognition assistant for a vegetable & fruit shop billing counter in Tamil Nadu, India. The photo shows produce placed on a weighing scale (usually a digital scale with a display).
+Do two things:
+1. Identify which item from THIS CATALOGUE is on the scale. Return up to 3 candidates, best first, each with a confidence between 0 and 1. Use only ids from the catalogue. If the item is not in the catalogue, return an empty list.
+2. Read the weight shown on the scale's display, convert it to kilograms (e.g. "1350 g" -> 1.35, "0.750" kg -> 0.75). If no display or the digits are not clearly readable, set weightKg to null. Also give "count" if the item is sold per piece/bunch/dozen and you can count how many are visible, else null.
+Reply with ONLY compact JSON, no prose: {"candidates":[{"id":"...","confidence":0.0}],"weightKg":null,"weightConfidence":0.0,"count":null}
+
+CATALOGUE (id | name / Tamil name | unit):
+${list}`;
+    const { text } = await callClaude({
+      system,
+      max_tokens: 400,
+      temperature: 0,
+      messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } },
+        { type: 'text', text: 'Identify the item on the scale and read the weight.' },
+      ] }],
+    });
+
+    let parsed;
+    try { parsed = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)); } catch { parsed = { candidates: [] }; }
+    const byId = new Map(catalogue.map(c => [c._id, c]));
+    let cands = (Array.isArray(parsed.candidates) ? parsed.candidates : [])
+      .map(c => ({ ...byId.get(String(c.id)), confidence: Number(c.confidence) || 0 }))
+      .filter(c => c._id)
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, 3);
+
+    // Items that look alike → force a human choice among the lookalikes in stock
+    let ambiguous = false;
+    if (cands.length) {
+      const top = cands[0];
+      const g = groupOf(top);
+      if (g >= 0) {
+        const mates = catalogue.filter(c => c._id !== top._id && groupOf(c) === g);
+        if (mates.length) {
+          ambiguous = true;
+          const have = new Set(cands.map(c => c._id));
+          mates.forEach(m => { if (!have.has(m._id) && cands.length < 4) cands.push({ ...m, confidence: 0 }); });
+        }
+      }
+      if (!ambiguous && (top.confidence < 0.6 || (cands[1] && top.confidence - cands[1].confidence < 0.25))) ambiguous = true;
+    }
+
+    const w = Number(parsed.weightKg);
+    res.json({
+      success: true,
+      matches: cands,
+      ambiguous,
+      weightKg: Number.isFinite(w) && w > 0 && Number(parsed.weightConfidence) >= 0.6 ? Math.round(w * 1000) / 1000 : null,
+      count: Number.isInteger(parsed.count) && parsed.count > 0 ? parsed.count : null,
+    });
+  } catch (err) {
+    console.error('[expressPOS.recognizeItem]', err);
+    if (/ANTHROPIC_API_KEY/.test(err.message)) return fail(res, 503, 'Camera recognition is not configured yet');
+    fail(res, 500, 'Could not recognise the item — please pick it manually');
+  }
+};
+
 module.exports = {
+  recognizeItem,
   listStoreOrders, storeActivity,
   listProducts, listMyBills, createBill, getBill, updateBillItem, applyDiscount, completeBill, voidBill,
 };

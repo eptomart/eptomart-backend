@@ -806,12 +806,13 @@ const listStoreProductsForPrint = async (req, res) => {
     const { storeId } = req.params;
     const marginConfig = await getOrCreateMarginConfig();
     const storeProducts = await ExpressStoreProduct.find({ store: storeId })
-      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } })
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name nameTamil' } })
       .lean();
     const products = storeProducts
       .filter(sp => sp.product?.koyambeduProduct)
       .map(sp => ({
         name: sp.product.koyambeduProduct.name,
+        nameTamil: sp.product.koyambeduProduct.nameTamil || '',
         unit: sp.product.unit,
         plu: sp.product.plu ?? null,
         price: sp.priceOverride ?? computeSellingPrice(sp.product, marginConfig, 1).sellingPricePerUnit,

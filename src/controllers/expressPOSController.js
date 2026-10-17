@@ -95,14 +95,16 @@ const createBill = async (req, res) => {
       return fail(res, 400, `You already have ${MAX_HELD_BILLS} held bills — complete or void one before starting a new bill.`);
     }
 
-    const { customerName, customerPhone } = req.body;
+    const { customerName } = req.body;
+    const customerPhone = String(req.body.customerPhone || '').replace(/\D/g, '').slice(-10);
+    if (customerPhone && customerPhone.length !== 10) return fail(res, 400, 'Customer mobile number must be 10 digits (or leave it blank)');
     const bill = await ExpressBill.create({
       billNo: genBillNo(),
       store: req.posUser.store,
       posUser: req.posUser._id,
       posUserName: req.posUser.name,
-      customerName: customerName || 'Walk-in Customer',
-      customerPhone,
+      customerName: String(customerName || '').trim() || 'Walk-in Customer',
+      customerPhone: customerPhone || undefined,
       items: [],
     });
     res.status(201).json({ success: true, bill });

@@ -11,6 +11,7 @@ const ExpressStoreProduct = require('../models/ExpressStoreProduct');
 const ExpressMarginConfig = require('../models/ExpressMarginConfig');
 const ExpressBill         = require('../models/ExpressBill');
 const ExpressOrder        = require('../models/ExpressOrder');
+const ExpressStockLog     = require('../models/ExpressStockLog');
 const { computeSellingPrice } = require('../services/expressPricingService');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
@@ -30,7 +31,7 @@ const listProducts = async (req, res) => {
   try {
     const config = await getMarginConfig();
     const storeProducts = await ExpressStoreProduct.find({ store: req.posUser.store, isAvailable: true })
-      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name nameTamil' } })
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name nameTamil images' } })
       .lean();
 
     const products = storeProducts
@@ -39,6 +40,9 @@ const listProducts = async (req, res) => {
         _id: sp.product._id,
         name: sp.product.koyambeduProduct?.name || sp.product.name,
         nameTamil: sp.product.koyambeduProduct?.nameTamil || sp.product.nameTamil || '',
+        image: sp.product.koyambeduProduct
+          ? (sp.product.koyambeduProduct.images?.find(i => i.isPrimary)?.url || sp.product.koyambeduProduct.images?.[0]?.url || null)
+          : (sp.product.image || null),
         unit: sp.product.unit,
         stockQty: sp.stockQty,
         plu: sp.product.plu ?? null,
@@ -414,7 +418,36 @@ ${list}`;
   }
 };
 
+// ── Add stock from the counter (out-of-stock item arrives / was miscounted) ──
+const addStockFromPOS = async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const qty = Number(req.body.qty);
+    if (!Number.isFinite(qty) || qty <= 0) return fail(res, 400, 'Enter a quantity greater than 0');
+    if (qty > 10000) return fail(res, 400, 'That quantity looks too large — please check');
+
+    const existing = await ExpressStoreProduct.findOne({ store: req.posUser.store, product: productId });
+    if (!existing) return fail(res, 404, 'This product is not assigned to your store');
+    const previousQty = existing.stockQty || 0;
+    const updated = await ExpressStoreProduct.findOneAndUpdate(
+      { store: req.posUser.store, product: productId },
+      { $inc: { stockQty: qty } }, { new: true });
+
+    await ExpressStockLog.create({
+      store: req.posUser.store, product: productId, type: 'addition',
+      qty, previousQty, newQty: updated.stockQty,
+      reason: String(req.body.note || 'Added from POS counter').slice(0, 200),
+      actorType: 'pos', actorName: req.posUser.name || 'POS',
+    });
+    res.json({ success: true, stockQty: updated.stockQty });
+  } catch (err) {
+    console.error('[expressPOS.addStockFromPOS]', err);
+    fail(res, 500, 'Failed to add stock');
+  }
+};
+
 module.exports = {
+  addStockFromPOS,
   recognizeItem,
   listStoreOrders, storeActivity,
   listProducts, listMyBills, createBill, getBill, updateBillItem, applyDiscount, completeBill, voidBill,

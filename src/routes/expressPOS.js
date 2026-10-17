@@ -13,6 +13,7 @@ router.post('/login', authCtrl.login);
 router.get ('/me',    protectExpressPOS, authCtrl.me);
 
 router.get ('/products', protectExpressPOS, ctrl.listProducts);
+router.post('/products/:productId/add-stock', protectExpressPOS, ctrl.addStockFromPOS);
 router.get ('/orders',   protectExpressPOS, ctrl.listStoreOrders);
 router.get ('/activity', protectExpressPOS, ctrl.storeActivity);
 router.post('/recognize', protectExpressPOS, ctrl.recognizeItem);

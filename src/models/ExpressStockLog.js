@@ -18,7 +18,7 @@ const expressStockLogSchema = new Schema({
   previousQty: { type: Number, required: true },
   newQty:      { type: Number, required: true },
   reason:  { type: String, default: null }, // required in practice for 'loss', optional note for 'addition'
-  actorType: { type: String, enum: ['admin', 'store_manager'], required: true },
+  actorType: { type: String, enum: ['admin', 'store_manager', 'pos'], required: true },
   actorName: { type: String, required: true },
 
   // Manager acknowledgement — lets the store manager confirm they've

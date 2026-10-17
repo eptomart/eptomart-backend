@@ -291,10 +291,13 @@ const listStoreOrders = async (req, res) => {
 const storeActivity = async (req, res) => {
   try {
     const IST = 5.5 * 60 * 60 * 1000;
-    const nowIST = new Date(Date.now() + IST);
-    const startUTC = new Date(Date.UTC(nowIST.getUTCFullYear(), nowIST.getUTCMonth(), nowIST.getUTCDate()) - IST);
-    const bills = await ExpressBill.find({ store: req.posUser.store, createdAt: { $gte: startUTC } })
-      .sort({ createdAt: -1 }).limit(200).lean();
+    // Optional ?date=YYYY-MM-DD (IST) to look at / reprint earlier days; default today
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(req.query.date || ''));
+    const base = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : new Date(Date.now() + IST);
+    const startUTC = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate()) - IST);
+    const endUTC = new Date(startUTC.getTime() + 24 * 60 * 60 * 1000);
+    const bills = await ExpressBill.find({ store: req.posUser.store, createdAt: { $gte: startUTC, $lt: endUTC } })
+      .sort({ createdAt: -1 }).limit(300).lean();
     const done = bills.filter(b => b.status === 'completed');
     const sum = (arr) => Math.round(arr.reduce((t, b) => t + (b.total || 0), 0) * 100) / 100;
     const byMode = (m) => sum(done.filter(b => b.paymentMethod === m));

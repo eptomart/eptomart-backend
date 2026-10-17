@@ -525,3 +525,35 @@ exports.respondCommission = async (req, res) => {
   await seller.save();
   res.json({ success: true, seller });
 };
+
+
+// ══════════════════════════════════════════════════════════
+// AI PRODUCT DESCRIPTION (seller + admin)
+// Text only — nothing is saved until the product form is submitted.
+// ══════════════════════════════════════════════════════════
+const PROTEIN_DESC_SYSTEM = `You write short, appetising product descriptions for an Indian fresh meat, poultry and seafood delivery app (Eptomart Proteins, Chennai).
+Rules: 2 to 3 sentences, max 55 words, plain text, no emojis, no markdown, no hashtags.
+Mention freshness, cut/cleaning and how it is typically used when the details are given. Never invent certifications, sourcing claims, health claims, discounts or weights that were not provided.
+If the product name is Tamil or Tanglish, still reply in English.`;
+
+exports.aiDescribeProduct = async (req, res) => {
+  try {
+    const { name, nameLocal, category, cutTypes, unit, shortNote } = req.body || {};
+    if (!name && !shortNote) return res.status(400).json({ success: false, message: 'Enter the product name first' });
+    const { callClaude } = require('../utils/claudeApi');
+    const cuts = Array.isArray(cutTypes) ? cutTypes.join(', ') : cutTypes;
+    const prompt = [
+      name ? `Product: ${name}` : null,
+      nameLocal ? `Local name: ${nameLocal}` : null,
+      category ? `Category: ${String(category).replace('_', ' ')}` : null,
+      cuts ? `Available cuts: ${cuts}` : null,
+      unit ? `Sold by: ${unit}` : null,
+      shortNote ? `Seller's note: ${shortNote}` : null,
+    ].filter(Boolean).join('\n');
+    const r = await callClaude({ system: PROTEIN_DESC_SYSTEM, messages: [{ role: 'user', content: prompt }], max_tokens: 160, temperature: 0.7 });
+    res.json({ success: true, description: (r.text || '').trim() });
+  } catch (e) {
+    console.error('[eptofresh.aiDescribeProduct]', e.message);
+    res.status(503).json({ success: false, message: 'Could not generate a description right now. Try again.' });
+  }
+};

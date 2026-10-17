@@ -123,6 +123,7 @@ router.post('/seller/register', protect, uploadEpfDoc.fields(kycFields), sellerC
 router.get ('/seller/profile',  protectEpfSeller, sellerCtrl.getMyProfile);
 router.put ('/seller/profile',  protectEpfSeller, uploadEpfShop.fields([{ name: 'shopImage' }, { name: 'bannerImage' }]), sellerCtrl.updateProfile);
 
+router.post('/ai/describe', protect, sellerCtrl.aiDescribeProduct);
 router.post('/seller/commission/respond', protectEpfSeller, sellerCtrl.respondCommission);
 router.put ('/seller/store-settings', protectEpfSeller, sellerCtrl.updateStoreSettings);
 

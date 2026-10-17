@@ -2521,12 +2521,67 @@ const adminDashboard = async (req, res) => {
     KoyambeduCategory.countDocuments({ status: 'pending' }),
   ]);
 
+  // Impact numbers (delivered, real orders): tonnes moved + km covered
+  let impact = null;
+  try { impact = await computeKoyambeduImpact(); } catch (e) { console.error('impact stats:', e.message); }
+
   res.json({ success: true, stats: {
     todayOrders, pendingDispatch, delivered,
     todayRevenue: revenue[0]?.total || 0,
     pendingRevisions, activeSellers: sellers, pendingCategories,
+    impact,
   }});
 };
+
+async function computeKoyambeduImpact() {
+  const KoyambeduProduct = require('../models/KoyambeduProduct');
+  const KoyambeduCategory = require('../models/KoyambeduCategory');
+  const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+  const orders = await KoyambeduOrder.find({ orderStatus: 'delivered', isDemoOrder: { $ne: true } })
+    .select('items.product items.unit items.status items.confirmedQty items.quantity items.orderedQty pricing.deliveryDistance deliveredAt createdAt')
+    .lean();
+
+  const prodIds = new Set();
+  orders.forEach(o => (o.items || []).forEach(i => i.product && prodIds.add(String(i.product))));
+  const prods = await KoyambeduProduct.find({ _id: { $in: [...prodIds] } }).select('category').lean();
+  const cats = await KoyambeduCategory.find({}).select('name parent').lean();
+  const catById = Object.fromEntries(cats.map(c => [String(c._id), c]));
+  const isFruit = (catId) => {
+    let c = catById[String(catId)], guard = 0;
+    while (c && guard++ < 5) {
+      if (/fruit/i.test(c.name || '')) return true;
+      c = c.parent ? catById[String(c.parent)] : null;
+    }
+    return false;
+  };
+  const fruitProd = Object.fromEntries(prods.map(p => [String(p._id), isFruit(p.category)]));
+
+  const out = { totalKg: 0, fruitKg: 0, vegKg: 0, monthKg: 0, km: 0, monthKm: 0, deliveries: orders.length, monthDeliveries: 0 };
+  for (const o of orders) {
+    const when = o.deliveredAt || o.createdAt;
+    const inMonth = when && new Date(when) >= monthStart;
+    const km = Number(o.pricing?.deliveryDistance) || 0;
+    out.km += km;
+    if (inMonth) { out.monthKm += km; out.monthDeliveries++; }
+    for (const i of o.items || []) {
+      if (i.status === 'declined') continue;
+      const q = Number(i.confirmedQty ?? i.quantity ?? i.orderedQty) || 0;
+      const kg = i.unit === 'kg' ? q : i.unit === 'g' ? q / 1000 : 0;
+      if (!kg) continue;
+      out.totalKg += kg;
+      if (inMonth) out.monthKg += kg;
+      if (fruitProd[String(i.product)]) out.fruitKg += kg; else out.vegKg += kg;
+    }
+  }
+  const r1 = n => Math.round(n * 10) / 10;
+  return {
+    totalTonnes: r1(out.totalKg / 1000), fruitTonnes: r1(out.fruitKg / 1000), vegTonnes: r1(out.vegKg / 1000),
+    monthTonnes: r1(out.monthKg / 1000), totalKm: Math.round(out.km), monthKm: Math.round(out.monthKm),
+    deliveries: out.deliveries, monthDeliveries: out.monthDeliveries,
+    // fun, factual comparison: Chennai–Kanyakumari ≈ 700 km by road
+    earthLaps: r1(out.km / 40075),
+  };
+}
 
 /** GET /api/koyambedu/admin/orders */
 const adminGetOrders = async (req, res) => {

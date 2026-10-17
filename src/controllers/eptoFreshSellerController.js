@@ -389,6 +389,8 @@ exports.getDashboard = async (req, res) => {
       status:   seller.status,
       isOpen:   seller.isOpen,
       badges:   seller.badges,
+      commissionRate: seller.commissionRate,
+      commissionAgreement: { status: seller.commissionAgreement?.status, proposedRate: seller.commissionAgreement?.proposedRate },
     },
   });
 };
@@ -497,4 +499,29 @@ exports.updateStoreSettings = async (req, res) => {
   } catch (e) {
     res.status(e.status || 400).json({ success: false, message: e.message });
   }
+};
+
+
+// ══════════════════════════════════════════════════════════
+// COMMISSION — seller accepts / declines Eptomart's proposal
+// ══════════════════════════════════════════════════════════
+exports.respondCommission = async (req, res) => {
+  if (req.epfActingAdmin) {
+    return res.status(403).json({ success: false, message: 'Only the seller can accept or decline commission' });
+  }
+  const seller = req.epfSeller;
+  const ag = seller.commissionAgreement || {};
+  if (ag.status !== 'pending') return res.status(400).json({ success: false, message: 'No pending commission proposal' });
+  const action = req.body.action === 'accept' ? 'accept' : req.body.action === 'decline' ? 'decline' : null;
+  if (!action) return res.status(400).json({ success: false, message: 'action must be accept or decline' });
+  const history = ag.history || [];
+  history.push({ rate: ag.proposedRate, action: action === 'accept' ? 'accepted' : 'declined', by: seller.shopName });
+  if (action === 'accept') seller.commissionRate = ag.proposedRate;
+  seller.commissionAgreement = {
+    ...(ag.toObject ? ag.toObject() : ag),
+    status: action === 'accept' ? 'accepted' : 'declined',
+    respondedAt: new Date(), history,
+  };
+  await seller.save();
+  res.json({ success: true, seller });
 };

@@ -144,14 +144,35 @@ exports.adjustCommission = async (req, res) => {
   if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
     return res.status(400).json({ success: false, message: 'Commission must be between 0 and 100 %' });
   }
-  const seller = await EptoFreshSeller.findByIdAndUpdate(
-    req.params.sellerId,
-    { commissionRate: rate },
-    { new: true }
-  );
+  const seller = await EptoFreshSeller.findById(req.params.sellerId);
   if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+  proposeCommission(seller, rate, req.user, req.body.note);
+  await seller.save();
+  notifyCommissionProposal(seller, rate).catch(() => {});
   res.json({ success: true, seller });
 };
+
+/** Super admin proposes / revises. Active rate stays unchanged until the seller accepts. */
+function proposeCommission(seller, rate, adminUser, note) {
+  const ag = seller.commissionAgreement || {};
+  const history = ag.history || [];
+  history.push({ rate, action: ag.status === 'pending' || ag.status === 'accepted' ? 'revised' : 'proposed', by: adminUser?.name || 'Super admin', note });
+  seller.commissionAgreement = {
+    status: 'pending', proposedRate: rate, proposedAt: new Date(), proposedBy: adminUser?._id,
+    note: note || '', respondedAt: null, history: history.slice(-30),
+  };
+}
+exports._proposeCommission = proposeCommission;
+
+async function notifyCommissionProposal(seller, rate) {
+  const { notifyUser } = require('../utils/pushNotification');
+  if (seller.user) {
+    await notifyUser(seller.user, {
+      title: 'Commission proposal',
+      body: `Eptomart proposes ${rate}% commission on your Proteins sales. Open your seller panel to accept.`,
+    });
+  }
+}
 
 // ══════════════════════════════════════════════════════════
 // PRODUCT APPROVALS
@@ -822,7 +843,10 @@ exports.updateSeller = async (req, res) => {
       gstNumber:   gstNumber   ?? seller.kyc?.gstNumber,
     };
 
-    if (commissionRate !== undefined) seller.commissionRate = Number(commissionRate);
+    if (commissionRate !== undefined && commissionRate !== '' && Number(commissionRate) !== Number(seller.commissionRate)
+        && !(seller.commissionAgreement?.status === 'pending' && Number(seller.commissionAgreement.proposedRate) === Number(commissionRate))) {
+      proposeCommission(seller, Number(commissionRate), req.user);   // needs seller acceptance
+    }
 
     // Re-link user if phone changed
     if (phone) {

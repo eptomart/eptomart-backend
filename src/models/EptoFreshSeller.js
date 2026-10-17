@@ -89,6 +89,19 @@ const eptoFreshSellerSchema = new Schema({
   // Commission
   commissionRate: { type: Number, default: 10 }, // % platform fee
   gstOnCommission:{ type: Number, default: 18 }, // % GST on platform fee
+  // Commission is proposed by the super admin and takes effect (commissionRate)
+  // only once the seller accepts. The super admin can revise at any time.
+  commissionAgreement: {
+    status:       { type: String, enum: ['none', 'pending', 'accepted', 'declined'], default: 'none' },
+    proposedRate: Number,
+    proposedAt:   Date,
+    proposedBy:   { type: Schema.Types.ObjectId, ref: 'User' },
+    note:         String,
+    respondedAt:  Date,
+    history: [{
+      rate: Number, action: String, by: String, at: { type: Date, default: Date.now }, note: String,
+    }],
+  },
 
   // Financials
   totalEarnings:  { type: Number, default: 0 },

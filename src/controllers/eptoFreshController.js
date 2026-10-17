@@ -301,7 +301,7 @@ exports.placeOrder = async (req, res) => {
   const total = Math.max(0, afterCoupon + deliveryCharge - walletApplied);
 
   // Payout calculation
-  const payoutInfo = calculatePayout(subtotal, seller.commissionRate || 10);
+  const payoutInfo = calculatePayout(subtotal, Number.isFinite(Number(seller.commissionRate)) ? Number(seller.commissionRate) : 10);
 
   // Build items array for order
   const orderItems = cart.items.map(i => ({
@@ -314,7 +314,7 @@ exports.placeOrder = async (req, res) => {
     quantity:    i.quantity,
     unitPrice:   i.price,
     totalPrice:  i.price * i.quantity,
-    sellerPayout:parseFloat(((i.price * i.quantity * (1 - (seller.commissionRate || 10) / 100 - 0.018)).toFixed(2))),
+    sellerPayout:parseFloat(((i.price * i.quantity * (1 - (Number.isFinite(Number(seller.commissionRate)) ? Number(seller.commissionRate) : 10) / 100 * 1.18)).toFixed(2))),
   }));
 
   // Generate delivery OTP

@@ -140,12 +140,16 @@ exports.suspendSeller = async (req, res) => {
 };
 
 exports.adjustCommission = async (req, res) => {
-  const { commissionRate } = req.body;
+  const rate = parseFloat(req.body.commissionRate);
+  if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+    return res.status(400).json({ success: false, message: 'Commission must be between 0 and 100 %' });
+  }
   const seller = await EptoFreshSeller.findByIdAndUpdate(
     req.params.sellerId,
-    { commissionRate: parseFloat(commissionRate) },
+    { commissionRate: rate },
     { new: true }
   );
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
   res.json({ success: true, seller });
 };
 

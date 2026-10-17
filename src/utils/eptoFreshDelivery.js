@@ -133,4 +133,45 @@ function calculatePayout(orderAmount, commissionRate = 10) {
   return { orderAmount, platformFee, gstOnFee, totalDeduction, sellerReceives };
 }
 
-module.exports = { calculateDeliveryCharge, haversineDistance, calculatePayout };
+/**
+ * Per-seller (Express-style) delivery rules.
+ * charge = (amount >= freeDeliveryAbove ? 0 : baseDeliveryCharge)
+ *        + ceil(max(0, distance - freeRadiusKm) / stepKm) * stepCharge
+ * Also enforces minOrderValue and maxRadiusKm.
+ */
+function calculateSellerDelivery(distanceKm, orderAmount, ds = {}) {
+  const dist = parseFloat(distanceKm) || 0;
+  const amt  = parseFloat(orderAmount) || 0;
+  const maxR = Number(ds.maxRadiusKm) || 0;
+  const minO = Number(ds.minOrderValue) || 0;
+  const base = Number(ds.baseDeliveryCharge) || 0;
+  const freeAbove = Number(ds.freeDeliveryAbove) || 0;
+  const freeR = Number(ds.freeRadiusKm) || 0;
+  const step  = Number(ds.stepKm) > 0 ? Number(ds.stepKm) : 2;
+  const stepCharge = Number(ds.stepCharge) || 0;
+
+  if (maxR > 0 && dist > maxR) {
+    return { charge: 0, isFreeDelivery: false, requiresConsent: false, isLongDistance: true,
+      serviceable: false, warning: `This store delivers only within ${maxR} km`,
+      distanceKm: dist, orderAmount: amt, minOrderValue: minO, belowMinOrder: false, perSeller: true };
+  }
+  const baseApplied = (freeAbove > 0 && amt >= freeAbove) ? 0 : base;
+  const steps = dist > freeR ? Math.ceil((dist - freeR) / step) : 0;
+  const charge = Math.round(baseApplied + steps * stepCharge);
+  const belowMin = minO > 0 && amt < minO;
+  return {
+    charge, isFreeDelivery: charge === 0, requiresConsent: false,
+    isLongDistance: steps > 0, serviceable: true,
+    warning: belowMin ? `Minimum order for this store is ₹${minO}` : null,
+    distanceKm: dist, orderAmount: amt, minOrderValue: minO, belowMinOrder: belowMin,
+    perSeller: true, freeDeliveryAbove: freeAbove,
+  };
+}
+
+/** Use the seller's own rules when enabled, else the global tiers (unchanged behaviour). */
+function deliveryFor(seller, distanceKm, amount, globalConfig = {}) {
+  if (seller?.deliverySettings?.enabled) return calculateSellerDelivery(distanceKm, amount, seller.deliverySettings);
+  return calculateDeliveryCharge(distanceKm, amount, globalConfig);
+}
+
+module.exports = { calculateDeliveryCharge, calculateSellerDelivery, deliveryFor, haversineDistance, calculatePayout };

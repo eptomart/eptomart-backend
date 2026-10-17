@@ -176,6 +176,16 @@ const eptoFreshOrderSchema = new Schema({
     sellerReceives:  { type: Number, default: 0 },
   },
 
+  // Tax invoice in the seller's name (generated on payment/placement)
+  taxInvoice: {
+    number:      String,
+    issuedAt:    Date,
+    type:        { type: String, enum: ['tax_invoice', 'bill_of_supply'] },
+    sellerSnapshot: Schema.Types.Mixed,
+    lines:       [Schema.Types.Mixed],
+    totals:      Schema.Types.Mixed,
+  },
+
   couponCode:    String,
   walletUsed:    { type: Boolean, default: false },
 

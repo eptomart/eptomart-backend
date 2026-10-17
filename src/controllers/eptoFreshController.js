@@ -14,7 +14,8 @@ const EptoFreshCoupon         = require('../models/EptoFreshCoupon');
 const EptoFreshDeliveryConfig = require('../models/EptoFreshDeliveryConfig');
 const Razorpay         = require('razorpay');
 const crypto           = require('crypto');
-const { haversineDistance, calculateDeliveryCharge, calculatePayout } = require('../utils/eptoFreshDelivery');
+const { haversineDistance, calculateDeliveryCharge, calculatePayout, deliveryFor } = require('../utils/eptoFreshDelivery');
+const { issueInvoice } = require('../utils/eptoFreshInvoice');
 const { notifyUser }   = require('../utils/pushNotification');
 const { sendWhatsApp } = require('../utils/sendWhatsApp');
 
@@ -40,7 +41,7 @@ exports.getNearbySellers = async (req, res) => {
   if (category) query.categories = category;
 
   const sellers = await EptoFreshSeller.find(query)
-    .select('shopName categories rating ratingCount badges shopImage isOpen address location deliveryRadius')
+    .select('shopName categories rating ratingCount badges shopImage isOpen address location deliveryRadius deliverySettings.enabled deliverySettings.minOrderValue deliverySettings.maxRadiusKm deliverySettings.freeDeliveryAbove')
     .lean();
 
   let result;
@@ -71,7 +72,7 @@ exports.getNearbySellers = async (req, res) => {
 exports.getSellerProfile = async (req, res) => {
   const { lat, lng } = req.query;
   const seller = await EptoFreshSeller.findById(req.params.sellerId)
-    .select('shopName categories rating ratingCount badges shopImage bannerImage isOpen address location openingTime closingTime')
+    .select('shopName categories rating ratingCount badges shopImage bannerImage isOpen address location openingTime closingTime deliverySettings gst.registered')
     .lean();
 
   if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
@@ -81,7 +82,7 @@ exports.getSellerProfile = async (req, res) => {
   if (lat && lng) {
     const [sLng, sLat] = seller.location?.coordinates || [0, 0];
     distanceKm = haversineDistance(parseFloat(lat), parseFloat(lng), sLat, sLng);
-    deliveryInfo = calculateDeliveryCharge(distanceKm, 0);
+    deliveryInfo = deliveryFor(seller, distanceKm, 0);
   }
 
   // Remove private address details — show only city and pincode
@@ -117,7 +118,7 @@ exports.getSellerProducts = async (req, res) => {
  */
 exports.checkDelivery = async (req, res) => {
   const { sellerId, buyerLat, buyerLng, orderAmount, city } = req.body;
-  const seller = await EptoFreshSeller.findById(sellerId).select('location address').lean();
+  const seller = await EptoFreshSeller.findById(sellerId).select('location address deliverySettings isOpen').lean();
   if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
 
   const [sLng, sLat] = seller.location?.coordinates || [0, 0];
@@ -134,9 +135,9 @@ exports.checkDelivery = async (req, res) => {
     if (cityRule) activeConfig = { ...config, ...cityRule };
   }
 
-  const info = calculateDeliveryCharge(distanceKm, parseFloat(orderAmount) || 0, activeConfig);
+  const info = deliveryFor(seller, distanceKm, parseFloat(orderAmount) || 0, activeConfig);
 
-  res.json({ success: true, ...info });
+  res.json({ success: true, ...info, storeOpen: seller.isOpen !== false });
 };
 
 // ══════════════════════════════════════════════════════════
@@ -247,6 +248,18 @@ exports.placeOrder = async (req, res) => {
   let subtotal = cart.items.reduce((sum, i) => sum + i.price * i.quantity, 0);
   let couponDiscount = 0;
 
+  // Per-store rules: open/closed, serviceable radius, minimum order
+  if (seller.isOpen === false) {
+    return res.status(400).json({ success: false, message: `${seller.shopName} is currently closed` });
+  }
+  const _pre = deliveryFor(seller, distanceKm, subtotal);
+  if (_pre.serviceable === false) {
+    return res.status(400).json({ success: false, message: _pre.warning || 'Outside delivery area' });
+  }
+  if (_pre.belowMinOrder) {
+    return res.status(400).json({ success: false, message: _pre.warning });
+  }
+
   // Apply coupon
   if (couponCode) {
     const coupon = await EptoFreshCoupon.findOne({
@@ -274,7 +287,7 @@ exports.placeOrder = async (req, res) => {
   }
 
   const afterCoupon = subtotal - couponDiscount;
-  const { charge: deliveryCharge } = calculateDeliveryCharge(distanceKm, afterCoupon);
+  const { charge: deliveryCharge } = deliveryFor(seller, distanceKm, afterCoupon);
 
   // Wallet
   let walletApplied = 0;
@@ -354,6 +367,7 @@ exports.placeOrder = async (req, res) => {
 
   // For COD — notify seller and admin immediately
   if (paymentMethod === 'cod') {
+    issueInvoice(order).catch(() => {});
     _notifyNewOrder(order, seller).catch(() => {});
   }
 
@@ -434,6 +448,7 @@ exports.verifyPayment = async (req, res) => {
 
   // Notify seller and admin
   const seller = await EptoFreshSeller.findById(order.seller).lean();
+  await issueInvoice(order).catch(() => {});
   _notifyNewOrder(order, seller).catch(() => {});
 
   res.json({ success: true, message: 'Payment confirmed! Order placed.', orderId: order.orderId });
@@ -751,4 +766,39 @@ exports.getHomepageProducts = async (req, res) => {
   } catch (err) {
     res.json({ success: true, products: [] });
   }
+};
+
+
+// ══════════════════════════════════════════════════════════
+// MASTER SWITCH STATUS + INVOICE
+// ══════════════════════════════════════════════════════════
+const EptoFreshSettings = require('../models/EptoFreshSettings');
+
+/** GET /eptofresh/status — public */
+exports.getStatus = async (req, res) => {
+  const st = await EptoFreshSettings.get();
+  res.json({ success: true, enabled: st.enabled, message: st.enabled ? null : st.offMessage });
+};
+
+/** GET /eptofresh/orders/:orderId/invoice — buyer of the order (seller/admin use their own routes) */
+exports.getInvoice = async (req, res) => {
+  const mongoose = require('mongoose');
+  const q = mongoose.isValidObjectId(req.params.orderId) ? { _id: req.params.orderId } : { orderId: req.params.orderId };
+  const order = await EptoFreshOrder.findOne(q);
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+  const isAdmin = ['admin', 'superAdmin'].includes(req.user.role);
+  let allowed = isAdmin || String(order.buyer) === String(req.user._id);
+  if (!allowed) {
+    const sel = await EptoFreshSeller.findOne({ user: req.user._id }).select('_id').lean();
+    allowed = sel && String(sel._id) === String(order.seller);
+  }
+  if (!allowed) return res.status(403).json({ success: false, message: 'Not allowed' });
+  if (order.paymentStatus !== 'paid' && order.paymentMethod !== 'cod') {
+    return res.status(400).json({ success: false, message: 'Invoice is available after payment' });
+  }
+  const inv = order.taxInvoice?.number ? order.taxInvoice : await issueInvoice(order);
+  res.json({ success: true, invoice: inv, orderId: order.orderId, placedAt: order.placedAt,
+    buyer: { name: order.shippingAddress?.fullName, phone: isAdmin || String(order.buyer) === String(req.user._id) ? order.shippingAddress?.phone : undefined,
+      address: String(order.buyer) === String(req.user._id) || isAdmin ? order.shippingAddress : { city: order.shippingAddress?.city, pincode: order.shippingAddress?.pincode } },
+    paymentMethod: order.paymentMethod });
 };

@@ -75,13 +75,13 @@ exports.register = async (req, res) => {
 };
 
 exports.getMyProfile = async (req, res) => {
-  const seller = await EptoFreshSeller.findOne({ user: req.user._id }).lean();
+  const seller = req.epfSeller ? req.epfSeller.toObject() : await EptoFreshSeller.findOne({ user: req.user._id }).lean();
   if (!seller) return res.status(404).json({ success: false, message: 'Seller account not found' });
   res.json({ success: true, seller });
 };
 
 exports.updateProfile = async (req, res) => {
-  const seller = await EptoFreshSeller.findOne({ user: req.user._id });
+  const seller = req.epfSeller || await EptoFreshSeller.findOne({ user: req.user._id });
   if (!seller) return res.status(404).json({ success: false, message: 'Seller account not found' });
 
   const { shopName, ownerName, address, openingTime, closingTime, isOpen, categories, deliveryRadius, locationLat, locationLng } = req.body;
@@ -435,4 +435,66 @@ exports.getMyPromoRequests = async (req, res) => {
   const seller = req.epfSeller;
   const coupons = await EptoFreshCoupon.find({ requestedBy: seller._id }).sort({ createdAt: -1 }).lean();
   res.json({ success: true, coupons });
+};
+
+
+// ══════════════════════════════════════════════════════════
+// STORE SETTINGS — delivery rules, GST, open/close
+// Shared by the seller (own store) and super admin (any store).
+// ══════════════════════════════════════════════════════════
+const num = (v, d) => (v === undefined || v === '' || v === null || isNaN(Number(v)) ? d : Math.max(0, Number(v)));
+
+exports.applyStoreSettings = async (seller, body) => {
+  const { deliverySettings: ds, gst, isOpen } = body || {};
+  if (isOpen !== undefined) seller.isOpen = !!isOpen;
+  if (ds) {
+    const cur = seller.deliverySettings || {};
+    seller.deliverySettings = {
+      enabled:            ds.enabled !== undefined ? !!ds.enabled : !!cur.enabled,
+      minOrderValue:      num(ds.minOrderValue, cur.minOrderValue ?? 0),
+      maxRadiusKm:        num(ds.maxRadiusKm, cur.maxRadiusKm ?? 10),
+      baseDeliveryCharge: num(ds.baseDeliveryCharge, cur.baseDeliveryCharge ?? 0),
+      freeDeliveryAbove:  num(ds.freeDeliveryAbove, cur.freeDeliveryAbove ?? 0),
+      freeRadiusKm:       num(ds.freeRadiusKm, cur.freeRadiusKm ?? 2),
+      stepKm:             Math.max(0.5, num(ds.stepKm, cur.stepKm ?? 2)),
+      stepCharge:         num(ds.stepCharge, cur.stepCharge ?? 0),
+    };
+    if (seller.deliverySettings.maxRadiusKm > 0) seller.deliveryRadius = seller.deliverySettings.maxRadiusKm;
+  }
+  if (gst) {
+    const g = seller.gst || {};
+    const gstin = gst.gstin !== undefined ? String(gst.gstin).trim().toUpperCase() : g.gstin;
+    if (gstin && !/^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(gstin)) {
+      const e = new Error('Invalid GSTIN format'); e.status = 400; throw e;
+    }
+    const rate = gst.gstRate !== undefined ? num(gst.gstRate, 0) : g.gstRate;
+    if (![0, 0.25, 3, 5, 12, 18, 28].includes(Number(rate || 0))) {
+      const e = new Error('GST rate must be 0, 0.25, 3, 5, 12, 18 or 28'); e.status = 400; throw e;
+    }
+    seller.gst = {
+      registered:     gst.registered !== undefined ? !!gst.registered : !!g.registered,
+      gstin,
+      legalName:      gst.legalName !== undefined ? gst.legalName : g.legalName,
+      stateCode:      gstin ? gstin.slice(0, 2) : (gst.stateCode || g.stateCode || '33'),
+      gstRate:        Number(rate || 0),
+      hsnDefault:     gst.hsnDefault || g.hsnDefault || '0207',
+      invoicePrefix:  gst.invoicePrefix !== undefined ? String(gst.invoicePrefix).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) : g.invoicePrefix,
+      invoiceCounter: g.invoiceCounter || 0,
+    };
+    if (seller.gst.registered && !seller.gst.gstin) {
+      const e = new Error('GSTIN is required for a GST-registered seller'); e.status = 400; throw e;
+    }
+    if (seller.gst.gstin) seller.kyc = { ...(seller.kyc?.toObject?.() || seller.kyc || {}), gstNumber: seller.gst.gstin };
+  }
+  await seller.save();
+  return seller;
+};
+
+exports.updateStoreSettings = async (req, res) => {
+  try {
+    const seller = await exports.applyStoreSettings(req.epfSeller, req.body);
+    res.json({ success: true, seller });
+  } catch (e) {
+    res.status(e.status || 400).json({ success: false, message: e.message });
+  }
 };

@@ -40,7 +40,25 @@ const uploadEpfPacked  = multer({ storage: eptoFreshPackedStorage,  limits: { fi
 
 // ── Seller guard ────────────────────────────────────────
 const EptoFreshSeller = require('../models/EptoFreshSeller');
+const EptoFreshSettings = require('../models/EptoFreshSettings');
+// Master switch: blocks customer browse/cart/checkout when Proteins is switched off.
+const requireProteinsOn = async (req, res, next) => {
+  try {
+    const st = await EptoFreshSettings.get();
+    if (st.enabled) return next();
+  } catch (_) { return next(); }
+  return res.status(503).json({ success: false, proteinsOff: true, message: 'Eptomart Proteins is temporarily unavailable.' });
+};
 const protectEpfSeller = [protect, async (req, res, next) => {
+  // Super admin / admin can act as any seller via the x-epf-seller-id header
+  const actAs = req.headers['x-epf-seller-id'];
+  if (actAs && ['admin', 'superAdmin'].includes(req.user.role)) {
+    const s = await EptoFreshSeller.findById(actAs).catch(() => null);
+    if (!s) return res.status(404).json({ success: false, message: 'Seller not found' });
+    req.epfSeller = s;
+    req.epfActingAdmin = true;
+    return next();
+  }
   const seller = await EptoFreshSeller.findOne({ user: req.user._id });
   if (!seller) return res.status(403).json({ success: false, message: 'EptoFresh seller account required' });
   req.epfSeller = seller;
@@ -56,23 +74,25 @@ router.get('/places/details',      ctrl.placesDetails);
 
 // PUBLIC / CUSTOMER BROWSE
 // ══════════════════════════════════════════════════════════
-router.get('/products/homepage',            ctrl.getHomepageProducts);
-router.get('/sellers',                      optionalAuth, ctrl.getNearbySellers);
-router.get('/sellers/:sellerId',            optionalAuth, ctrl.getSellerProfile);
-router.get('/sellers/:sellerId/products',   optionalAuth, ctrl.getSellerProducts);
-router.post('/delivery-check',              optionalAuth, ctrl.checkDelivery);
+router.get('/status',                       ctrl.getStatus);
+router.get('/products/homepage',            requireProteinsOn, ctrl.getHomepageProducts);
+router.get('/sellers',                      requireProteinsOn, optionalAuth, ctrl.getNearbySellers);
+router.get('/sellers/:sellerId',            requireProteinsOn, optionalAuth, ctrl.getSellerProfile);
+router.get('/sellers/:sellerId/products',   requireProteinsOn, optionalAuth, ctrl.getSellerProducts);
+router.post('/delivery-check',              requireProteinsOn, optionalAuth, ctrl.checkDelivery);
 
 // ══════════════════════════════════════════════════════════
 // CUSTOMER — auth required
 // ══════════════════════════════════════════════════════════
 router.get   ('/cart',                         protect, ctrl.getCart);
-router.post  ('/cart',                         protect, ctrl.updateCart);
+router.post  ('/cart',                         requireProteinsOn, protect, ctrl.updateCart);
 router.delete('/cart',                         protect, ctrl.clearCart);
 
-router.post  ('/orders',                       protect, ctrl.placeOrder);
+router.post  ('/orders',                       requireProteinsOn, protect, ctrl.placeOrder);
 router.post  ('/orders/verify-payment',        protect, ctrl.verifyPayment);
 router.get   ('/orders',                       protect, ctrl.getMyOrders);
 router.get   ('/orders/:orderId',              protect, ctrl.getOrderDetail);
+router.get   ('/orders/:orderId/invoice',      protect, ctrl.getInvoice);
 router.post  ('/orders/:orderId/confirm-delivery', protect, ctrl.confirmDelivery);
 // Cancellation is Super Admin only (unified permission matrix) —
 // customers receive a friendly "contact support" message instead.
@@ -102,6 +122,8 @@ const kycFields = [
 router.post('/seller/register', protect, uploadEpfDoc.fields(kycFields), sellerCtrl.register);
 router.get ('/seller/profile',  protectEpfSeller, sellerCtrl.getMyProfile);
 router.put ('/seller/profile',  protectEpfSeller, uploadEpfShop.fields([{ name: 'shopImage' }, { name: 'bannerImage' }]), sellerCtrl.updateProfile);
+
+router.put ('/seller/store-settings', protectEpfSeller, sellerCtrl.updateStoreSettings);
 
 // Seller Dashboard
 router.get('/seller/dashboard', protectEpfSeller, sellerCtrl.getDashboard);
@@ -177,6 +199,12 @@ router.patch('/admin/coupons/:couponId/toggle', protectAdmin, adminCtrl.toggleCo
 router.get ('/admin/promo-requests',                      protectAdmin, adminCtrl.getPromoRequests);
 router.post('/admin/promo-requests/:couponId/approve',    protectAdmin, adminCtrl.approvePromoRequest);
 router.post('/admin/promo-requests/:couponId/reject',     protectAdmin, adminCtrl.rejectPromoRequest);
+
+// Master switch + per-store controls (admin)
+router.get ('/admin/master-switch', protectAdmin, adminCtrl.getMasterSwitch);
+router.put ('/admin/master-switch', protectSuperAdmin, adminCtrl.setMasterSwitch);
+router.put ('/admin/sellers/:sellerId/store-settings', protectAdmin, adminCtrl.updateSellerStoreSettings);
+router.patch('/admin/sellers/:sellerId/store-open', protectAdmin, adminCtrl.setStoreOpen);
 
 // Delivery Config
 router.get('/admin/delivery-config',       protectAdmin,      adminCtrl.getDeliveryConfig);

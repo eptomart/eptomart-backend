@@ -117,6 +117,31 @@ const eptoFreshSellerSchema = new Schema({
   // Delivery radius (km) seller is willing to serve
   deliveryRadius: { type: Number, default: 10 },
 
+  // Per-store delivery rules (Express-style). When enabled, replaces the global
+  // Proteins delivery tiers for this seller only.
+  deliverySettings: {
+    enabled:            { type: Boolean, default: false },
+    minOrderValue:      { type: Number, default: 0 },
+    maxRadiusKm:        { type: Number, default: 10 },   // 0 = unlimited
+    baseDeliveryCharge: { type: Number, default: 0 },    // charged within free radius when below free threshold
+    freeDeliveryAbove:  { type: Number, default: 0 },    // 0 = never free by amount
+    freeRadiusKm:       { type: Number, default: 2 },    // no extra step charge inside this distance
+    stepKm:             { type: Number, default: 2 },    // every N km beyond free radius...
+    stepCharge:         { type: Number, default: 0 },    // ...adds this charge
+  },
+
+  // GST invoicing in the seller's own name
+  gst: {
+    registered:    { type: Boolean, default: false },
+    gstin:         { type: String, trim: true, uppercase: true },
+    legalName:     { type: String, trim: true },
+    stateCode:     { type: String, default: '33' },      // 33 = Tamil Nadu
+    gstRate:       { type: Number, default: 0 },         // % on goods (fresh meat/fish unpacked is exempt = 0)
+    hsnDefault:    { type: String, default: '0207' },
+    invoicePrefix: { type: String, trim: true, uppercase: true },
+    invoiceCounter:{ type: Number, default: 0 },
+  },
+
 }, { timestamps: true });
 
 // 2dsphere index for geospatial proximity queries

@@ -636,7 +636,19 @@ exports.createSeller = async (req, res) => {
     // Look up the user account by phone so the seller record is linked —
     // this is what protectEpfSeller uses to identify the seller after login.
     const phoneDigits = String(phone).replace(/\D/g, '').slice(-10);
-    const linkedUser  = await User.findOne({ phone: { $regex: phoneDigits + '$' } }).lean();
+    if (!/^[6-9]\d{9}$/.test(phoneDigits)) {
+      return res.status(400).json({ success: false, message: 'Enter a valid 10-digit Indian mobile number' });
+    }
+    let linkedUser  = await User.findOne({ phone: { $regex: phoneDigits + '$' } });
+    let userCreated = false;
+    if (linkedUser && linkedUser.role === 'user') { linkedUser.role = 'seller'; await linkedUser.save({ validateBeforeSave: false }); }
+    if (!linkedUser) {
+      // Pre-create the login so the seller can sign in with OTP on this number.
+      linkedUser = await User.create({ name: ownerName, phone: phoneDigits, role: 'seller', phoneVerified: false });
+      userCreated = true;
+    }
+    const clash = await EptoFreshSeller.findOne({ user: linkedUser._id }).select('shopName').lean();
+    if (clash) return res.status(400).json({ success: false, message: `This mobile number is already linked to "${clash.shopName}"` });
 
     const seller = new EptoFreshSeller({
       shopName,
@@ -663,7 +675,7 @@ exports.createSeller = async (req, res) => {
     });
 
     await seller.save();
-    res.json({ success: true, seller, userLinked: !!linkedUser });
+    res.json({ success: true, seller, userLinked: !!linkedUser, userCreated });
   } catch (e) {
     res.status(400).json({ success: false, message: e.message });
   }
@@ -916,4 +928,38 @@ exports.deleteProduct = async (req, res) => {
   } catch (e) {
     res.status(400).json({ success: false, message: e.message });
   }
+};
+
+
+// ══════════════════════════════════════════════════════════
+// MASTER SWITCH + STORE CONTROLS
+// ══════════════════════════════════════════════════════════
+exports.getMasterSwitch = async (req, res) => {
+  const EptoFreshSettings = require('../models/EptoFreshSettings');
+  const st = await EptoFreshSettings.get();
+  res.json({ success: true, enabled: st.enabled, offMessage: st.offMessage });
+};
+exports.setMasterSwitch = async (req, res) => {
+  const EptoFreshSettings = require('../models/EptoFreshSettings');
+  const st = await EptoFreshSettings.get();
+  if (req.body.enabled !== undefined) st.enabled = !!req.body.enabled;
+  if (req.body.offMessage) st.offMessage = String(req.body.offMessage).slice(0, 200);
+  st.updatedBy = req.user._id;
+  await st.save();
+  res.json({ success: true, enabled: st.enabled, offMessage: st.offMessage });
+};
+exports.updateSellerStoreSettings = async (req, res) => {
+  try {
+    const seller = await EptoFreshSeller.findById(req.params.sellerId);
+    if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+    const out = await require('./eptoFreshSellerController').applyStoreSettings(seller, req.body);
+    res.json({ success: true, seller: out });
+  } catch (e) {
+    res.status(e.status || 400).json({ success: false, message: e.message });
+  }
+};
+exports.setStoreOpen = async (req, res) => {
+  const seller = await EptoFreshSeller.findByIdAndUpdate(req.params.sellerId, { isOpen: !!req.body.isOpen }, { new: true });
+  if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+  res.json({ success: true, isOpen: seller.isOpen });
 };

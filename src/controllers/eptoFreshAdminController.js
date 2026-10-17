@@ -900,7 +900,7 @@ exports.updateProduct = async (req, res) => {
     const product = await EptoFreshProduct.findById(productId);
     if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
-    const fields = ['name', 'description', 'category', 'unit', 'price', 'discountPrice', 'stock', 'minOrder'];
+    const fields = ['name', 'description', 'category', 'unit', 'price', 'discountPrice', 'stock', 'minOrder', 'hsnCode', 'gstRate', 'basePrice', 'todayPrice', 'isInStock'];
     fields.forEach(f => { if (req.body[f] !== undefined) product[f] = req.body[f]; });
 
     if (req.body.sellerId) product.seller = req.body.sellerId;

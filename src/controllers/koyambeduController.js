@@ -7854,6 +7854,7 @@ const adminProcurementReport = async (req, res) => {
             // the customer name per order line instead of just the raw
             // order ID (see the includeCustomerNames toggle client-side).
             customerName: existingLine?.customerName || order.shippingAddress?.fullName || null,
+            area: existingLine?.area || order.buyerLocation?.areaName || order.shippingAddress?.addressLine2 || order.buyerLocation?.city || order.shippingAddress?.city || null,
           };
         }
 
@@ -7894,6 +7895,7 @@ const adminProcurementReport = async (req, res) => {
               summary[ingredientKey].orderMap[order.orderId] = {
                 quantity: (existingLine?.quantity || 0) + neededQty,
                 customerName: existingLine?.customerName || order.shippingAddress?.fullName || null,
+                area: existingLine?.area || order.buyerLocation?.areaName || order.shippingAddress?.addressLine2 || order.buyerLocation?.city || order.shippingAddress?.city || null,
               };
             }
             // orderCount intentionally not incremented here — it counts distinct
@@ -7912,7 +7914,7 @@ const adminProcurementReport = async (req, res) => {
           ...rest,
           // Per-order breakdown, e.g. Radish 10kg = Order A 3kg + Order B 4kg + Order C 3kg
           orders: Object.entries(orderMap)
-            .map(([orderId, line]) => ({ orderId, quantity: line.quantity, customerName: line.customerName }))
+            .map(([orderId, line]) => ({ orderId, quantity: line.quantity, customerName: line.customerName, area: line.area }))
             .sort((a, b) => a.orderId.localeCompare(b.orderId)),
         };
       })

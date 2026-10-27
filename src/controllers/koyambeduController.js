@@ -2003,6 +2003,208 @@ const verifyAmendmentPayment = async (req, res) => {
   res.json({ success: true, message: 'Items added to your order!', orderId: order.orderId, amount: amendment.amount });
 };
 
+// ═══════════════════════════════════════════════════════════════
+// CHANGE DELIVERY ADDRESS (after the order is placed)
+// Re-measures distance from the nearest hub and re-prices ONLY the
+// distance-driven charges (delivery + platform + packing). A higher charge
+// is collected from the customer via a separate Razorpay payment; a lower
+// one is credited to their Koyambedu wallet. Items, slot, coupon and every
+// other part of the order/checkout are untouched. Same eligibility window
+// as "Add More Items" (paid, not dispatched, same-day cutoff).
+// ═══════════════════════════════════════════════════════════════
+const r2c = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+const priceAddressChange = async (order, body) => {
+  const loc  = body.buyerLocation || {};
+  const addr = body.shippingAddress || {};
+  if (!Number.isFinite(Number(loc.lat)) || !Number.isFinite(Number(loc.lng)) || !loc.lat || !loc.lng) {
+    throw { statusCode: 400, message: 'Please pin the new delivery location' };
+  }
+  if (!addr.fullName || !addr.addressLine1 || !addr.pincode || !/^\d{6}$/.test(String(addr.pincode).trim())) {
+    throw { statusCode: 400, message: 'Enter the full name, address and a valid 6-digit pincode' };
+  }
+
+  const liveItems = order.items.filter(it => it.itemStatus !== 'declined');
+  const ids = [...new Set(liveItems.map(it => String(it.product)))];
+  const products = await KoyambeduProduct.find({ _id: { $in: ids } })
+    .select('description name weightKg isCombo seller').populate('seller', 'servicePincodes').lean();
+  if (products.some(p => p.isCombo)) {
+    throw { statusCode: 400, message: 'Orders with combo packs can\'t change address online. Please contact support.' };
+  }
+  const pin = String(addr.pincode).trim();
+  for (const p of products) {
+    const sp = p.seller?.servicePincodes;
+    if (sp?.length > 0 && !sp.includes(pin)) {
+      throw { statusCode: 400, message: `"${p.name}" doesn't deliver to pincode ${pin}` };
+    }
+  }
+  const pmap = new Map(products.map(p => [String(p._id), p]));
+
+  const { distanceKm, hubName } = await KoyambeduSettings.distanceFromNearestHub(Number(loc.lat), Number(loc.lng));
+  const summary = summarizeCartForDeliveryFee(liveItems.map(it => ({
+    unit: it.unit, quantity: it.confirmedQty ?? it.quantity, product: pmap.get(String(it.product)) || null,
+  })));
+  const charges = computeKoyambeduCharges(distanceKm, summary);
+
+  const p0 = order.pricing || {};
+  const oldTotal = r2c((p0.deliveryCharge || 0) + (p0.platformFee || 0) + (p0.packingLogisticsFee || 0));
+  const newTotal = r2c(charges.deliveryCharge + charges.platformFee + charges.packingCharge);
+  const delta    = r2c(newTotal - oldTotal);
+
+  return {
+    oldDistanceKm: p0.deliveryDistance || 0,
+    newDistanceKm: Math.round(distanceKm * 10) / 10,
+    hubName, oldCharges: oldTotal, newCharges: newTotal, delta,
+    mode: delta > 0 ? 'pay' : delta < 0 ? 'refund' : 'none',
+    breakdown: charges,
+    toAddress: {
+      fullName: String(addr.fullName).trim(), phone: String(addr.phone || order.shippingAddress?.phone || '').trim(),
+      addressLine1: String(addr.addressLine1).trim(), addressLine2: String(addr.addressLine2 || '').trim(),
+      city: String(addr.city || 'Chennai').trim(), pincode: pin, landmark: String(addr.landmark || '').trim(),
+    },
+    toLocation: {
+      lat: Number(loc.lat), lng: Number(loc.lng), areaName: String(loc.areaName || '').trim(),
+      city: String(loc.city || addr.city || '').trim(), pincode: pin, distanceKm: Math.round(distanceKm * 10) / 10,
+    },
+  };
+};
+
+const applyAddressChange = (order, ch, actorName) => {
+  const prevAddr = order.shippingAddress?.toObject ? order.shippingAddress.toObject() : { ...order.shippingAddress };
+  order.shippingAddress = ch.toAddress;
+  order.buyerLocation   = ch.toLocation;
+  const b = ch.newChargeBreakdown || ch.breakdown;
+  order.pricing.deliveryDistance    = ch.newDistanceKm;
+  order.pricing.deliveryHub         = ch.hubName || '';
+  order.pricing.deliveryCharge      = b.deliveryCharge;
+  order.pricing.platformFee         = b.platformFee;
+  order.pricing.packingLogisticsFee = b.packingCharge;
+  order.pricing.isSmallOrder        = b.isSmallOrder;
+  order.pricing.originalDeliveryCharge = b.originalDeliveryCharge ?? undefined;
+  order.pricing.originalPlatformFee    = b.originalPlatformFee ?? undefined;
+  order.pricing.total = r2c((order.pricing.total || 0) + ch.delta);
+  order.timeline.push({
+    event: 'address_changed',
+    description: `Delivery address changed (${ch.oldDistanceKm} km → ${ch.newDistanceKm} km). ${ch.delta > 0 ? `Customer paid ₹${ch.delta} extra` : ch.delta < 0 ? `₹${Math.abs(ch.delta)} credited to wallet` : 'No change in charges'}`,
+    actor: { role: 'customer', userId: order.buyer, name: actorName || '' },
+    timestamp: new Date(),
+    meta: { from: prevAddr?.addressLine1, to: ch.toAddress.addressLine1, delta: ch.delta },
+  });
+};
+
+/** GET /orders/:orderId/address/eligibility */
+const getAddressChangeEligibility = async (req, res) => {
+  const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id })
+    .select('paymentStatus orderStatus deliveryDate');
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+  res.json({ success: true, ...(await checkAmendmentEligibility(order)) });
+};
+
+/** POST /orders/:orderId/address/quote — no side effects */
+const quoteAddressChange = async (req, res) => {
+  const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+  const elig = await checkAmendmentEligibility(order);
+  if (!elig.allowed) return res.status(400).json({ success: false, message: elig.reason });
+  try {
+    const q = await priceAddressChange(order, req.body);
+    const { breakdown, toAddress, toLocation, ...pub } = q;
+    res.json({ success: true, ...pub });
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    throw err;
+  }
+};
+
+/**
+ * POST /orders/:orderId/address/confirm
+ * delta <= 0 → applied immediately (wallet credit if negative).
+ * delta  > 0 → opens a Razorpay payment for the difference; applied on /address/verify.
+ */
+const confirmAddressChange = async (req, res) => {
+  const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+  const elig = await checkAmendmentEligibility(order);
+  if (!elig.allowed) return res.status(400).json({ success: false, message: elig.reason });
+
+  let q;
+  try { q = await priceAddressChange(order, req.body); }
+  catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ success: false, message: err.message });
+    throw err;
+  }
+  // Customer must have seen the same amount they are agreeing to pay
+  if (req.body.expectedDelta != null && Math.abs(Number(req.body.expectedDelta) - q.delta) > 0.5) {
+    return res.status(409).json({ success: false, message: 'The delivery charge changed. Please review the new amount.', delta: q.delta });
+  }
+
+  const base = {
+    fromAddress: order.shippingAddress?.toObject ? order.shippingAddress.toObject() : order.shippingAddress,
+    toAddress: q.toAddress, toLocation: q.toLocation,
+    oldDistanceKm: q.oldDistanceKm, newDistanceKm: q.newDistanceKm,
+    oldCharges: q.oldCharges, newCharges: q.newCharges, delta: q.delta,
+    newChargeBreakdown: q.breakdown, hubName: q.hubName,
+  };
+
+  if (q.delta <= 0) {
+    order.addressChanges.push({ ...base, status: 'applied', appliedAt: new Date() });
+    applyAddressChange(order, { ...base, breakdown: q.breakdown }, req.user.name);
+    await order.save();
+    if (q.delta < 0) {
+      try {
+        let w = await KoyambeduWallet.findOne({ user: order.buyer });
+        if (!w) w = new KoyambeduWallet({ user: order.buyer, balance: 0 });
+        await w.credit(Math.abs(q.delta), 'price_adjustment_credit', {
+          orderId: order.orderId, orderRef: order._id, reason: 'Delivery charge reduced after address change',
+        });
+      } catch (e) { console.error('[KBD] address-change wallet credit failed', order.orderId, e.message); }
+    }
+    return res.json({ success: true, applied: true, delta: q.delta, orderId: order.orderId });
+  }
+
+  const razorpay = getRazorpay();
+  if (!razorpay) return res.status(503).json({ success: false, message: 'Payment gateway not configured' });
+  const rzp = await razorpay.orders.create({
+    amount: Math.round(q.delta * 100), currency: 'INR',
+    receipt: `${order.orderId}-ADDR-${Date.now().toString(36)}`,
+    notes: { kbdOrderId: String(order._id), type: 'koyambedu_address_change' },
+  });
+  order.addressChanges.push({ ...base, status: 'pending_payment', razorpayOrderId: rzp.id });
+  await order.save();
+  res.json({
+    success: true, applied: false, rzpOrderId: rzp.id, amount: q.delta, currency: 'INR',
+    keyId: process.env.RAZORPAY_KEY_ID, orderId: order._id,
+  });
+};
+
+/** POST /orders/:orderId/address/verify  Body: { razorpayOrderId, razorpayPaymentId, razorpaySignature } */
+const verifyAddressChange = async (req, res) => {
+  const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
+  const order = await KoyambeduOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
+  if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+  const ch = order.addressChanges.find(a => a.razorpayOrderId === razorpayOrderId);
+  if (!ch) return res.status(404).json({ success: false, message: 'Address change not found' });
+  if (ch.status === 'paid' || ch.status === 'applied') {
+    return res.json({ success: true, message: 'Already confirmed', orderId: order.orderId });
+  }
+  const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+    .update(`${razorpayOrderId}|${razorpayPaymentId}`).digest('hex');
+  if (expected !== razorpaySignature) {
+    ch.status = 'failed';
+    await order.save();
+    return res.status(400).json({ success: false, message: 'Payment verification failed' });
+  }
+  ch.status = 'paid';
+  ch.razorpayPaymentId = razorpayPaymentId;
+  ch.appliedAt = new Date();
+  applyAddressChange(order, {
+    toAddress: ch.toAddress, toLocation: ch.toLocation, oldDistanceKm: ch.oldDistanceKm, newDistanceKm: ch.newDistanceKm,
+    delta: ch.delta, hubName: ch.hubName, newChargeBreakdown: ch.newChargeBreakdown,
+  }, req.user.name);
+  await order.save();
+  res.json({ success: true, message: 'Address updated', orderId: order.orderId, amount: ch.delta });
+};
+
 // ─────────────────────────────────────────────────────────────────
 // DEV-ONLY: Test payment endpoint
 // Guarded by Super Admin-controlled paymentTestMode setting in DB.
@@ -8839,7 +9041,9 @@ module.exports = {
   getMyOrders, getMyOrder, cancelPendingOrder, approveRevision, cancelOrder, getOrderInvoice,
   adminGenerateQuotationPDF,
   // Buyer — order amendment ("Add More Items")
+  getAddressChangeEligibility, quoteAddressChange, confirmAddressChange, verifyAddressChange,
   getAmendEligibility, getAmendQuote, createAmendmentPayment, verifyAmendmentPayment,
+  getAddressChangeEligibility, quoteAddressChange, confirmAddressChange, verifyAddressChange,
   // Seller
   sellerRegister, getSellerProfile, updateSellerProfile,
   getSellerProducts, createSellerProduct, updateSellerProduct,

@@ -113,6 +113,30 @@ const amendmentSchema = new Schema({
   paidAt:            Date,
 }, { _id: true });
 
+// ── Delivery-address change record ─────────────────────────────
+// One entry per customer address change after the order was placed. If the
+// new location raises the delivery/platform/packing charge, the difference
+// is collected via a separate Razorpay payment (status flips to 'paid' in
+// verifyAddressChange); if it lowers it, the difference is credited to the
+// customer's Koyambedu wallet and the entry is created already 'applied'.
+const addressChangeSchema = new Schema({
+  fromAddress:   Schema.Types.Mixed,
+  toAddress:     Schema.Types.Mixed,
+  toLocation:    Schema.Types.Mixed,
+  oldDistanceKm: Number,
+  newDistanceKm: Number,
+  oldCharges:    Number,   // delivery + platform + packing before
+  newCharges:    Number,   // ... after
+  delta:         Number,   // + customer pays, - credited to wallet
+  newChargeBreakdown: { type: Schema.Types.Mixed, default: undefined },
+  hubName:       String,
+  status:        { type: String, enum: ['pending_payment', 'paid', 'applied', 'failed'], default: 'pending_payment' },
+  razorpayOrderId:   String,
+  razorpayPaymentId: String,
+  createdAt:     { type: Date, default: Date.now },
+  appliedAt:     Date,
+}, { _id: true });
+
 // ── Timeline event ─────────────────────────────
 const timelineSchema = new Schema({
   event:       { type: String, required: true }, // e.g. 'order_placed', 'item_declined'
@@ -284,6 +308,7 @@ const koyambeduOrderSchema = new Schema({
   // the original placeOrder/verifyPayment, up until the same-day cutoff.
   // Purely additive: see amendmentSchema above.
   amendments: [amendmentSchema],
+  addressChanges: [addressChangeSchema],
 
   // ── PRICING — single source of truth ──────────
   // pricing: original values set at order time (never mutated)

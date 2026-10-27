@@ -136,6 +136,12 @@ router.get   ('/orders/:orderId/amend/eligibility', protect, ctrl.getAmendEligib
 router.post  ('/orders/:orderId/amend/quote',       protect, ctrl.getAmendQuote);
 router.post  ('/orders/:orderId/amend/checkout',    protect, ctrl.createAmendmentPayment);
 router.post  ('/orders/:orderId/amend/verify',      protect, ctrl.verifyAmendmentPayment);
+
+// Change delivery address after ordering — distance-based charge difference is collected/credited
+router.get   ('/orders/:orderId/address/eligibility', protect, ctrl.getAddressChangeEligibility);
+router.post  ('/orders/:orderId/address/quote',       protect, ctrl.quoteAddressChange);
+router.post  ('/orders/:orderId/address/confirm',     protect, ctrl.confirmAddressChange);
+router.post  ('/orders/:orderId/address/verify',      protect, ctrl.verifyAddressChange);
 // DEV ONLY — guarded by ENABLE_TEST_PAYMENT_BUTTONS=true on the server; no-op in production
 router.post  ('/orders/test-payment',       protect, ctrl.testPayment);
 router.delete('/orders/:orderId/pending',   protect, ctrl.cancelPendingOrder);

@@ -1115,7 +1115,10 @@ const placeOrder = async (req, res) => {
   } catch (_) { /* non-blocking */ }
 
   // walletAdjustment: positive = reduces total, negative = increases total
-  const baseTotal = parseFloat((subtotal + deliveryCharge + platformFee + packingCharge - couponDiscount).toFixed(2));
+  // Uses finalPlatformFee (after the admin's platform-fee discount) — the same
+  // amount stored in pricing.platformFee and shown at checkout/invoice. It used
+  // to use the undiscounted fee here, so the charged total ignored the discount.
+  const baseTotal = parseFloat((subtotal + deliveryCharge + finalPlatformFee + packingCharge - couponDiscount).toFixed(2));
   const total = parseFloat((baseTotal - walletAdjustment).toFixed(2));
 
   // ── 8. Save order ─────────────────────────────────────────
@@ -2047,6 +2050,25 @@ const priceAddressChange = async (order, body) => {
   const charges = computeKoyambeduCharges(distanceKm, summary);
 
   const p0 = order.pricing || {};
+  // Keep whatever platform-fee discount the customer already got. Only when
+  // the order moves between small-order and standard pricing is the fee
+  // recomputed (and the admin's platform-fee discount re-applied to it).
+  if (!!charges.isSmallOrder === !!p0.isSmallOrder) {
+    charges.platformFee = p0.platformFee || 0;
+    charges.originalPlatformFee = p0.originalPlatformFee ?? null;
+  } else {
+    try {
+      const pfd = (await KoyambeduSettings.getOrderMinimum())?.platformFeeDiscount;
+      if (pfd?.enabled && Number(pfd.value) > 0 && charges.platformFee > 0) {
+        const amt = pfd.type === 'percent' ? charges.platformFee * (Number(pfd.value) / 100) : Number(pfd.value);
+        const clamped = Math.min(Math.max(0, amt), charges.platformFee);
+        if (clamped > 0) {
+          charges.originalPlatformFee = charges.originalPlatformFee ?? charges.platformFee;
+          charges.platformFee = Math.round((charges.platformFee - clamped) * 100) / 100;
+        }
+      }
+    } catch (_) { /* non-blocking */ }
+  }
   const oldTotal = r2c((p0.deliveryCharge || 0) + (p0.platformFee || 0) + (p0.packingLogisticsFee || 0));
   const newTotal = r2c(charges.deliveryCharge + charges.platformFee + charges.packingCharge);
   const delta    = r2c(newTotal - oldTotal);
@@ -6554,7 +6576,11 @@ const getOrderInvoice = async (req, res) => {
   const delivFee = r2(calc.deliveryCharge || pricing.deliveryCharge || pricing.deliveryFee || 0);
   if (delivFee > 0) drawTotalRow('Delivery Charge', fmtAmt(delivFee));
   const platFee = r2(calc.platformFee || pricing.platformFee || 0);
-  if (platFee > 0) drawTotalRow('Platform Fee', fmtAmt(platFee));
+  const platFeeOrig = r2(pricing.originalPlatformFee || 0);
+  if (platFeeOrig > platFee && platFee >= 0) {
+    drawTotalRow('Platform Fee', fmtAmt(platFeeOrig));
+    drawTotalRow('Platform Fee Discount (-)', `- ${fmtAmt(platFeeOrig - platFee)}`, { color: '#16a34a', bg: '#f0fdf4' });
+  } else if (platFee > 0) drawTotalRow('Platform Fee', fmtAmt(platFee));
   const packFee = r2(calc.packingLogisticsFee || pricing.packingLogisticsFee || 0);
   if (packFee > 0) drawTotalRow('Packing & Logistics', fmtAmt(packFee));
   const coupon = r2(calc.couponDiscount || pricing.discount || 0);

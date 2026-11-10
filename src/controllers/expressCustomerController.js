@@ -126,6 +126,10 @@ const EXPRESS_STATUS_MESSAGES = {
   delivered:         ['Delivered! 🎉',            (o) => `Order #${o.orderId} has been delivered. Thank you for shopping with Eptomart Express!`],
   cancelled:         ['Order Cancelled ❌',       (o) => `Order #${o.orderId} was cancelled.${o.cancelReason ? ` Reason: ${o.cancelReason}` : ''}`],
 };
+// Items awaiting / denied super-admin approval are not live for customers.
+const NOT_LIVE = ['pending', 'rejected'];
+const LIVE_FILTER = { 'approval.status': { $nin: NOT_LIVE } };
+
 async function notifyExpressBuyer(order, status) {
   try {
     const phone = order.deliveryAddress?.phone;
@@ -386,14 +390,17 @@ const getOnlineCatalogue = async (req, res) => {
     const store = await ExpressStore.findOne({ _id: storeId, isArchived: false, onlineShopEnabled: true });
     if (!store) return fail(res, 404, 'Store not found or inactive');
 
-    const listings = await ExpressOnlineListing.find({ store: storeId, isEnabled: true, price: { $ne: null } })
+    let listings = await ExpressOnlineListing.find({ store: storeId, isEnabled: true, price: { $ne: null } })
       .populate({ path: 'koyambeduProduct', select: 'name description images category', populate: { path: 'category', select: 'name' } })
       .populate({ path: 'product', select: 'unit name description image category isCombo isWeightBased minOrderQty maxOrderQty' })
       .lean();
 
     const productIds = listings.map(l => l.product?._id).filter(Boolean);
     const storeProducts = await ExpressStoreProduct.find({ store: storeId, product: { $in: productIds } })
-      .select('product stockQty').lean();
+      .select('product stockQty approval').lean();
+    // Hide anything still awaiting (or denied) super-admin approval.
+    const notLive = new Set(storeProducts.filter(sp => NOT_LIVE.includes(sp.approval?.status)).map(sp => String(sp.product)));
+    if (notLive.size) listings = listings.filter(l => !notLive.has(String(l.product?._id)));
     const stockByProduct = Object.fromEntries(storeProducts.map(sp => [String(sp.product), sp.stockQty]));
 
     // Every listing needs a resolved ExpressProduct (`l.product`) to be
@@ -487,7 +494,8 @@ const getOnlineCatalogueItem = async (req, res) => {
       .lean();
     if (!listing || !listing.product) return fail(res, 404, 'Product not available at this store');
 
-    const stockDoc = await ExpressStoreProduct.findOne({ store: storeId, product: productId }).select('stockQty').lean();
+    const stockDoc = await ExpressStoreProduct.findOne({ store: storeId, product: productId }).select('stockQty approval').lean();
+    if (NOT_LIVE.includes(stockDoc?.approval?.status)) return fail(res, 404, 'Product not available at this store');
 
     const isNative = !listing.koyambeduProduct;
     const display = isNative ? listing.product : listing.koyambeduProduct;
@@ -530,7 +538,7 @@ const getCatalogue = async (req, res) => {
     if (!store) return fail(res, 404, 'Store not found or inactive');
 
     const config = await getMarginConfig();
-    const storeProducts = await ExpressStoreProduct.find({ store: storeId, isAvailable: true, stockQty: { $gt: 0 } })
+    const storeProducts = await ExpressStoreProduct.find({ store: storeId, isAvailable: true, stockQty: { $gt: 0 }, ...LIVE_FILTER })
       .populate({
         path: 'product', match: { isActive: true },
         populate: {
@@ -646,7 +654,7 @@ const addToCart = async (req, res) => {
     // demand; only checkout (priceCart below) is gated until the store
     // reopens, so nobody loses the items they picked out while waiting.
 
-    const storeProduct = await ExpressStoreProduct.findOne({ store: storeId, product: productId, isAvailable: true })
+    const storeProduct = await ExpressStoreProduct.findOne({ store: storeId, product: productId, isAvailable: true, ...LIVE_FILTER })
       .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } });
     // Product is sellable whether it's Koyambedu-linked (name comes from
     // the populated koyambeduProduct) or a native Express product/combo
@@ -832,7 +840,7 @@ async function priceCart(userId, deliveryAddress, couponCode) {
     throw err;
   }
 
-  const storeProducts = await ExpressStoreProduct.find({ store: cart.store, isAvailable: true })
+  const storeProducts = await ExpressStoreProduct.find({ store: cart.store, isAvailable: true, ...LIVE_FILTER })
     .populate('product')
     .lean();
   const byProductId = new Map(storeProducts.map(sp => [String(sp.product?._id), sp]));

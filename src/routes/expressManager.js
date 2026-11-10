@@ -60,6 +60,13 @@ router.get  ('/owner/expenses',             ...money, owner.myExpenses);
 router.post ('/owner/expenses',             ...money, owner.addMyExpense);
 router.delete('/owner/expenses/:expenseId', ...money, owner.deleteMyExpense);
 
+// Delivery & store settings: owner sets everything; a manager may hold/resume
+router.get  ('/owner/store',                     ...ownerO, owner.getStoreSettings);
+router.patch('/owner/store/delivery-slots',      ...ownerO, owner.updateMyDeliverySlots);
+router.patch('/owner/store/delivery-fee',        ...ownerO, owner.updateMyDeliveryFee);
+router.patch('/owner/store/toggle-pause',        ...ops,    owner.toggleMyPause);
+router.patch('/owner/store/toggle-online-shop',  ...ownerO, owner.toggleMyOnlineShop);
+
 // Team (manager / accountant profiles) and WhatsApp order-alert numbers
 router.get   ('/owner/team',                ...ownerO, owner.listTeam);
 router.post  ('/owner/team',                ...ownerO, owner.addTeamMember);

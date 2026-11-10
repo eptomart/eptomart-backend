@@ -23,8 +23,20 @@ const protectExpressManager = async (req, res, next) => {
     // Normal Eptomart login (token has no `type`): allowed only if this user
     // has been assigned as a store's owner by admin.
     if (!decoded.type) {
-      const user = await User.findById(decoded.id).select('_id isActive');
+      const user = await User.findById(decoded.id).select('_id name role permissions isActive');
       if (!user || user.isActive === false) return res.status(401).json({ success: false, message: 'Invalid session' });
+
+      // Super admin (or an admin with the Express permission) can open ANY
+      // store's owner dashboard by sending x-express-store-id — they see and
+      // can do exactly what that store's owner can.
+      const actAs = req.headers['x-express-store-id'];
+      const isExpressAdmin = user.role === 'superAdmin' || (user.role === 'admin' && (user.permissions || []).includes('express'));
+      if (actAs && isExpressAdmin) {
+        if (!/^[a-f\d]{24}$/i.test(String(actAs))) return res.status(400).json({ success: false, message: 'Invalid store id' });
+        req.manager = { _id: user._id, name: `${user.name || 'Admin'} (Admin)`, store: actAs, role: 'owner', isAdmin: true, isActive: true };
+        req.managerRole = 'owner';
+        return next();
+      }
       const owned = await ExpressStoreManager.findOne({ user: user._id }).select('-password');
       if (!owned) return res.status(403).json({ success: false, message: 'You are not a store owner' });
       if (!owned.isActive) return res.status(403).json({ success: false, message: 'Store access suspended. Contact Admin.' });

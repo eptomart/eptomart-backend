@@ -13,6 +13,7 @@ const ExpressOnlineListing = require('../../src/models/ExpressOnlineListing');
 const ExpressStockLog = require('../../src/models/ExpressStockLog');
 const ExpressPOSUser = require('../../src/models/ExpressPOSUser');
 const ExpressAuditLog = require('../../src/models/ExpressAuditLog');
+const ExpressMarginConfig = require('../../src/models/ExpressMarginConfig');
 const User = require('../../src/models/User');
 const admin = require('../../src/controllers/expressAdminController');
 const owner = require('../../src/controllers/expressOwnerController');
@@ -145,6 +146,7 @@ test('OW-43 edit product: only products created by this owner’s store', async 
 // ── saveItem: inherit Koyambedu / own product, price, stock, online ──────
 const stubItem = ({ product, spPrice = null } = {}) => {
   const calls = { sp: null, logs: [], listings: [] };
+  ExpressMarginConfig.findOne = () => chain(null);
   admin.resolveExpressProduct = async () => product;
   admin.upsertOnlineListing = async (storeId, ref, opts) => { calls.listings.push({ storeId, ref, opts }); return {}; };
   ExpressStoreProduct.findOneAndUpdate = (f, u) => {

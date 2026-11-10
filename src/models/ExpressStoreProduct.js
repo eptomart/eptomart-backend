@@ -10,6 +10,17 @@ const expressStoreProductSchema = new mongoose.Schema({
   product: { type: mongoose.Schema.Types.ObjectId, ref: 'ExpressProduct', required: true },
   // Store Manager's ON/OFF toggle for this product at their store (section 11)
   isAvailable: { type: Boolean, default: true },
+  // Super-admin approval before an item goes LIVE ONLINE. Rows created before
+  // this feature (or by admin) have no status = approved. An owner adding an
+  // item creates it as 'pending'; customers cannot see or buy a pending or
+  // rejected item online (counter/POS selling is unaffected).
+  approval: {
+    status:      { type: String, enum: ['approved', 'pending', 'rejected'], default: undefined },
+    requestedAt: { type: Date, default: null },
+    decidedAt:   { type: Date, default: null },
+    decidedBy:   { type: String, default: null },
+    note:        { type: String, default: null },
+  },
   // Current stock balance at this store, in the product's base unit
   stockQty: { type: Number, default: 0, min: 0 },
   // Optional per-store selling price override, in ₹ per base unit. When

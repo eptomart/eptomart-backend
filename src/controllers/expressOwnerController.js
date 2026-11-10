@@ -24,6 +24,7 @@ const ExpressPOSUser       = require('../models/ExpressPOSUser');
 const ExpressOrder         = require('../models/ExpressOrder');
 const ExpressBill          = require('../models/ExpressBill');
 const ExpressAuditLog      = require('../models/ExpressAuditLog');
+const ExpressMarginConfig = require('../models/ExpressMarginConfig');
 const admin = require('./expressAdminController');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
@@ -59,7 +60,7 @@ const listCatalog = async (req, res) => {
     const out = await callAdmin(admin.adminListOnlineCatalog, { params: { storeId } });
     if (!out.body?.success) return send(res, out);
 
-    const sps = await ExpressStoreProduct.find({ store: storeId }).select('product isAvailable stockQty priceOverride').lean();
+    const sps = await ExpressStoreProduct.find({ store: storeId }).select('product isAvailable stockQty priceOverride approval').lean();
     const spByProduct = Object.fromEntries(sps.map((s) => [String(s.product), s]));
     const own = await ExpressProduct.find({ ownerStore: storeId }).select('_id').lean();
     const ownIds = new Set(own.map((p) => String(p._id)));
@@ -72,6 +73,8 @@ const listCatalog = async (req, res) => {
         isAvailable: sp ? sp.isAvailable : false,
         sellingPrice: sp?.priceOverride ?? null,
         stockQty: sp ? sp.stockQty : 0,
+        approvalStatus: sp ? (sp.approval?.status || 'approved') : null,
+        approvalNote: sp?.approval?.note || null,
         isOwn: !!(it.productId && ownIds.has(String(it.productId))),
       };
     });
@@ -115,7 +118,12 @@ const saveItem = async (req, res) => {
     const set = {};
     if (priceGiven) set.priceOverride = Math.round(Number(price));
     if (isAvailable !== undefined) set.isAvailable = !!isAvailable;
-    const upd = { $setOnInsert: { store: storeId, product: product._id, stockQty: 0, ...(isAvailable === undefined ? { isAvailable: true } : {}) } };
+    // New items start as 'pending' super-admin approval (kill-switch: Settings →
+    // productApprovalRequired). Existing rows keep whatever status they have.
+    const cfg = await ExpressMarginConfig.findOne({ key: 'default' }).select('productApprovalRequired').lean();
+    const needsApproval = cfg ? cfg.productApprovalRequired !== false : true;
+    const upd = { $setOnInsert: { store: storeId, product: product._id, stockQty: 0, ...(isAvailable === undefined ? { isAvailable: true } : {}),
+      ...(needsApproval && !req.manager.isAdmin ? { approval: { status: 'pending', requestedAt: new Date() } } : {}) } };
     if (Object.keys(set).length) upd.$set = set;
     let sp = await ExpressStoreProduct.findOneAndUpdate(
       { store: storeId, product: product._id }, upd, { new: true, upsert: true, setDefaultsOnInsert: true }
@@ -129,7 +137,7 @@ const saveItem = async (req, res) => {
         store: storeId, product: product._id, type: 'addition', qty: add,
         previousQty: prev, newQty: sp.stockQty, reason: note || 'Added by store owner',
         actorType: 'store_manager', actorName: req.manager.name, acknowledged: true,
-        acknowledgedBy: req.manager._id, acknowledgedByName: req.manager.name, acknowledgedAt: new Date(),
+        acknowledgedBy: req.manager.isAdmin ? undefined : req.manager._id, acknowledgedByName: req.manager.name, acknowledgedAt: new Date(),
       });
     }
 
@@ -464,7 +472,97 @@ const setAlerts = async (req, res) => {
   } catch (err) { fail(res, 500, 'Failed to save alert numbers'); }
 };
 
+
+// ── Owner: delivery & store settings (slots, fees, hold, online shop) ────
+// Thin wrappers over the admin handlers, forced to the caller's own store.
+const getStoreSettings = async (req, res) => {
+  try {
+    const store = await ExpressStore.findById(req.manager.store).lean();
+    if (!store) return fail(res, 404, 'Store not found');
+    res.json({ success: true, store });
+  } catch (err) { fail(res, 500, 'Failed to load store settings'); }
+};
+const viaAdmin = (fn) => async (req, res) => {
+  try {
+    const out = await callAdmin(fn, { params: { storeId: String(req.manager.store) }, body: req.body || {}, user: { name: `${req.manager.name} (store)` } });
+    send(res, out);
+  } catch (err) { fail(res, 500, 'Failed to update store'); }
+};
+const updateMyDeliverySlots = viaAdmin(admin.updateDeliverySlots);
+const updateMyDeliveryFee   = viaAdmin(admin.updateDeliveryFeeConfig);
+const toggleMyPause         = viaAdmin(admin.togglePauseStore);
+const toggleMyOnlineShop    = viaAdmin(admin.toggleOnlineShop);
+
+// ── ADMIN: approve store items before they go live online ────────────────
+// GET /express/admin/approvals?status=pending|rejected|approved&storeId=
+const adminListApprovals = async (req, res) => {
+  try {
+    const status = ['pending', 'rejected', 'approved'].includes(req.query.status) ? req.query.status : 'pending';
+    const filter = status === 'approved'
+      ? { $or: [{ 'approval.status': 'approved' }, { 'approval.status': { $exists: false } }, { 'approval.status': null }], 'approval.decidedAt': { $ne: null } }
+      : { 'approval.status': status };
+    if (req.query.storeId) filter.store = req.query.storeId;
+    const rows = await ExpressStoreProduct.find(filter)
+      .populate('store', 'name code')
+      .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name images unit currentPrice' } })
+      .sort({ 'approval.requestedAt': -1 }).limit(300).lean();
+    const listings = await ExpressOnlineListing.find({ product: { $in: rows.map(r => r.product?._id).filter(Boolean) } }).select('store product isEnabled price mrp').lean();
+    const lk = Object.fromEntries(listings.map(l => [`${l.store}:${l.product}`, l]));
+    const items = rows.map(r => {
+      const l = lk[`${r.store?._id}:${r.product?._id}`];
+      const p = r.product || {};
+      return {
+        _id: r._id, store: r.store ? { _id: r.store._id, name: r.store.name } : null,
+        name: p.koyambeduProduct?.name || p.name || 'Product', unit: p.unit,
+        source: p.koyambeduProduct ? 'Koyambedu product' : (p.ownerStore ? "Owner's own product" : 'Express product'),
+        costPrice: p.procurementBaseCost ?? null, koyambeduPrice: p.koyambeduProduct?.currentPrice ?? null,
+        sellingPrice: r.priceOverride ?? l?.price ?? null, mrp: l?.mrp ?? null, wantsOnline: !!l?.isEnabled,
+        stockQty: r.stockQty, status: r.approval?.status || 'approved', note: r.approval?.note || null,
+        requestedAt: r.approval?.requestedAt, decidedAt: r.approval?.decidedAt, decidedBy: r.approval?.decidedBy,
+      };
+    });
+    const cfg = await ExpressMarginConfig.findOne({ key: 'default' }).select('productApprovalRequired').lean();
+    res.json({ success: true, items, productApprovalRequired: cfg ? cfg.productApprovalRequired !== false : true });
+  } catch (err) {
+    console.error('[expressOwner.adminListApprovals]', err);
+    fail(res, 500, 'Failed to load approvals');
+  }
+};
+
+// POST /express/admin/approvals/decide { ids: [storeProductId], decision: 'approve'|'reject', note }
+const adminDecideApprovals = async (req, res) => {
+  try {
+    const { ids, decision, note } = req.body || {};
+    if (!Array.isArray(ids) || !ids.length) return fail(res, 400, 'Select at least one item');
+    if (!['approve', 'reject'].includes(decision)) return fail(res, 400, 'Decision must be approve or reject');
+    if (decision === 'reject' && !String(note || '').trim()) return fail(res, 400, 'Give a reason when rejecting');
+    const r = await ExpressStoreProduct.updateMany(
+      { _id: { $in: ids } },
+      { $set: {
+        'approval.status': decision === 'approve' ? 'approved' : 'rejected',
+        'approval.decidedAt': new Date(), 'approval.decidedBy': req.user?.name || 'Admin',
+        'approval.note': decision === 'reject' ? String(note).trim() : null,
+      } }
+    );
+    try { await ExpressAuditLog.create({ actorType: 'admin', actorName: req.user?.name || 'Admin', action: `product.${decision}`, meta: { ids, note } }); } catch (_) {}
+    res.json({ success: true, updated: r.modifiedCount ?? r.nModified ?? 0 });
+  } catch (err) {
+    console.error('[expressOwner.adminDecideApprovals]', err);
+    fail(res, 500, 'Failed to save decision');
+  }
+};
+
+// PATCH /express/admin/approvals/setting { required: bool }
+const adminSetApprovalRequired = async (req, res) => {
+  try {
+    await ExpressMarginConfig.updateOne({ key: 'default' }, { $set: { productApprovalRequired: !!req.body.required } }, { upsert: true });
+    res.json({ success: true, productApprovalRequired: !!req.body.required });
+  } catch (err) { fail(res, 500, 'Failed to save setting'); }
+};
+
 module.exports = {
+  getStoreSettings, updateMyDeliverySlots, updateMyDeliveryFee, toggleMyPause, toggleMyOnlineShop,
+  adminListApprovals, adminDecideApprovals, adminSetApprovalRequired,
   listTeam, addTeamMember, updateTeamMember, removeTeamMember, getAlerts, setAlerts,
   ownerAccess,
   listCatalog, saveItem, createOwnProduct, updateOwnProduct,

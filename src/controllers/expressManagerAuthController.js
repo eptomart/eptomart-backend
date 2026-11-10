@@ -36,6 +36,11 @@ const login = async (req, res) => {
 };
 
 const me = async (req, res) => {
+  if (req.manager?.isAdmin) {
+    const ExpressStore = require('../models/ExpressStore');
+    const store = await ExpressStore.findById(req.manager.store).select('name code isActive').lean();
+    return res.json({ success: true, manager: { _id: req.manager._id, name: req.manager.name, role: 'owner', isAdmin: true, store } });
+  }
   const manager = await ExpressStoreManager.findById(req.manager._id).populate('store', 'name code isActive').select('-password');
   res.json({ success: true, manager });
 };

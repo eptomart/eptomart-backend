@@ -75,6 +75,11 @@ const MATRIX = [
   ['RB-21', 'POST', '/owner/team', ['owner']],
   ['RB-22', 'GET', '/owner/alerts', ['owner']],
   ['RB-23', 'PUT', '/owner/alerts', ['owner']],
+  ['RB-24', 'GET', '/owner/store', ['owner']],
+  ['RB-25', 'PATCH', '/owner/store/delivery-slots', ['owner']],
+  ['RB-26', 'PATCH', '/owner/store/delivery-fee', ['owner']],
+  ['RB-27', 'PATCH', '/owner/store/toggle-online-shop', ['owner']],
+  ['RB-28', 'PATCH', '/owner/store/toggle-pause', ['owner', 'manager']],
 ];
 const actors = {
   owner: () => sign({ id: 'uOwner' }),            // normal Eptomart login

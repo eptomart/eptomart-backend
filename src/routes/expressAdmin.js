@@ -86,6 +86,11 @@ router.delete('/expenses/:expenseId', protectAdmin, ctrl.deleteExpense);
 router.get('/finance-dashboard', protectAdmin, ctrl.getFinanceDashboard);
 router.get('/accounts/stores',   protectAdmin, ownerCtrl.adminStoreAccounts);
 
+// Approve store items before they go live online
+router.get  ('/approvals',          protectAdmin, ownerCtrl.adminListApprovals);
+router.post ('/approvals/decide',   protectAdmin, ownerCtrl.adminDecideApprovals);
+router.patch('/approvals/setting',  protectAdmin, ownerCtrl.adminSetApprovalRequired);
+
 // Orders (cross-store admin view — see expressManagerController for the
 // store-scoped manager equivalent, left untouched)
 router.get  ('/orders',                     protectAdmin, ctrl.adminListOrders);

@@ -13,6 +13,9 @@ const expressMarginConfigSchema = new mongoose.Schema({
 
   // Section 19 — master ON/OFF switch for the whole Express vertical
   isEnabled: { type: Boolean, default: false },
+  // When true (default) a store owner's newly added items must be approved by
+  // super admin before customers can see them online.
+  productApprovalRequired: { type: Boolean, default: true },
 
   // Section 2 — logistics cost per kg, recomputed whenever admin re-enters
   // the latest shipment costs across stores. Stored so it doesn't need to

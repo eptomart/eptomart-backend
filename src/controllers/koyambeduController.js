@@ -2797,8 +2797,21 @@ async function computeKoyambeduImpact() {
       if (fruitProd[String(i.product)]) out.fruitKg += kg; else out.vegKg += kg;
     }
   }
+  // Turnover = customer-paid order value (same field as "Today Revenue"),
+  // all-time and this month; paid, real (non-demo), not cancelled.
+  const turn = await KoyambeduOrder.aggregate([
+    { $match: { paymentStatus: 'paid', isDemoOrder: { $ne: true }, orderStatus: { $nin: ['cancelled', 'payment_pending'] } } },
+    { $group: {
+      _id: null,
+      total: { $sum: '$pricing.total' },
+      month: { $sum: { $cond: [{ $gte: ['$createdAt', monthStart] }, '$pricing.total', 0] } },
+      orders: { $sum: 1 },
+    } },
+  ]);
+  const t = turn[0] || { total: 0, month: 0, orders: 0 };
   const r1 = n => Math.round(n * 10) / 10;
   return {
+    turnover: Math.round(t.total), monthTurnover: Math.round(t.month), paidOrders: t.orders,
     totalTonnes: r1(out.totalKg / 1000), fruitTonnes: r1(out.fruitKg / 1000), vegTonnes: r1(out.vegKg / 1000),
     monthTonnes: r1(out.monthKg / 1000), totalKm: Math.round(out.km), monthKm: Math.round(out.monthKm),
     deliveries: out.deliveries, monthDeliveries: out.monthDeliveries,

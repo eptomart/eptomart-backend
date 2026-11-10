@@ -58,7 +58,7 @@ const listCatalog = async (req, res) => {
   try {
     const storeId = String(req.manager.store);
     const out = await callAdmin(admin.adminListOnlineCatalog, { params: { storeId } });
-    if (!out.body?.success) return send(res, out);
+    if (!out.body?.success) { console.error('[expressOwner.listCatalog] admin catalogue failed:', out.status, out.body?.message); return send(res, out); }
 
     const sps = await ExpressStoreProduct.find({ store: storeId }).select('product isAvailable stockQty priceOverride approval').lean();
     const spByProduct = Object.fromEntries(sps.map((s) => [String(s.product), s]));
@@ -81,7 +81,7 @@ const listCatalog = async (req, res) => {
     res.json({ success: true, store: out.body.store, items });
   } catch (err) {
     console.error('[expressOwner.listCatalog]', err);
-    fail(res, 500, 'Failed to load catalogue');
+    fail(res, 500, `Failed to load catalogue: ${err.message}`);
   }
 };
 
@@ -164,6 +164,32 @@ const saveItem = async (req, res) => {
   } catch (err) {
     console.error('[expressOwner.saveItem]', err);
     fail(res, 500, err.message || 'Failed to save item');
+  }
+};
+
+// POST /owner/upload-image — multipart `image`; returns the hosted URL to
+// send as `image` when creating / editing an own product.
+const uploadImage = async (req, res) => {
+  const url = req.file?.path || req.file?.secure_url;
+  if (!url) return fail(res, 400, 'Choose an image (JPG, PNG or WebP, up to 5 MB)');
+  res.json({ success: true, url });
+};
+
+// DELETE /owner/items/:productId — take an item out of MY store (hides it
+// online and removes it from the store's catalogue). Shared products stay
+// untouched for every other store; stock history is kept in the logs.
+const removeItem = async (req, res) => {
+  try {
+    const storeId = String(req.manager.store);
+    const sp = await ExpressStoreProduct.findOne({ store: storeId, product: req.params.productId });
+    if (!sp) return fail(res, 404, 'This item is not in your store');
+    await ExpressOnlineListing.updateMany({ store: storeId, product: req.params.productId }, { $set: { isEnabled: false } });
+    await ExpressStoreProduct.deleteOne({ _id: sp._id });
+    await audit(req, 'owner.remove-item', { productId: req.params.productId, stockQty: sp.stockQty });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[expressOwner.removeItem]', err);
+    fail(res, 500, 'Failed to remove item');
   }
 };
 
@@ -666,7 +692,7 @@ module.exports = {
   adminListApprovals, adminDecideApprovals, adminSetApprovalRequired,
   listTeam, addTeamMember, updateTeamMember, removeTeamMember, getAlerts, setAlerts,
   ownerAccess,
-  listCatalog, saveItem, createOwnProduct, updateOwnProduct,
+  listCatalog, saveItem, createOwnProduct, updateOwnProduct, uploadImage, removeItem,
   listMyPOSUsers, createMyPOSUser, updateMyPOSUser,
   myAccounts, myExpenses, addMyExpense, deleteMyExpense, overview,
   adminStoreAccounts,

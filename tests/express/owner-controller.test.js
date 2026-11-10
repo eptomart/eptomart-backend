@@ -261,3 +261,26 @@ test('OW-44 create own product: same name as a company-wide Express product → 
   res = fakeRes(); await owner.createOwnProduct(req({ body: { name: 'Rose Milk', unit: 'litre', procurementBaseCost: 30, force: true } }), res);
   assert.equal(res.statusCode, 201); assert.equal(created, true);
 });
+
+// ── Photos & removing an item ────────────────────────────────────────────
+test('OW-45 upload-image returns the hosted URL; no file → 400', async () => {
+  let res = fakeRes(); await owner.uploadImage(req({ file: { path: 'https://cdn/x.jpg' } }), res); assert.equal(res.body.url, 'https://cdn/x.jpg');
+  res = fakeRes(); await owner.uploadImage(req({}), res); assert.equal(res.statusCode, 400);
+});
+test('OW-46 own product keeps the uploaded image URL', async () => {
+  let doc; noCatalogueMatch(); ExpressProduct.findOne = () => chain(null); ExpressProduct.create = async (d) => { doc = d; return { _id: 'EP9', ...d }; };
+  const res = fakeRes(); await owner.createOwnProduct(req({ body: { name: 'Lemon Grass Tea', procurementBaseCost: 20, image: 'https://cdn/lg.jpg' } }), res);
+  assert.equal(res.statusCode, 201); assert.equal(doc.image, 'https://cdn/lg.jpg');
+});
+test('OW-47 remove item: only MY store row is deleted, online listing switched off', async () => {
+  let del, upd;
+  ExpressStoreProduct.findOne = async (f) => (f.store === 'S1' ? { _id: 'SP1', stockQty: 3 } : null);
+  ExpressStoreProduct.deleteOne = async (f) => { del = f; };
+  ExpressOnlineListing.updateMany = async (f, u) => { upd = { f, u }; };
+  const res = fakeRes(); await owner.removeItem(req({ params: { productId: 'P1' } }), res);
+  assert.equal(res.statusCode, 200); assert.deepEqual(del, { _id: 'SP1' }); assert.equal(upd.f.store, 'S1'); assert.equal(upd.u.$set.isEnabled, false);
+});
+test('OW-48 remove item not in my store → 404, nothing deleted', async () => {
+  let deleted = false; ExpressStoreProduct.findOne = async () => null; ExpressStoreProduct.deleteOne = async () => { deleted = true; };
+  const res = fakeRes(); await owner.removeItem(req({ params: { productId: 'P1' } }), res); assert.equal(res.statusCode, 404); assert.equal(deleted, false);
+});

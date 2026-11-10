@@ -16,6 +16,13 @@ const ctrl = require('../controllers/expressManagerController');
 const owner = require('../controllers/expressOwnerController');
 const { protectExpressManager, requireExpressRole } = require('../middleware/expressAuth');
 const { protect } = require('../middleware/auth');
+const { uploadExpressProduct } = require('../config/cloudinary');
+
+// Turns upload errors (type/size) into a clean 400 instead of a crash
+const imageUpload = (req, res, next) => uploadExpressProduct.single('image')(req, res, (err) => {
+  if (err) return res.status(400).json({ success: false, message: err.message || 'Image upload failed' });
+  next();
+});
 
 const any    = [protectExpressManager];
 const ops    = [protectExpressManager, requireExpressRole('owner', 'manager')];
@@ -53,6 +60,8 @@ router.get  ('/owner/overview',             ...money, owner.overview);
 router.get  ('/owner/catalog',              ...ownerO, owner.listCatalog);
 router.post ('/owner/items',                ...ownerO, owner.saveItem);
 router.post ('/owner/products',             ...ownerO, owner.createOwnProduct);
+router.post ('/owner/upload-image',         ...ownerO, imageUpload, owner.uploadImage);
+router.delete('/owner/items/:productId',    ...ownerO, owner.removeItem);
 router.patch('/owner/products/:productId',  ...ownerO, owner.updateOwnProduct);
 router.get  ('/owner/pos-users',            ...ownerO, owner.listMyPOSUsers);
 router.post ('/owner/pos-users',            ...ownerO, owner.createMyPOSUser);

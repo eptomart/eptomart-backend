@@ -240,4 +240,22 @@ const uploadExpressBanner = multer({
   },
 });
 
-module.exports = { cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, uploadBill, uploadKoyambedu, uploadKoyambeduBill, uploadHeroVideo, uploadFruitBasket, uploadBulkHarvest, uploadKoyambeduNews, uploadExpressBanner, deleteImage };
+// Express product photos — uploaded by store owners for their own products.
+const expressProductStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'eptomart/express-products',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+    transformation: [{ width: 800, height: 800, crop: 'limit', quality: 'auto' }],
+  },
+});
+const uploadExpressProduct = multer({
+  storage: expressProductStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Only image files are allowed'), false);
+  },
+});
+
+module.exports = { uploadExpressProduct, cloudinary, uploadProduct, uploadCategory, uploadPackaging, uploadDocument, uploadBill, uploadKoyambedu, uploadKoyambeduBill, uploadHeroVideo, uploadFruitBasket, uploadBulkHarvest, uploadKoyambeduNews, uploadExpressBanner, deleteImage };

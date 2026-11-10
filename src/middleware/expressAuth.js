@@ -37,7 +37,9 @@ const protectExpressManager = async (req, res, next) => {
         req.managerRole = 'owner';
         return next();
       }
-      const owned = await ExpressStoreManager.findOne({ user: user._id }).select('-password');
+      // A person may hold more than one store record (e.g. owner AND added as
+      // manager) — always prefer the owner record, then manager, then accountant.
+      const owned = await ExpressStoreManager.findOne({ user: user._id }).sort({ role: -1 }).select('-password');
       if (!owned) return res.status(403).json({ success: false, message: 'You are not a store owner' });
       if (!owned.isActive) return res.status(403).json({ success: false, message: 'Store access suspended. Contact Admin.' });
       req.manager = owned;

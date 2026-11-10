@@ -2800,11 +2800,21 @@ async function computeKoyambeduImpact() {
   // Turnover = customer-paid order value (same field as "Today Revenue"),
   // all-time and this month; paid, real (non-demo), not cancelled.
   const turn = await KoyambeduOrder.aggregate([
-    { $match: { paymentStatus: 'paid', isDemoOrder: { $ne: true }, orderStatus: { $nin: ['cancelled', 'payment_pending'] } } },
+    // Every real order that was paid OR has progressed to delivery (covers
+    // manually-placed / cash orders too); excludes cancelled, unpaid, refunded.
+    { $match: {
+      isDemoOrder: { $ne: true },
+      orderStatus: { $nin: ['cancelled', 'payment_pending', 'placed'] },
+      paymentStatus: { $nin: ['failed', 'refunded'] },
+      $or: [{ paymentStatus: 'paid' }, { orderStatus: { $in: ['delivered', 'reported', 'closed'] } }],
+    } },
+    // Same definition as the P&L report: revised final payable (after declined
+    // items etc.) when present, else the original order total.
+    { $addFields: { _amt: { $cond: [{ $gt: ['$calculatedPricing.finalPayableAmount', 0] }, '$calculatedPricing.finalPayableAmount', { $ifNull: ['$pricing.total', 0] }] } } },
     { $group: {
       _id: null,
-      total: { $sum: '$pricing.total' },
-      month: { $sum: { $cond: [{ $gte: ['$createdAt', monthStart] }, '$pricing.total', 0] } },
+      total: { $sum: '$_amt' },
+      month: { $sum: { $cond: [{ $gte: ['$createdAt', monthStart] }, '$_amt', 0] } },
       orders: { $sum: 1 },
     } },
   ]);

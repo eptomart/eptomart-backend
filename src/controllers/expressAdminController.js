@@ -1606,12 +1606,13 @@ const adminCopyStoreItems = async (req, res) => {
 };
 
 // ── AI-drafted customer reply (never sends — admin reviews + confirms) ──
-const REPLY_SYSTEM = `You write WhatsApp replies on behalf of Eptomart Express, a same-day grocery delivery service in India.
+const REPLY_SYSTEM = `You write WhatsApp replies on behalf of the Eptomart team (Eptomart is an Indian fresh-produce and grocery e-commerce company).
 Rules:
+- Always speak as "Eptomart" / "the Eptomart team" / "we". NEVER write the word "Express" as part of our name or sign-off (not "Eptomart Express", not "Express team"), even if the order context mentions Express.
 - Tone: dignified, warm, professional, concise (3-6 short lines). No slang, no emojis except at most one gentle one if the customer used one.
 - Begin exactly with "Dear {{SALUTATION}}," — the literal placeholder {{SALUTATION}} stays in the text; it is replaced later.
 - Address the customer's actual question or concern directly. Never invent order status, prices, refunds or promises you were not given. If details are missing, politely say the team is checking and will update shortly.
-- Close with "Warm regards,\\nTeam Eptomart Express".
+- Close with "Warm regards,\\nTeam Eptomart".
 - Reply in the same language as the customer (English if unclear).
 - A customer does NOT need an existing order. If there is no order on file, never mention that. If the message is just a greeting or unclear ("hi", "hello", "help"), reply with a warm greeting and the line "How may we help you today?". If they ask about ordering, products, delivery areas or timings, answer only what you were told in the context; otherwise say the team will confirm shortly.
 - If the admin gives an instruction (e.g. "tell him delivery by 5 PM", "make it shorter", "apologise for the delay"), follow it and rewrite the full draft accordingly.
@@ -1666,6 +1667,9 @@ const adminDraftReply = async (req, res) => {
     let parsed;
     try { parsed = JSON.parse(result.text.trim().replace(/^```json|```$/g, '')); }
     catch { parsed = { title: '', draft: result.text.trim(), note: '' }; }
+
+    // Safety net: never let the brand read "Eptomart Express" in a customer reply.
+    if (typeof parsed.draft === 'string') parsed.draft = parsed.draft.replace(/Eptomart\s+Express/gi, 'Eptomart');
 
     const first = name.split(/\s+/)[0] || '';
     res.json({ success: true, customerName: name, firstName: first, title: parsed.title || '', draft: parsed.draft, note: parsed.note || '', raw: result.text });

@@ -279,18 +279,25 @@ const createInventoryRequest = async (req, res) => {
 
 const listMyOrders = async (req, res) => {
   try {
-    const { status } = req.query;
-    const filter = { store: req.manager.store };
-    if (status) filter.orderStatus = status;
-    const orders = await ExpressOrder.find(filter)
-      .populate('buyer', 'name phone')
-      .sort({ createdAt: -1 })
-      .limit(200)
-      .lean();
-    res.json({ success: true, orders });
+    // Store-level: ALWAYS this store's orders (store id comes from the session,
+    // never the client), paid orders by default; same filters as the admin view.
+    const out = await require('../utils/expressOrderQuery').searchOrders(req.query, { store: req.manager.store, defaultPayment: 'paid' });
+    res.json({ success: true, ...out });
   } catch (err) {
     console.error('[expressManager.listMyOrders]', err);
     fail(res, 500, 'Failed to load orders');
+  }
+};
+
+const exportMyOrders = async (req, res) => {
+  try {
+    const csv = await require('../utils/expressOrderQuery').ordersCsv(req.query, { store: req.manager.store, defaultPayment: 'paid' });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="store-orders-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send('\uFEFF' + csv);
+  } catch (err) {
+    console.error('[expressManager.exportMyOrders]', err);
+    fail(res, 500, 'Failed to export orders');
   }
 };
 
@@ -387,7 +394,7 @@ const declineOrderItems = async (req, res) => {
 };
 
 module.exports = {
-  previewDecline, declineOrderItems,
+  exportMyOrders, previewDecline, declineOrderItems,
   getDashboard, getMyStore, toggleMyStore,
   listMyStoreProducts, listMyStoreProductsForPrint, toggleProductAvailability,
   recordLoss, listMyStockLogs,

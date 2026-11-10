@@ -49,6 +49,7 @@ router.post('/inventory-requests',  ...ops, ctrl.createInventoryRequest);
 
 // Orders: everyone on the team can VIEW; only owner/manager can move/close them.
 router.get  ('/orders',                          ...any, ctrl.listMyOrders);
+router.get  ('/orders-export',                   ...any, ctrl.exportMyOrders);
 router.patch('/orders/:orderId/status',          ...ops, ctrl.updateOrderStatus);
 router.patch('/orders/:orderId/delivery-expense',...ops, ctrl.recordDeliveryExpense);
 router.get  ('/orders/:orderId/decline-preview', ...ops, ctrl.previewDecline);

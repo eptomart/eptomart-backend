@@ -94,6 +94,7 @@ router.patch('/approvals/setting',  protectAdmin, ownerCtrl.adminSetApprovalRequ
 // Orders (cross-store admin view — see expressManagerController for the
 // store-scoped manager equivalent, left untouched)
 router.get  ('/orders',                     protectAdmin, ctrl.adminListOrders);
+router.get  ('/orders-export',              protectAdmin, ctrl.adminExportOrders);
 router.get  ('/orders/:orderId',            protectAdmin, ctrl.adminGetOrder);
 router.patch('/orders/:orderId/status',     protectAdmin, ctrl.adminUpdateOrderStatus);
 router.patch('/orders/:orderId/charges',    protectAdmin, ctrl.adminSetOrderCharges);

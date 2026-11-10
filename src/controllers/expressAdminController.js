@@ -1308,30 +1308,25 @@ const ADMIN_ORDER_STEPS = ['placed', 'confirmed', 'preparing', 'out_for_delivery
 
 const adminListOrders = async (req, res) => {
   try {
-    const { storeId, status, from, to, search, limit = 100 } = req.query;
-    const filter = {};
-    if (storeId) filter.store = storeId;
-    if (status) filter.orderStatus = status;
-    if (from || to) {
-      filter.createdAt = {};
-      if (from) filter.createdAt.$gte = new Date(from);
-      if (to) filter.createdAt.$lte = new Date(to);
-    }
-    if (search && search.trim()) {
-      filter.orderId = { $regex: search.trim(), $options: 'i' };
-    }
-
-    const orders = await ExpressOrder.find(filter)
-      .populate('buyer', 'name phone')
-      .populate('store', 'name code')
-      .sort({ createdAt: -1 })
-      .limit(Math.min(500, Number(limit) || 100))
-      .lean();
-
-    res.json({ success: true, orders });
+    // Cross-store search: date, store, status, payment, item, location, customer.
+    const out = await require('../utils/expressOrderQuery').searchOrders(req.query, { populateStore: true, defaultPayment: 'all' });
+    res.json({ success: true, ...out });
   } catch (err) {
     console.error('[express.adminListOrders]', err);
     fail(res, 500, 'Failed to load orders');
+  }
+};
+
+// GET /orders/export — CSV of everything matching the same filters
+const adminExportOrders = async (req, res) => {
+  try {
+    const csv = await require('../utils/expressOrderQuery').ordersCsv(req.query, { defaultPayment: 'all' });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="express-orders-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send('\uFEFF' + csv);
+  } catch (err) {
+    console.error('[express.adminExportOrders]', err);
+    fail(res, 500, 'Failed to export orders');
   }
 };
 
@@ -2397,5 +2392,5 @@ module.exports = {
   adminManualVerifyExpressPayment, adminCopyStoreItems, adminDraftReply, markOutOfStock,
   adminListOnlineCatalog, adminSetOnlineListing, adminSetNativeOnlineListing, adminBulkSetOnlineListing,
   listBanners, createBanner, updateBanner, toggleBannerActive, deleteBanner,
-  assignStoreOwner, upsertOnlineListing, resolveExpressProduct,
+  adminExportOrders, assignStoreOwner, upsertOnlineListing, resolveExpressProduct,
 };

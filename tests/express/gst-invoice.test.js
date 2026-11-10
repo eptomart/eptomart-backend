@@ -191,6 +191,7 @@ test('GS-07 …but FSSAI, rates and address can still be updated; and super admi
   assert.equal((await saveGst(lockedStore(), { legalName: 'Renamed Pvt Ltd' }, { store: 'S1', name: 'Admin', isAdmin: true })).statusCode, 200);
 });
 test('GS-08 own-product GST validation (owner product form)', async () => {
+  require('../../src/models/KoyambeduProduct').find = () => chain([]); ExpressProduct.find = () => chain([]);
   ExpressProduct.findOne = () => chain(null); let doc; ExpressProduct.create = async (d) => { doc = d; return d; };
   const mgr = { store: 'S1', name: 'O' };
   let res = fakeRes(); await owner.createOwnProduct({ body: { name: 'Pickle', procurementBaseCost: 10, gstRate: 40 }, manager: mgr, managerRole: 'owner' }, res); assert.equal(res.statusCode, 400);

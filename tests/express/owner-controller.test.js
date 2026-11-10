@@ -121,21 +121,23 @@ test('OW-33 POS user update is scoped to own store; suspend + PIN change', async
   assert.equal(res.statusCode, 200); assert.equal(filter.store, 'S1'); assert.equal(u.isActive, false); assert.equal(u.pin, '9999');
 });
 
+const KoyambeduProductM = require('../../src/models/KoyambeduProduct');
+const noCatalogueMatch = () => { KoyambeduProductM.find = () => chain([]); ExpressProduct.find = () => chain([]); };
 // ── Own products ─────────────────────────────────────────────────────────
 test('OW-40 create own product: tagged with the owner’s store (private)', async () => {
-  let doc; ExpressProduct.findOne = () => chain(null); ExpressProduct.create = async (d) => { doc = d; return { _id: 'EP1', ...d }; };
+  let doc; noCatalogueMatch(); ExpressProduct.findOne = () => chain(null); ExpressProduct.create = async (d) => { doc = d; return { _id: 'EP1', ...d }; };
   const res = fakeRes(); await owner.createOwnProduct(req({ body: { name: 'Homemade Pickle', unit: 'piece', procurementBaseCost: 80, ownerStore: 'HACK' } }), res);
   assert.equal(res.statusCode, 201); assert.equal(doc.ownerStore, 'S1'); assert.equal(doc.unit, 'piece'); assert.equal(doc.isWeightBased, false);
 });
 test('OW-41 create own product: needs name and cost; invalid unit falls back to kg', async () => {
   let res = fakeRes(); await owner.createOwnProduct(req({ body: { procurementBaseCost: 10 } }), res); assert.equal(res.statusCode, 400);
   res = fakeRes(); await owner.createOwnProduct(req({ body: { name: 'X' } }), res); assert.equal(res.statusCode, 400);
-  let doc; ExpressProduct.findOne = () => chain(null); ExpressProduct.create = async (d) => { doc = d; return d; };
+  let doc; noCatalogueMatch(); ExpressProduct.findOne = () => chain(null); ExpressProduct.create = async (d) => { doc = d; return d; };
   res = fakeRes(); await owner.createOwnProduct(req({ body: { name: 'X', unit: 'parsec', procurementBaseCost: 10 } }), res); assert.equal(doc.unit, 'kg');
 });
 test('OW-42 create own product: duplicate name within own store rejected', async () => {
   ExpressProduct.findOne = () => chain({ _id: 'dup' }); const res = fakeRes();
-  await owner.createOwnProduct(req({ body: { name: 'Pickle', procurementBaseCost: 10 } }), res); assert.equal(res.statusCode, 400);
+  await owner.createOwnProduct(req({ body: { name: 'Pickle', procurementBaseCost: 10 } }), res); assert.equal(res.statusCode, 409); assert.equal(res.body.duplicate, true);
 });
 test('OW-43 edit product: only products created by this owner’s store', async () => {
   let filter; ExpressProduct.findOne = async (f) => { filter = f; return null; };
@@ -243,4 +245,19 @@ test('AO-06 assign owner on a store that already has one → re-points the SAME 
   stubAssign({ existingOwner: existing }); const res = fakeRes();
   await admin.assignStoreOwner({ params: { storeId: OID_STORE }, body: { phone: '9876500010', name: 'New Owner' }, user: {} }, res);
   assert.equal(res.statusCode, 200); assert.equal(existing.phone, '9876500010'); assert.equal(existing.name, 'New Owner'); assert.equal(existing.isActive, true); assert.equal(saved, true);
+});
+
+test('OW-43 create own product: same name as a Koyambedu product → suggests using it (409), nothing created', async () => {
+  ExpressProduct.findOne = () => chain(null); let created = false; ExpressProduct.create = async () => { created = true; return {}; };
+  KoyambeduProductM.find = () => chain([{ _id: 'KB1', name: 'Tomato', unit: 'kg' }]); ExpressProduct.find = () => chain([]);
+  const res = fakeRes(); await owner.createOwnProduct(req({ body: { name: 'tomato', procurementBaseCost: 30 } }), res);
+  assert.equal(res.statusCode, 409); assert.equal(res.body.duplicate, true); assert.equal(res.body.matches[0].source, 'koyambedu'); assert.equal(res.body.matches[0].koyambeduProductId, 'KB1'); assert.equal(created, false);
+});
+test('OW-44 create own product: same name as a company-wide Express product → suggested; force:true creates anyway', async () => {
+  ExpressProduct.findOne = () => chain(null); let created = false; ExpressProduct.create = async (d) => { created = true; return { _id: 'N', ...d }; };
+  KoyambeduProductM.find = () => chain([]); ExpressProduct.find = () => chain([{ _id: 'N1', name: 'Rose Milk', unit: 'litre' }]);
+  let res = fakeRes(); await owner.createOwnProduct(req({ body: { name: 'Rose Milk', unit: 'litre', procurementBaseCost: 30 } }), res);
+  assert.equal(res.statusCode, 409); assert.equal(res.body.matches[0].source, 'native'); assert.equal(created, false);
+  res = fakeRes(); await owner.createOwnProduct(req({ body: { name: 'Rose Milk', unit: 'litre', procurementBaseCost: 30, force: true } }), res);
+  assert.equal(res.statusCode, 201); assert.equal(created, true);
 });

@@ -60,19 +60,19 @@ const stubSave = ({ required, isAdmin = false } = {}) => {
 };
 test('AP-10 new item added by owner is created as PENDING approval', async () => {
   const seen = stubSave({ required: true }); await owner.saveItem(req({ body: { koyambeduProductId: 'K1', price: 20, isOnline: true } }), fakeRes());
-  assert.equal(seen.upd.$setOnInsert.approval.status, 'pending'); assert.ok(seen.upd.$setOnInsert.approval.requestedAt);
+  assert.equal(seen.upd.$setOnInsert['approval.status'], 'pending'); assert.ok(seen.upd.$setOnInsert['approval.requestedAt']); assert.equal(seen.upd.$setOnInsert.approval, undefined, 'dotted paths only — a whole approval object conflicts with Mongoose defaults');
 });
 test('AP-11 default (no config saved yet) also requires approval', async () => {
   const seen = stubSave({}); await owner.saveItem(req({ body: { koyambeduProductId: 'K1' } }), fakeRes());
-  assert.equal(seen.upd.$setOnInsert.approval.status, 'pending');
+  assert.equal(seen.upd.$setOnInsert['approval.status'], 'pending');
 });
 test('AP-12 kill-switch OFF → items go live without approval', async () => {
   const seen = stubSave({ required: false }); await owner.saveItem(req({ body: { koyambeduProductId: 'K1' } }), fakeRes());
-  assert.equal(seen.upd.$setOnInsert.approval, undefined);
+  assert.equal(seen.upd.$setOnInsert['approval.status'], undefined);
 });
 test('AP-13 super admin adding via owner view is auto-approved', async () => {
   const seen = stubSave({ required: true }); await owner.saveItem(req({ manager: { _id: 'A1', store: 'S1', name: 'Admin', isAdmin: true }, body: { koyambeduProductId: 'K1' } }), fakeRes());
-  assert.equal(seen.upd.$setOnInsert.approval, undefined);
+  assert.equal(seen.upd.$setOnInsert['approval.status'], undefined);
 });
 test('AP-14 existing approved row is not reset to pending (only set on insert)', async () => {
   const seen = stubSave({ required: true }); await owner.saveItem(req({ body: { koyambeduProductId: 'K1', price: 30 } }), fakeRes());

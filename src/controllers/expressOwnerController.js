@@ -122,8 +122,11 @@ const saveItem = async (req, res) => {
     // productApprovalRequired). Existing rows keep whatever status they have.
     const cfg = await ExpressMarginConfig.findOne({ key: 'default' }).select('productApprovalRequired').lean();
     const needsApproval = cfg ? cfg.productApprovalRequired !== false : true;
+    // Dotted paths (NOT an `approval: {…}` object): with setDefaultsOnInsert,
+    // Mongoose also inserts defaults for approval.decidedAt/note/…, and a
+    // whole-object $setOnInsert would collide with them → Mongo path-conflict error.
     const upd = { $setOnInsert: { store: storeId, product: product._id, stockQty: 0, ...(isAvailable === undefined ? { isAvailable: true } : {}),
-      ...(needsApproval && !req.manager.isAdmin ? { approval: { status: 'pending', requestedAt: new Date() } } : {}) } };
+      ...(needsApproval && !req.manager.isAdmin ? { 'approval.status': 'pending', 'approval.requestedAt': new Date() } : {}) } };
     if (Object.keys(set).length) upd.$set = set;
     let sp = await ExpressStoreProduct.findOneAndUpdate(
       { store: storeId, product: product._id }, upd, { new: true, upsert: true, setDefaultsOnInsert: true }
@@ -177,7 +180,27 @@ const createOwnProduct = async (req, res) => {
     const u = UNITS.includes(unit) ? unit : 'kg';
     const escaped = String(name).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const dup = await ExpressProduct.findOne({ koyambeduProduct: { $exists: false }, ownerStore: storeId, name: new RegExp(`^${escaped}$`, 'i') }).select('_id').lean();
-    if (dup) return fail(res, 400, `You already have a product named "${String(name).trim()}"`);
+    if (dup) return res.status(409).json({ success: false, duplicate: true, message: `You already have a product named "${String(name).trim()}" — use it instead of creating another.`,
+      matches: [{ source: 'own', expressProductId: dup._id, name: String(name).trim() }] });
+
+    // Suggest an existing product instead of creating a duplicate: an active
+    // Koyambedu Daily product or a company-wide Express product with the same
+    // name. The owner can still insist with { force: true }.
+    if (!req.body.force) {
+      const KoyambeduProduct = require('../models/KoyambeduProduct');
+      const [kb, shared] = await Promise.all([
+        KoyambeduProduct.find({ isActive: true, name: new RegExp(`^${escaped}$`, 'i') }).select('name unit').limit(3).lean(),
+        ExpressProduct.find({ koyambeduProduct: { $exists: false }, isActive: true, ownerStore: null, name: new RegExp(`^${escaped}$`, 'i') }).select('name unit').limit(3).lean(),
+      ]);
+      const matches = [
+        ...kb.map((p) => ({ source: 'koyambedu', koyambeduProductId: p._id, name: p.name, unit: p.unit })),
+        ...shared.map((p) => ({ source: 'native', expressProductId: p._id, name: p.name, unit: p.unit })),
+      ];
+      if (matches.length) {
+        return res.status(409).json({ success: false, duplicate: true, matches,
+          message: `"${matches[0].name}" already exists in the Eptomart catalogue — add that one to your store instead of creating a new product.` });
+      }
+    }
 
     const doc = {
       name: String(name).trim(), description: description || '', unit: u,
@@ -321,20 +344,23 @@ const overview = async (req, res) => {
       return { total: a[0]?.t || 0, count: a[0]?.n || 0 };
     };
     const oBase = { store, paymentStatus: 'paid', isDemoOrder: { $ne: true } };
-    const [oToday, oMonth, bToday, bMonth, itemsInStore, onlineItems] = await Promise.all([
+    const [oToday, oMonth, bToday, bMonth, itemsInStore, onlineItems, pendingApproval, rejectedApproval, outOfStock] = await Promise.all([
       sum(ExpressOrder, { ...oBase, createdAt: { $gte: today } }, 'pricing.total'),
       sum(ExpressOrder, { ...oBase, createdAt: { $gte: monthStart } }, 'pricing.total'),
       sum(ExpressBill, { store, status: 'completed', completedAt: { $gte: today } }, 'total'),
       sum(ExpressBill, { store, status: 'completed', completedAt: { $gte: monthStart } }, 'total'),
       ExpressStoreProduct.countDocuments({ store }),
       ExpressOnlineListing.countDocuments({ store, isEnabled: true }),
+      ExpressStoreProduct.countDocuments({ store, 'approval.status': 'pending' }),
+      ExpressStoreProduct.countDocuments({ store, 'approval.status': 'rejected' }),
+      ExpressStoreProduct.countDocuments({ store, stockQty: { $lte: 0 } }),
     ]);
     res.json({
       success: true,
       overview: {
         todayOnline: r2(oToday.total), todayOffline: r2(bToday.total), todayTotal: r2(oToday.total + bToday.total),
         monthOnline: r2(oMonth.total), monthOffline: r2(bMonth.total), monthTotal: r2(oMonth.total + bMonth.total),
-        todayOnlineOrders: oToday.count, todayBills: bToday.count, itemsInStore, onlineItems,
+        todayOnlineOrders: oToday.count, todayBills: bToday.count, itemsInStore, onlineItems, pendingApproval, rejectedApproval, outOfStock,
       },
     });
   } catch (err) {

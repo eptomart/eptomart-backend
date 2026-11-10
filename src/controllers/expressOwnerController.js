@@ -362,7 +362,19 @@ const adminStoreAccounts = async (req, res) => {
   }
 };
 
+// GET /api/express/manager/owner-access (normal Eptomart login) — tells the
+// Profile page whether to show the "Manage Store" option.
+const ownerAccess = async (req, res) => {
+  try {
+    const m = await require('../models/ExpressStoreManager').findOne({ user: req.user._id, isActive: true }).populate('store', 'name code').lean();
+    res.json({ success: true, isOwner: !!m, store: m?.store ? { _id: m.store._id, name: m.store.name } : null });
+  } catch (err) {
+    res.json({ success: true, isOwner: false, store: null });
+  }
+};
+
 module.exports = {
+  ownerAccess,
   listCatalog, saveItem, createOwnProduct, updateOwnProduct,
   listMyPOSUsers, createMyPOSUser, updateMyPOSUser,
   myAccounts, myExpenses, addMyExpense, deleteMyExpense, overview,

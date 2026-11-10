@@ -9,6 +9,7 @@
 const jwt = require('jsonwebtoken');
 const ExpressStoreManager = require('../models/ExpressStoreManager');
 const ExpressPOSUser = require('../models/ExpressPOSUser');
+const User = require('../models/User');
 
 const protectExpressManager = async (req, res, next) => {
   const token = req.headers.authorization?.startsWith('Bearer ')
@@ -18,6 +19,19 @@ const protectExpressManager = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Normal Eptomart login (token has no `type`): allowed only if this user
+    // has been assigned as a store's owner by admin.
+    if (!decoded.type) {
+      const user = await User.findById(decoded.id).select('_id isActive');
+      if (!user || user.isActive === false) return res.status(401).json({ success: false, message: 'Invalid session' });
+      const owned = await ExpressStoreManager.findOne({ user: user._id }).select('-password');
+      if (!owned) return res.status(403).json({ success: false, message: 'You are not a store owner' });
+      if (!owned.isActive) return res.status(403).json({ success: false, message: 'Store access suspended. Contact Admin.' });
+      req.manager = owned;
+      return next();
+    }
+
     if (decoded.type !== 'expressManager') return res.status(401).json({ success: false, message: 'Invalid session' });
 
     const manager = await ExpressStoreManager.findById(decoded.id).select('-password');

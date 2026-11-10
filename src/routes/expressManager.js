@@ -9,6 +9,7 @@ const authCtrl = require('../controllers/expressManagerAuthController');
 const ctrl = require('../controllers/expressManagerController');
 const owner = require('../controllers/expressOwnerController');
 const { protectExpressManager } = require('../middleware/expressAuth');
+const { protect } = require('../middleware/auth');
 
 router.post('/login', authCtrl.login);
 router.get ('/me',    protectExpressManager, authCtrl.me);
@@ -33,6 +34,7 @@ router.patch('/orders/:orderId/status',          protectExpressManager, ctrl.upd
 router.patch('/orders/:orderId/delivery-expense',protectExpressManager, ctrl.recordDeliveryExpense);
 
 // ── Store OWNER tools (same account as manager; all scoped to own store) ──
+router.get  ('/owner-access',               protect, owner.ownerAccess);
 router.get  ('/owner/overview',            protectExpressManager, owner.overview);
 router.get  ('/owner/catalog',             protectExpressManager, owner.listCatalog);
 router.post ('/owner/items',               protectExpressManager, owner.saveItem);

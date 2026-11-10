@@ -18,6 +18,10 @@ const expressStoreManagerSchema = new mongoose.Schema({
   },
   password: { type: String, required: true, minlength: 6, select: false },
   store: { type: mongoose.Schema.Types.ObjectId, ref: 'ExpressStore', required: true },
+  // The normal Eptomart account (mobile-OTP login) that owns this store. When
+  // set, that user can open the store dashboard straight from their Profile
+  // with their regular login — no separate owner password needed.
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
   isActive: { type: Boolean, default: true }, // Admin can suspend a manager account
   lastLogin: Date,
 }, { timestamps: true });

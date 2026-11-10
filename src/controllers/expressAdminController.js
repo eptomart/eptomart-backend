@@ -2335,11 +2335,20 @@ const assignStoreOwner = async (req, res) => {
     const clash = await ExpressStoreManager.findOne({ phone, store: { $ne: storeId } }).populate('store', 'name').lean();
     if (clash) return fail(res, 409, `This mobile is already the owner of "${clash.store?.name || 'another store'}"`);
 
+    // Link the owner to a normal Eptomart account by mobile. If they have not
+    // signed up yet, reserve the number with a placeholder account so nobody
+    // else can claim it — the owner takes it over by logging in with that
+    // mobile (OTP) like any customer.
+    const ownerName = String(req.body.name || '').trim() || `${store.name} Owner`;
+    let ownerUser = await User.findOne({ phone });
+    if (!ownerUser) ownerUser = await User.create({ name: ownerName, phone, role: 'user' });
+
     let manager = await ExpressStoreManager.findOne({ store: storeId });
     const given = String(req.body.password || '').trim();
     let generated = null;
     if (manager) {
       manager.phone = phone;
+      manager.user = ownerUser._id;
       if (req.body.name) manager.name = String(req.body.name).trim();
       manager.isActive = true;
       if (given) manager.password = given;
@@ -2348,7 +2357,7 @@ const assignStoreOwner = async (req, res) => {
       generated = given ? null : crypto.randomBytes(5).toString('hex');
       manager = new ExpressStoreManager({
         name: String(req.body.name || '').trim() || `${store.name} Owner`,
-        phone, password: given || generated, store: storeId,
+        phone, password: given || generated, store: storeId, user: ownerUser._id,
       });
     }
     await manager.save();
@@ -2357,7 +2366,7 @@ const assignStoreOwner = async (req, res) => {
 
     await logAudit({ actorType: 'admin', actorName: req.user?.name || 'Admin', action: 'store.assign-owner', store: storeId, meta: { phone } });
     const safe = manager.toObject(); delete safe.password;
-    res.json({ success: true, owner: safe, generatedPassword: generated });
+    res.json({ success: true, owner: safe, generatedPassword: req.body.resetPassword ? generated : null });
   } catch (err) {
     if (err.code === 11000) return fail(res, 409, 'This mobile number is already in use by another owner/manager');
     console.error('[express.assignStoreOwner]', err);

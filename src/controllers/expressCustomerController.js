@@ -178,6 +178,45 @@ async function notifyExpressAdminNewOrder(order) {
   }
 }
 
+
+// Store-team WhatsApp alerts: every order event at a store goes to the numbers
+// the store owner added (Store → Team & Alerts), the same way Koyambedu Daily
+// pings its team. Same approved status template as buyer/admin messages, with
+// a free-text fallback. Never throws — notification failure must not break an
+// order action.
+const TEAM_LABELS = {
+  new: 'New Order 🔔', confirmed: 'Order Confirmed ✅', preparing: 'Being Prepared 📦',
+  out_for_delivery: 'Out for Delivery 🚚', delivered: 'Delivered 🎉', cancelled: 'Order Cancelled ❌',
+};
+async function notifyExpressStoreTeam(order, event) {
+  try {
+    if (!order || order.isDemoOrder) return;
+    const store = await ExpressStore.findById(order.store).select('name notifyPhones').lean();
+    const phones = [...new Set((store?.notifyPhones || []).map(p => String(p).replace(/\D/g, '').slice(-10)).filter(p => p.length === 10))];
+    if (!phones.length) return;
+    const label = TEAM_LABELS[event] || event;
+    const items = (order.items || []).map(i => `${i.name} x${i.quantity}${i.unit ? ' ' + i.unit : ''}`).join(', ');
+    const extra = event === 'cancelled' && order.cancelReason ? ` | Reason: ${order.cancelReason}` : '';
+    const detail = `Store: ${store.name} | Customer: ${order.deliveryAddress?.name || '—'} (${order.deliveryAddress?.phone || '—'}) | Total: Rs.${order.pricing?.total} | Items: ${items}${extra}`
+      .replace(/[\n\t]+/g, ' ').slice(0, 900);
+    const tpl = process.env.META_WHATSAPP_STATUS_TEMPLATE;
+    for (const phone of phones) {
+      let r;
+      if (tpl) {
+        r = await sendTemplateWhatsApp(phone, tpl, [
+          { type: 'body', parameters: ['Team', order.orderId, label, detail].map(t => ({ type: 'text', text: String(t) })) },
+        ]);
+      }
+      if (!r || !r.success) {
+        r = await sendMetaWhatsApp(phone, `*${label} — #${order.orderId}*\n${detail.split(' | ').join('\n')}`);
+      }
+      if (!r.success) console.warn('[Express WA] Store team alert failed:', phone, r.error);
+    }
+  } catch (err) {
+    console.error('[express.notifyExpressStoreTeam]', err.message);
+  }
+}
+
 // ── Public status — is Express live at all? (section 19 master switch) ──
 const getStatus = async (req, res) => {
   try {
@@ -1006,6 +1045,7 @@ async function confirmExpressPayment(order, { razorpayPaymentId, razorpaySignatu
   await order.save();
   notifyExpressBuyer(order, 'confirmed').catch(() => {});
   notifyExpressAdminNewOrder(order).catch(() => {});
+  notifyExpressStoreTeam(order, 'new').catch(() => {});
 
   if (order.pricing?.couponCode) {
     EptoFreshCoupon.updateOne({ code: order.pricing.couponCode }, { $inc: { usedCount: 1 } }).catch(() => {});
@@ -1157,6 +1197,7 @@ const cancelMyOrder = async (req, res) => {
     order.cancelReason = req.body?.reason || 'Cancelled by customer';
     order.timeline.push({ status: 'cancelled', note: order.cancelReason });
     await order.save();
+    if (wasPaid) notifyExpressStoreTeam(order, 'cancelled').catch(() => {});
 
     // Restock if payment had already gone through and stock was deducted
     if (wasPaid) {
@@ -1183,4 +1224,5 @@ module.exports = {
   getQuote, createRazorpayOrder, verifyPayment, expressRazorpayWebhook, confirmExpressPayment, getRazorpay,
   getMyOrders, getMyOrder, cancelMyOrder,
   notifyExpressBuyer,
+  notifyExpressStoreTeam,
 };

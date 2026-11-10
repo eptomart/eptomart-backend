@@ -29,6 +29,7 @@ const protectExpressManager = async (req, res, next) => {
       if (!owned) return res.status(403).json({ success: false, message: 'You are not a store owner' });
       if (!owned.isActive) return res.status(403).json({ success: false, message: 'Store access suspended. Contact Admin.' });
       req.manager = owned;
+      req.managerRole = owned.role || 'owner';
       return next();
     }
 
@@ -39,6 +40,7 @@ const protectExpressManager = async (req, res, next) => {
     if (!manager.isActive) return res.status(401).json({ success: false, message: 'Account suspended. Contact Admin.' });
 
     req.manager = manager;
+    req.managerRole = manager.role || 'owner';
     next();
   } catch (_) {
     return res.status(401).json({ success: false, message: 'Invalid or expired session' });
@@ -70,4 +72,13 @@ const protectExpressPOS = async (req, res, next) => {
   }
 };
 
-module.exports = { protectExpressManager, protectExpressPOS };
+// Role gate — use AFTER protectExpressManager. A record with no role is an owner.
+const requireExpressRole = (...roles) => (req, res, next) => {
+  const role = req.managerRole || req.manager?.role || 'owner';
+  if (!roles.includes(role)) {
+    return res.status(403).json({ success: false, message: `Your role (${role}) cannot do this` });
+  }
+  next();
+};
+
+module.exports = { protectExpressManager, protectExpressPOS, requireExpressRole };

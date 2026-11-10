@@ -30,6 +30,10 @@ const expressStoreSchema = new mongoose.Schema({
   },
   // Store Manager assigned to run this store (one per store)
   storeManager: { type: mongoose.Schema.Types.ObjectId, ref: 'ExpressStoreManager', default: null },
+  // WhatsApp numbers (10-digit) that receive an alert for every order event at
+  // this store: new order, confirmed, preparing, out for delivery, delivered,
+  // cancelled. Set by the store owner.
+  notifyPhones: { type: [String], default: [] },
   // Master ON/OFF — when off, store is excluded from nearest-store routing
   // and from receiving new Express orders. Toggled by Store Manager or Admin.
   isActive: { type: Boolean, default: true },

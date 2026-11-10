@@ -367,13 +367,105 @@ const adminStoreAccounts = async (req, res) => {
 const ownerAccess = async (req, res) => {
   try {
     const m = await require('../models/ExpressStoreManager').findOne({ user: req.user._id, isActive: true }).populate('store', 'name code').lean();
-    res.json({ success: true, isOwner: !!m, store: m?.store ? { _id: m.store._id, name: m.store.name } : null });
+    res.json({ success: true, isOwner: !!m, role: m ? (m.role || 'owner') : null, store: m?.store ? { _id: m.store._id, name: m.store.name } : null });
   } catch (err) {
     res.json({ success: true, isOwner: false, store: null });
   }
 };
 
+
+// ── Team: manager / accountant profiles for MY store (owner only) ────────
+// Each is a normal Eptomart account (matched by mobile) given a store role:
+//   manager    → fulfils & closes orders, toggles product availability, stock
+//   accountant → sees accounts / expenses and orders (read-only)
+const ExpressStoreManager = require('../models/ExpressStoreManager');
+const User = require('../models/User');
+const crypto = require('crypto');
+const STAFF_ROLES = ['manager', 'accountant'];
+
+const listTeam = async (req, res) => {
+  try {
+    const team = await ExpressStoreManager.find({ store: req.manager.store, role: { $in: STAFF_ROLES } })
+      .select('-password').sort({ createdAt: -1 }).lean();
+    res.json({ success: true, team });
+  } catch (err) { fail(res, 500, 'Failed to load team'); }
+};
+
+const addTeamMember = async (req, res) => {
+  try {
+    const { name, role } = req.body;
+    const phone = String(req.body.phone || '').replace(/\D/g, '').slice(-10);
+    if (!name || !String(name).trim()) return fail(res, 400, 'Name is required');
+    if (!/^[6-9]\d{9}$/.test(phone)) return fail(res, 400, 'Enter a valid 10-digit mobile number');
+    if (!STAFF_ROLES.includes(role)) return fail(res, 400, 'Role must be manager or accountant');
+    const clash = await ExpressStoreManager.findOne({ phone }).populate('store', 'name').lean();
+    if (clash) {
+      const same = String(clash.store?._id || clash.store) === String(req.manager.store);
+      return fail(res, 409, same ? 'This mobile is already on your team' : `This mobile already works for "${clash.store?.name || 'another store'}"`);
+    }
+    let u = await User.findOne({ phone });
+    if (!u) u = await User.create({ name: String(name).trim(), phone, role: 'user' });
+    const member = await ExpressStoreManager.create({
+      name: String(name).trim(), phone, role, store: req.manager.store, user: u._id,
+      password: crypto.randomBytes(8).toString('hex'), // unused — they sign in with the normal Eptomart login
+    });
+    await audit(req, 'owner.team-add', { phone, role });
+    const safe = member.toObject(); delete safe.password;
+    res.status(201).json({ success: true, member: safe });
+  } catch (err) {
+    if (err.code === 11000) return fail(res, 409, 'This mobile number is already in use');
+    console.error('[expressOwner.addTeamMember]', err);
+    fail(res, 500, 'Failed to add team member');
+  }
+};
+
+const updateTeamMember = async (req, res) => {
+  try {
+    const m = await ExpressStoreManager.findOne({ _id: req.params.memberId, store: req.manager.store, role: { $in: STAFF_ROLES } });
+    if (!m) return fail(res, 404, 'Team member not found');
+    if (req.body.name) m.name = String(req.body.name).trim();
+    if (req.body.role) {
+      if (!STAFF_ROLES.includes(req.body.role)) return fail(res, 400, 'Role must be manager or accountant');
+      m.role = req.body.role;
+    }
+    if (req.body.isActive != null) m.isActive = !!req.body.isActive;
+    await m.save();
+    const safe = m.toObject(); delete safe.password;
+    res.json({ success: true, member: safe });
+  } catch (err) { fail(res, 500, 'Failed to update team member'); }
+};
+
+const removeTeamMember = async (req, res) => {
+  try {
+    const m = await ExpressStoreManager.findOneAndDelete({ _id: req.params.memberId, store: req.manager.store, role: { $in: STAFF_ROLES } });
+    if (!m) return fail(res, 404, 'Team member not found');
+    await audit(req, 'owner.team-remove', { phone: m.phone, role: m.role });
+    res.json({ success: true });
+  } catch (err) { fail(res, 500, 'Failed to remove team member'); }
+};
+
+// ── WhatsApp alert numbers for MY store ──────────────────────────────────
+const getAlerts = async (req, res) => {
+  try {
+    const store = await ExpressStore.findById(req.manager.store).select('notifyPhones').lean();
+    res.json({ success: true, phones: store?.notifyPhones || [] });
+  } catch (err) { fail(res, 500, 'Failed to load alert numbers'); }
+};
+
+const setAlerts = async (req, res) => {
+  try {
+    const raw = Array.isArray(req.body.phones) ? req.body.phones : [];
+    const phones = [...new Set(raw.map(p => String(p).replace(/\D/g, '').slice(-10)).filter(Boolean))];
+    if (phones.some(p => !/^[6-9]\d{9}$/.test(p))) return fail(res, 400, 'Every number must be a valid 10-digit mobile');
+    if (phones.length > 5) return fail(res, 400, 'You can add up to 5 numbers');
+    await ExpressStore.updateOne({ _id: req.manager.store }, { $set: { notifyPhones: phones } });
+    await audit(req, 'owner.alerts-set', { count: phones.length });
+    res.json({ success: true, phones });
+  } catch (err) { fail(res, 500, 'Failed to save alert numbers'); }
+};
+
 module.exports = {
+  listTeam, addTeamMember, updateTeamMember, removeTeamMember, getAlerts, setAlerts,
   ownerAccess,
   listCatalog, saveItem, createOwnProduct, updateOwnProduct,
   listMyPOSUsers, createMyPOSUser, updateMyPOSUser,

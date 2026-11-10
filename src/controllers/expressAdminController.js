@@ -28,7 +28,7 @@ const KoyambeduProduct       = require('../models/KoyambeduProduct');
 const KoyambeduCategory      = require('../models/KoyambeduCategory');
 const Analytics              = require('../models/Analytics');
 const { computeLogisticsCostPerKg, computeSellingPrice } = require('../services/expressPricingService');
-const { notifyExpressBuyer, confirmExpressPayment, getRazorpay } = require('./expressCustomerController');
+const { notifyExpressBuyer, notifyExpressStoreTeam, confirmExpressPayment, getRazorpay } = require('./expressCustomerController');
 // Reuses the same Claude helper already powering the seller product-
 // description generator (aiController.js) and the Fruit Basket admin one
 // (fruitBasketController.js) — no new SDK, no new env var.
@@ -1379,6 +1379,7 @@ const adminUpdateOrderStatus = async (req, res) => {
     order.timeline.push({ status, note: note || `Marked ${status} by admin` });
     await order.save();
     notifyExpressBuyer(order, status).catch(() => {});
+    notifyExpressStoreTeam(order, status).catch(() => {});
 
     res.json({ success: true, order });
   } catch (err) {
@@ -2345,7 +2346,7 @@ const assignStoreOwner = async (req, res) => {
     let ownerUser = await User.findOne({ phone });
     if (!ownerUser) ownerUser = await User.create({ name: ownerName, phone, role: 'user' });
 
-    let manager = await ExpressStoreManager.findOne({ store: storeId });
+    let manager = await ExpressStoreManager.findOne({ store: storeId, role: { $in: ['owner', null] } });
     const given = String(req.body.password || '').trim();
     let generated = null;
     if (manager) {

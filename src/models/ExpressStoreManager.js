@@ -22,6 +22,10 @@ const expressStoreManagerSchema = new mongoose.Schema({
   // set, that user can open the store dashboard straight from their Profile
   // with their regular login — no separate owner password needed.
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+  // owner = full control of the store; manager = fulfils/closes orders and
+  // handles stock availability; accountant = accounts & expenses (read-only on
+  // orders). Records created before roles existed have no role = owner.
+  role: { type: String, enum: ['owner', 'manager', 'accountant'], default: 'owner' },
   isActive: { type: Boolean, default: true }, // Admin can suspend a manager account
   lastLogin: Date,
 }, { timestamps: true });

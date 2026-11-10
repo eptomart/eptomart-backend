@@ -284,3 +284,8 @@ test('OW-48 remove item not in my store → 404, nothing deleted', async () => {
   let deleted = false; ExpressStoreProduct.findOne = async () => null; ExpressStoreProduct.deleteOne = async () => { deleted = true; };
   const res = fakeRes(); await owner.removeItem(req({ params: { productId: 'P1' } }), res); assert.equal(res.statusCode, 404); assert.equal(deleted, false);
 });
+
+test('AV-08 CORS allows the admin act-as header (else admin view is blocked by the browser)', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '../../server.js'), 'utf8');
+  assert.match(src, /allowedHeaders:\s*\[[^\]]*x-express-store-id/);
+});

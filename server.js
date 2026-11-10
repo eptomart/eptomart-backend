@@ -187,7 +187,9 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-session-id'],
+  // x-express-store-id: super admin "Open owner dashboard" (act-as) — without it
+  // the browser's CORS preflight blocks every admin-view request.
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-session-id', 'x-express-store-id'],
   exposedHeaders: ['Content-Disposition', 'Content-Type'],
 }));
 

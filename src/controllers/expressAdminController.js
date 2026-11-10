@@ -1922,7 +1922,7 @@ const createNativeProduct = async (req, res) => {
     const {
       name, description, unit, category, image,
       procurementBaseCost, isWeightBased, unitsPerKg, customMarginPct, minOrderQty, maxOrderQty,
-      isCombo, comboContents,
+      isCombo, comboContents, ownerStore,
     } = req.body;
 
     if (!name || !name.trim()) return fail(res, 400, 'Name is required');
@@ -1961,6 +1961,8 @@ const createNativeProduct = async (req, res) => {
       minOrderQty: (minOrderQty != null && minOrderQty !== '') ? Number(minOrderQty) : undefined,
       maxOrderQty: (maxOrderQty != null && maxOrderQty !== '') ? Number(maxOrderQty) : undefined,
       isCombo: !!isCombo,
+      // Created from a store's workspace → private to that store
+      ...(ownerStore ? { ownerStore } : {}),
       comboContents: isCombo
         ? comboContents.map(c => ({ product: c.product, name: c.name, unit: c.unit, qty: Number(c.qty) || 0 }))
         : [],

@@ -11,6 +11,7 @@
 const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/expressAdminController');
+const ownerCtrl = require('../controllers/expressOwnerController');
 const { protectAdmin } = require('../middleware/adminAuth');
 const { uploadExpressBanner } = require('../config/cloudinary');
 
@@ -26,6 +27,7 @@ router.patch ('/stores/:storeId/delivery-fee', protectAdmin, ctrl.updateDelivery
 router.get   ('/stores/:storeId/hold-waitlist', protectAdmin, ctrl.getHoldWaitlist);
 router.patch ('/hold-waitlist/:entryId/called-back', protectAdmin, ctrl.markWaitlistCalledBack);
 router.delete('/stores/:storeId',           protectAdmin, ctrl.archiveStore);
+router.post  ('/stores/:storeId/owner',     protectAdmin, ctrl.assignStoreOwner);
 
 // Store Managers
 router.get ('/managers',              protectAdmin, ctrl.listStoreManagers);
@@ -82,6 +84,7 @@ router.delete('/expenses/:expenseId', protectAdmin, ctrl.deleteExpense);
 
 // Finance Dashboard (profit / loss)
 router.get('/finance-dashboard', protectAdmin, ctrl.getFinanceDashboard);
+router.get('/accounts/stores',   protectAdmin, ownerCtrl.adminStoreAccounts);
 
 // Orders (cross-store admin view — see expressManagerController for the
 // store-scoped manager equivalent, left untouched)

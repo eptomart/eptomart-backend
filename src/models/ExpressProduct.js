@@ -94,6 +94,10 @@ const expressProductSchema = new mongoose.Schema({
   // product only. Null = use the global default.
   customMarginPct: { type: Number, default: null, min: 0, max: 500 },
   isActive: { type: Boolean, default: true },
+  // Set only for products a STORE OWNER created for their own store. Such a
+  // product is invisible in every other store's catalogue. Absent/null =
+  // company-wide (admin-created / Koyambedu-linked) as before.
+  ownerStore: { type: mongoose.Schema.Types.ObjectId, ref: 'ExpressStore', default: null },
 
   // Quick-entry code for the POS terminal — a 3-digit PLU-style code so the
   // POS operator can type a number instead of searching by name. Auto-

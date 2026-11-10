@@ -5,6 +5,7 @@
 // FruitBasket admin controller's pattern). Completely isolated from every
 // other vertical's controllers/models.
 // ============================================
+const crypto = require('crypto');
 const ExpressStore           = require('../models/ExpressStore');
 const ExpressStoreManager    = require('../models/ExpressStoreManager');
 const ExpressPOSUser         = require('../models/ExpressPOSUser');
@@ -1825,7 +1826,7 @@ const adminListOnlineCatalog = async (req, res) => {
         .populate('category', 'name')
         .sort({ name: 1 })
         .lean(),
-      ExpressProduct.find({ koyambeduProduct: { $exists: false }, isActive: true })
+      ExpressProduct.find({ koyambeduProduct: { $exists: false }, isActive: true, ownerStore: { $in: [null, storeId] } })
         .select('name unit procurementBaseCost image category isCombo minOrderQty maxOrderQty')
         .sort({ name: 1 })
         .lean(),
@@ -2314,6 +2315,56 @@ const deleteBanner = async (req, res) => {
   }
 };
 
+// ── Assign / replace the OWNER of a store by mobile number ───────────────
+// A store's owner is its (single) ExpressStoreManager account — logs in with
+// mobile + password at /express/manager/login and now also manages the
+// store's catalogue, online visibility and accounts (see
+// expressOwnerController). If the store already has an owner, this
+// re-points that account to the new mobile (and optionally resets the
+// password); otherwise it creates one. A blank password is auto-generated and
+// returned ONCE so admin can share it.
+// POST /express/admin/stores/:storeId/owner  { phone, name?, password? }
+const assignStoreOwner = async (req, res) => {
+  try {
+    const { storeId } = req.params;
+    const phone = String(req.body.phone || '').replace(/\D/g, '').slice(-10);
+    if (!/^[6-9]\d{9}$/.test(phone)) return fail(res, 400, 'Enter a valid 10-digit mobile number');
+    const store = await ExpressStore.findById(storeId);
+    if (!store) return fail(res, 404, 'Store not found');
+
+    const clash = await ExpressStoreManager.findOne({ phone, store: { $ne: storeId } }).populate('store', 'name').lean();
+    if (clash) return fail(res, 409, `This mobile is already the owner of "${clash.store?.name || 'another store'}"`);
+
+    let manager = await ExpressStoreManager.findOne({ store: storeId });
+    const given = String(req.body.password || '').trim();
+    let generated = null;
+    if (manager) {
+      manager.phone = phone;
+      if (req.body.name) manager.name = String(req.body.name).trim();
+      manager.isActive = true;
+      if (given) manager.password = given;
+      else if (req.body.resetPassword) { generated = crypto.randomBytes(5).toString('hex'); manager.password = generated; }
+    } else {
+      generated = given ? null : crypto.randomBytes(5).toString('hex');
+      manager = new ExpressStoreManager({
+        name: String(req.body.name || '').trim() || `${store.name} Owner`,
+        phone, password: given || generated, store: storeId,
+      });
+    }
+    await manager.save();
+    store.storeManager = manager._id;
+    await store.save();
+
+    await logAudit({ actorType: 'admin', actorName: req.user?.name || 'Admin', action: 'store.assign-owner', store: storeId, meta: { phone } });
+    const safe = manager.toObject(); delete safe.password;
+    res.json({ success: true, owner: safe, generatedPassword: generated });
+  } catch (err) {
+    if (err.code === 11000) return fail(res, 409, 'This mobile number is already in use by another owner/manager');
+    console.error('[express.assignStoreOwner]', err);
+    fail(res, 500, 'Failed to assign owner');
+  }
+};
+
 module.exports = {
   listStores, createStore, updateStore, toggleStoreActive, toggleOnlineShop, togglePauseStore, archiveStore,
   updateDeliverySlots, updateDeliveryFeeConfig,
@@ -2333,4 +2384,5 @@ module.exports = {
   adminManualVerifyExpressPayment, adminCopyStoreItems, adminDraftReply, markOutOfStock,
   adminListOnlineCatalog, adminSetOnlineListing, adminSetNativeOnlineListing, adminBulkSetOnlineListing,
   listBanners, createBanner, updateBanner, toggleBannerActive, deleteBanner,
+  assignStoreOwner, upsertOnlineListing, resolveExpressProduct,
 };

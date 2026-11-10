@@ -7,6 +7,7 @@ const express = require('express');
 const router = express.Router();
 const authCtrl = require('../controllers/expressManagerAuthController');
 const ctrl = require('../controllers/expressManagerController');
+const owner = require('../controllers/expressOwnerController');
 const { protectExpressManager } = require('../middleware/expressAuth');
 
 router.post('/login', authCtrl.login);
@@ -30,5 +31,19 @@ router.post('/inventory-requests',  protectExpressManager, ctrl.createInventoryR
 router.get  ('/orders',                          protectExpressManager, ctrl.listMyOrders);
 router.patch('/orders/:orderId/status',          protectExpressManager, ctrl.updateOrderStatus);
 router.patch('/orders/:orderId/delivery-expense',protectExpressManager, ctrl.recordDeliveryExpense);
+
+// ── Store OWNER tools (same account as manager; all scoped to own store) ──
+router.get  ('/owner/overview',            protectExpressManager, owner.overview);
+router.get  ('/owner/catalog',             protectExpressManager, owner.listCatalog);
+router.post ('/owner/items',               protectExpressManager, owner.saveItem);
+router.post ('/owner/products',            protectExpressManager, owner.createOwnProduct);
+router.patch('/owner/products/:productId', protectExpressManager, owner.updateOwnProduct);
+router.get  ('/owner/pos-users',           protectExpressManager, owner.listMyPOSUsers);
+router.post ('/owner/pos-users',           protectExpressManager, owner.createMyPOSUser);
+router.patch('/owner/pos-users/:posUserId',protectExpressManager, owner.updateMyPOSUser);
+router.get  ('/owner/accounts',            protectExpressManager, owner.myAccounts);
+router.get  ('/owner/expenses',            protectExpressManager, owner.myExpenses);
+router.post ('/owner/expenses',            protectExpressManager, owner.addMyExpense);
+router.delete('/owner/expenses/:expenseId',protectExpressManager, owner.deleteMyExpense);
 
 module.exports = router;

@@ -142,8 +142,9 @@ const updateBillItem = async (req, res) => {
 
     const storeProduct = await ExpressStoreProduct.findOne({ store: bill.store, product: productId, isAvailable: true })
       .populate({ path: 'product', populate: { path: 'koyambeduProduct', select: 'name' } });
-    if (!storeProduct || !storeProduct.product?.koyambeduProduct) return fail(res, 404, 'Product not available');
-    const productName = storeProduct.product.koyambeduProduct.name;
+    if (!storeProduct || !storeProduct.product) return fail(res, 404, 'Product not available');
+    // Koyambedu-linked OR a store-owner's own (native) product
+    const productName = storeProduct.product.koyambeduProduct?.name || storeProduct.product.name;
 
     const existing = bill.items.find(i => String(i.product) === String(productId));
     if (Number(quantity) <= 0) {

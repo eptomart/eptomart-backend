@@ -1264,8 +1264,9 @@ const getFinanceDashboard = async (req, res) => {
 
     let onlineRevenue = 0, posRevenue = 0, cogs = 0;
     for (const o of orders) {
-      onlineRevenue += o.pricing?.total || 0;
-      for (const it of o.items || []) cogs += costPerUnit(it.product, 1) * (it.quantity || 0);
+      // Net of anything refunded for declined items; declined lines cost nothing.
+      onlineRevenue += (o.pricing?.total || 0) - (o.pricing?.refundedAmount || 0);
+      for (const it of o.items || []) { if (it.status === 'declined') continue; cogs += costPerUnit(it.product, 1) * (it.quantity || 0); }
     }
     for (const b of bills) {
       posRevenue += b.total || 0;
@@ -1444,7 +1445,7 @@ const adminOrdersPnL = async (req, res) => {
 
     const bills = orders.map(o => {
       const p = o.pricing || {};
-      const revenue = p.total || 0;
+      const revenue = Math.round(((p.total || 0) - (p.refundedAmount || 0)) * 100) / 100; // net of declined-item refunds
       const itemsProcurementCost = p.itemsProcurementCost || 0;
       const transportCharge = p.transportCharge || 0;
       const packingCharge = p.packingCharge || 0;

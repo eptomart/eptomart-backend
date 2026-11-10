@@ -44,6 +44,8 @@ router.post('/inventory-requests',  ...ops, ctrl.createInventoryRequest);
 router.get  ('/orders',                          ...any, ctrl.listMyOrders);
 router.patch('/orders/:orderId/status',          ...ops, ctrl.updateOrderStatus);
 router.patch('/orders/:orderId/delivery-expense',...ops, ctrl.recordDeliveryExpense);
+router.get  ('/orders/:orderId/decline-preview', ...ops, ctrl.previewDecline);
+router.post ('/orders/:orderId/decline-items',   ...ops, ctrl.declineOrderItems);
 
 // ── Store OWNER tools (all scoped to the caller's own store) ─────────────
 router.get  ('/owner-access',               protect, owner.ownerAccess);
@@ -66,6 +68,10 @@ router.patch('/owner/store/delivery-slots',      ...ownerO, owner.updateMyDelive
 router.patch('/owner/store/delivery-fee',        ...ownerO, owner.updateMyDeliveryFee);
 router.patch('/owner/store/toggle-pause',        ...ops,    owner.toggleMyPause);
 router.patch('/owner/store/toggle-online-shop',  ...ownerO, owner.toggleMyOnlineShop);
+
+// GST / invoice profile — set once by the owner (locked after the first final invoice)
+router.get  ('/owner/gst',                       ...ownerO, owner.getGst);
+router.put  ('/owner/gst',                       ...ownerO, owner.saveGst);
 
 // Team (manager / accountant profiles) and WhatsApp order-alert numbers
 router.get   ('/owner/team',                ...ownerO, owner.listTeam);

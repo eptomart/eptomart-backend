@@ -7,6 +7,7 @@
 // ============================================
 const crypto       = require('crypto');
 const Razorpay     = require('razorpay');
+const walletSvc    = require('../services/expressWalletService');
 const ExpressStore        = require('../models/ExpressStore');
 const ExpressProduct      = require('../models/ExpressProduct');
 const ExpressStoreProduct = require('../models/ExpressStoreProduct');
@@ -191,6 +192,7 @@ async function notifyExpressAdminNewOrder(order) {
 const TEAM_LABELS = {
   new: 'New Order 🔔', confirmed: 'Order Confirmed ✅', preparing: 'Being Prepared 📦',
   out_for_delivery: 'Out for Delivery 🚚', delivered: 'Delivered 🎉', cancelled: 'Order Cancelled ❌',
+  declined: 'Item Declined ⚠️',
 };
 async function notifyExpressStoreTeam(order, event) {
   try {
@@ -218,6 +220,33 @@ async function notifyExpressStoreTeam(order, event) {
     }
   } catch (err) {
     console.error('[express.notifyExpressStoreTeam]', err.message);
+  }
+}
+
+
+// Customer message when the store declines item(s): says what, how much, and where it went.
+async function notifyExpressItemDeclined(order, result, byName) {
+  try {
+    const phone = order.deliveryAddress?.phone;
+    const names = (result.itemNames || []).join(', ');
+    const where = result.toSource > 0 && result.toWallet > 0
+      ? `₹${result.toSource} to your original payment method (5-7 working days) and ₹${result.toWallet} to your Eptomart Express wallet`
+      : result.toSource > 0 ? `₹${result.toSource} to your original payment method (5-7 working days)`
+      : `₹${result.toWallet} to your Eptomart Express wallet${result.fallback ? ' (original-payment refund could not be processed, so it went to the wallet)' : ''}`;
+    const detail = `Sorry, ${names} ${result.itemNames?.length > 1 ? 'are' : 'is'} unavailable${result.fullyCancelled ? ', so your order was cancelled' : ''}. We refunded ${where}.`;
+    const tpl = process.env.META_WHATSAPP_STATUS_TEMPLATE;
+    if (phone && tpl) {
+      const params = [order.deliveryAddress?.name || 'Customer', order.orderId, result.fullyCancelled ? 'Order Cancelled ❌' : 'Item Unavailable ⚠️', detail];
+      const r = await sendTemplateWhatsApp(phone, tpl, [{ type: 'body', parameters: params.map(t => ({ type: 'text', text: String(t) })) }]);
+      if (!r.success) await sendMetaWhatsApp(phone, `*Order #${order.orderId}*\n${detail}`);
+    } else if (phone) {
+      await sendMetaWhatsApp(phone, `*Order #${order.orderId}*\n${detail}`);
+    }
+    // store team gets the same event
+    const fake = { ...(order.toObject ? order.toObject() : order), cancelReason: `${names} declined by ${byName} — refunded ₹${result.amount}` };
+    await notifyExpressStoreTeam(fake, result.fullyCancelled ? 'cancelled' : 'declined');
+  } catch (err) {
+    console.error('[express.notifyExpressItemDeclined]', err.message);
   }
 }
 
@@ -918,7 +947,11 @@ const getQuote = async (req, res) => {
   try {
     const { deliveryAddress, couponCode } = req.body;
     const priced = await priceCart(req.user._id, deliveryAddress, couponCode);
+    // Wallet: shown always (so the customer sees the balance), applied only when asked.
+    const walletBalance = req.user.isDemoAccount ? 0 : await walletSvc.getBalance(req.user._id);
+    const walletApplied = req.body.useWallet ? Math.min(walletBalance, priced.total) : 0;
     res.json({
+      walletBalance, walletApplied, payable: Math.max(0, priced.total - walletApplied),
       success: true, items: priced.items, subtotal: priced.subtotal, deliveryFee: priced.deliveryFee,
       total: priced.total, totalWeightKg: priced.totalWeightKg, largeOrderWarning: priced.largeOrderWarning,
       distanceKm: priced.distanceKm, estimatedDeliveryMinutes: priced.estimatedDeliveryMinutes,
@@ -971,14 +1004,21 @@ const createRazorpayOrder = async (req, res) => {
     const priced = await priceCart(req.user._id, deliveryAddress, couponCode);
 
     const isDemo = !!req.user.isDemoAccount;
-    const razorpay = isDemo ? null : getRazorpay();
-    if (!isDemo && !razorpay) return fail(res, 500, 'Payment gateway not configured');
+    // Wallet part (never for demo accounts). Remainder goes through Razorpay.
+    const useWallet = !!req.body.useWallet && !isDemo;
+    const walletApplied = useWallet ? Math.min(await walletSvc.getBalance(req.user._id), priced.total) : 0;
+    const payable = Math.max(0, Math.round((priced.total - walletApplied) * 100) / 100);
+    const walletOnly = !isDemo && useWallet && payable <= 0;
+    const refundPreference = req.body.refundPreference === 'source' ? 'source' : 'wallet';
+
+    const razorpay = (isDemo || walletOnly) ? null : getRazorpay();
+    if (!isDemo && !walletOnly && !razorpay) return fail(res, 500, 'Payment gateway not configured');
 
     const orderId = genOrderId();
-    const rzpOrder = isDemo
-      ? { id: `demo_${orderId}` }
+    const rzpOrder = (isDemo || walletOnly)
+      ? { id: `${isDemo ? 'demo' : 'wallet'}_${orderId}` }
       : await razorpay.orders.create({
-          amount: Math.round(priced.total * 100),
+          amount: Math.round(payable * 100),
           currency: 'INR',
           receipt: orderId,
           notes: { expressOrderId: orderId, type: 'express_order' },
@@ -995,7 +1035,10 @@ const createRazorpayOrder = async (req, res) => {
         pincode: deliveryAddress.pincode || '',
         lat: deliveryAddress.lat, lng: deliveryAddress.lng,
       },
+      refundPreference,
+      paymentMethod: isDemo ? 'demo' : walletOnly ? 'wallet' : (walletApplied > 0 ? 'wallet+razorpay' : 'razorpay'),
       pricing: {
+        walletApplied,
         subtotal: priced.subtotal, deliveryFee: priced.deliveryFee, platformFee: priced.platformFee, total: priced.total,
         couponCode: priced.couponCode || null, couponDiscount: priced.couponDiscount || 0,
         itemsProcurementCost: priced.itemsProcurementCost || 0,
@@ -1012,8 +1055,21 @@ const createRazorpayOrder = async (req, res) => {
       timeline: [{ status: 'placed', note: 'Order created, awaiting payment' }],
     });
 
+    // Entire bill covered by the wallet → take the money now and confirm straight away.
+    if (walletOnly) {
+      const taken = await walletSvc.debitUpTo(req.user._id, priced.total, 'wallet_applied', { orderId, orderRef: order._id, note: 'Express order' });
+      if (taken < priced.total) {
+        if (taken > 0) await walletSvc.credit(req.user._id, taken, 'refund_fallback', { orderId, orderRef: order._id, note: 'Wallet changed during checkout — reversed' });
+        await ExpressOrder.deleteOne({ _id: order._id });
+        return fail(res, 409, 'Your wallet balance changed. Please review and try again.');
+      }
+      order.pricing.walletDebited = true;
+      await confirmExpressPayment(order, { razorpayPaymentId: `wallet_${orderId}`, razorpaySignature: null });
+      return res.json({ success: true, walletOnly: true, orderId: order._id, id: order._id, displayOrderId: order.orderId });
+    }
+
     res.json({
-      success: true, demoMode: isDemo, rzpOrderId: rzpOrder.id, amount: priced.total, currency: 'INR',
+      success: true, demoMode: isDemo, rzpOrderId: rzpOrder.id, amount: payable, walletApplied, currency: 'INR',
       orderId: order._id, keyId: isDemo ? null : process.env.RAZORPAY_KEY_ID,
     });
   } catch (err) {
@@ -1048,7 +1104,17 @@ async function confirmExpressPayment(order, { razorpayPaymentId, razorpaySignatu
   // Razorpay anything). Matches the same rate Koyambedu Daily's P&L uses
   // (RAZORPAY_FEE_PERCENT) for consistency across verticals.
   if (!order.isDemoOrder) {
-    order.pricing.razorpayFee = Math.round(order.pricing.total * 2) / 100;
+    const cardPortion = Math.max(0, (order.pricing.total || 0) - (order.pricing.walletApplied || 0));
+    order.pricing.razorpayFee = Math.round(cardPortion * 2) / 100;
+  }
+  // Wallet share of a part-wallet/part-card order is taken once, now that the
+  // card part has actually been paid.
+  if ((order.pricing.walletApplied || 0) > 0 && !order.pricing.walletDebited) {
+    const got = await walletSvc.debitUpTo(order.buyer, order.pricing.walletApplied, 'wallet_applied', { orderId: order.orderId, orderRef: order._id, note: 'Express order' });
+    order.pricing.walletDebited = true;
+    if (got < order.pricing.walletApplied) {
+      order.notes = (order.notes ? order.notes + ' | ' : '') + `Wallet shortfall ₹${Math.round((order.pricing.walletApplied - got) * 100) / 100} at payment time — review.`;
+    }
   }
   await order.save();
   notifyExpressBuyer(order, 'confirmed').catch(() => {});
@@ -1224,7 +1290,60 @@ const cancelMyOrder = async (req, res) => {
   }
 };
 
+// ── Wallet + refund preference ──────────────────────────────────────────
+const getMyWallet = async (req, res) => {
+  try {
+    const ExpressWallet = require('../models/ExpressWallet');
+    const w = await ExpressWallet.findOne({ user: req.user._id }).lean();
+    res.json({ success: true, balance: w?.balance || 0, transactions: (w?.transactions || []).slice(-30).reverse() });
+  } catch (err) { fail(res, 500, 'Failed to load wallet'); }
+};
+
+// Customer chooses where money goes if the store declines something.
+const setRefundPreference = async (req, res) => {
+  try {
+    const pref = req.body.preference;
+    if (!['wallet', 'source'].includes(pref)) return fail(res, 400, 'Choose wallet or original payment');
+    const order = await ExpressOrder.findOne({ _id: req.params.orderId, buyer: req.user._id });
+    if (!order) return fail(res, 404, 'Order not found');
+    if (['delivered', 'cancelled'].includes(order.orderStatus)) return fail(res, 400, 'This order is already closed');
+    order.refundPreference = pref;
+    await order.save();
+    res.json({ success: true, refundPreference: pref });
+  } catch (err) { fail(res, 500, 'Failed to save preference'); }
+};
+
+// ── GST invoice (issued on behalf of the store) ─────────────────────────
+// Buyer, the store's own team, or an Express admin may view it.
+const getInvoice = async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    const q = mongoose.isValidObjectId(req.params.orderId) ? { _id: req.params.orderId } : { orderId: req.params.orderId };
+    const order = await ExpressOrder.findOne(q);
+    if (!order) return fail(res, 404, 'Order not found');
+    const isBuyer = String(order.buyer) === String(req.user._id);
+    const isAdmin = req.user.role === 'superAdmin' || (req.user.role === 'admin' && (req.user.permissions || []).includes('express'));
+    let allowed = isBuyer || isAdmin;
+    if (!allowed) {
+      const ExpressStoreManager = require('../models/ExpressStoreManager');
+      allowed = !!(await ExpressStoreManager.findOne({ user: req.user._id, store: order.store, isActive: true }).select('_id').lean());
+    }
+    if (!allowed) return fail(res, 403, 'Not allowed');
+    if (order.paymentStatus !== 'paid') return fail(res, 400, 'Invoice is available after payment');
+    const { getOrIssueInvoice } = require('../utils/expressInvoice');
+    const invoice = await getOrIssueInvoice(order);
+    if (!invoice) return fail(res, 404, order.orderStatus === 'cancelled' ? 'No invoice — this order was cancelled and fully refunded' : 'Invoice not available');
+    const buyer = { name: order.deliveryAddress?.name, phone: order.deliveryAddress?.phone, addressLine: order.deliveryAddress?.addressLine, city: order.deliveryAddress?.city, pincode: order.deliveryAddress?.pincode };
+    res.json({ success: true, invoice, buyer, orderId: order.orderId, orderStatus: order.orderStatus });
+  } catch (err) {
+    console.error('[express.getInvoice]', err);
+    fail(res, 500, 'Failed to load invoice');
+  }
+};
+
 module.exports = {
+  getInvoice,
+  getMyWallet, setRefundPreference,
   trackVisit,
   getStatus, getActiveBanners, findNearestStore, getCatalogue,
   listActiveStores, getStoreEta, getOnlineCatalogue, getOnlineCatalogueItem,
@@ -1233,4 +1352,5 @@ module.exports = {
   getMyOrders, getMyOrder, cancelMyOrder,
   notifyExpressBuyer,
   notifyExpressStoreTeam,
+  notifyExpressItemDeclined,
 };

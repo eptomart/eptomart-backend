@@ -94,6 +94,9 @@ const expressProductSchema = new mongoose.Schema({
   // product only. Null = use the global default.
   customMarginPct: { type: Number, default: null, min: 0, max: 500 },
   isActive: { type: Boolean, default: true },
+  // Optional per-product GST; null = use the store's default rate.
+  gstRate: { type: Number, default: null, min: 0, max: 28 },
+  hsnCode: { type: String, trim: true, default: null },
   // Set only for products a STORE OWNER created for their own store. Such a
   // product is invisible in every other store's catalogue. Absent/null =
   // company-wide (admin-created / Koyambedu-linked) as before.

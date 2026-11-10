@@ -30,6 +30,27 @@ const expressStoreSchema = new mongoose.Schema({
   },
   // Store Manager assigned to run this store (one per store)
   storeManager: { type: mongoose.Schema.Types.ObjectId, ref: 'ExpressStoreManager', default: null },
+  // GST / billing profile — set ONCE by the owner and used on every customer
+  // invoice issued on behalf of this store. After the first final invoice is
+  // issued the profile is locked (only super admin can change it).
+  gst: {
+    registered:   { type: Boolean, default: false },
+    gstin:        { type: String, trim: true, uppercase: true, default: null },
+    legalName:    { type: String, trim: true, default: null },
+    tradeName:    { type: String, trim: true, default: null },
+    address:      { type: String, trim: true, default: null },
+    pincode:      { type: String, trim: true, default: null },
+    stateCode:    { type: String, trim: true, default: null },   // 2-digit GST state code
+    pan:          { type: String, trim: true, uppercase: true, default: null },
+    fssai:        { type: String, trim: true, default: null },
+    defaultGstRate:  { type: Number, default: 0, min: 0, max: 28 },  // applied to products with no own rate
+    deliveryGstRate: { type: Number, default: 18, min: 0, max: 28 }, // GST on the delivery charge (SAC 9965)
+    hsnDefault:   { type: String, trim: true, default: '0709' },
+    invoicePrefix:  { type: String, trim: true, uppercase: true, default: null },
+    invoiceCounter: { type: Number, default: 0 },
+    completedAt:  { type: Date, default: null },
+    lockedAt:     { type: Date, default: null },
+  },
   // WhatsApp numbers (10-digit) that receive an alert for every order event at
   // this store: new order, confirmed, preparing, out for delivery, delivered,
   // cancelled. Set by the store owner.

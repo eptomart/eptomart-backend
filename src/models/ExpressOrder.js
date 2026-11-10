@@ -20,6 +20,14 @@ const expressOrderSchema = new Schema({
     unitPrice: Number,
     quantity:  Number,
     lineTotal: Number,
+    // Store/owner/manager can decline a line (e.g. out of stock). Declined
+    // lines are kept for the record + invoice, but not charged or supplied.
+    status:        { type: String, enum: ['active', 'declined'], default: 'active' },
+    declineReason: { type: String, default: null },
+    declineCode:   { type: String, enum: ['out_of_stock', 'quality', 'other', null], default: null },
+    declinedAt:    { type: Date, default: null },
+    declinedBy:    { type: String, default: null },
+    refundAmount:  { type: Number, default: 0 },   // this line's refund (incl. its share of coupon)
   }],
 
   deliveryAddress: {
@@ -56,7 +64,28 @@ const expressOrderSchema = new Schema({
     transportCharge:      { type: Number, default: null },
     packingCharge:         { type: Number, default: null },
     razorpayFee:           { type: Number, default: 0 },
+    // Part of `total` paid from the customer's Express wallet (the rest went
+    // through Razorpay), and the cumulative amount refunded for declined items.
+    walletApplied:         { type: Number, default: 0 },
+    walletDebited:         { type: Boolean, default: false },
+    refundedAmount:        { type: Number, default: 0 },
   },
+  // Where money goes if a store declines an item: 'wallet' (instant) or
+  // 'source' (back to the original payment method). Customer's choice.
+  refundPreference: { type: String, enum: ['wallet', 'source'], default: 'wallet' },
+  refunds: [{
+    amount:   Number,
+    mode:     { type: String, enum: ['wallet', 'source'] },
+    status:   { type: String, enum: ['completed', 'initiated', 'failed'], default: 'completed' },
+    razorpayRefundId: String,
+    reason:   String,
+    itemNames: [String],
+    fallbackToWallet: { type: Boolean, default: false },
+    at:       { type: Date, default: Date.now },
+  }],
+  paymentMethod: { type: String, enum: ['razorpay', 'wallet', 'wallet+razorpay', 'demo'], default: 'razorpay' },
+  // GST invoice issued in the STORE's name (see utils/expressInvoice.js)
+  taxInvoice: { type: Schema.Types.Mixed, default: null },
 
   totalWeightKg: { type: Number, default: 0 },
 

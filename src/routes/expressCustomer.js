@@ -40,5 +40,8 @@ router.post('/webhooks/razorpay',           ctrl.expressRazorpayWebhook);
 router.get ('/my-orders',                   protect, ctrl.getMyOrders);
 router.get ('/my-orders/:orderId',          protect, ctrl.getMyOrder);
 router.post('/orders/:orderId/cancel',      protect, ctrl.cancelMyOrder);
+router.get ('/wallet',                      protect, ctrl.getMyWallet);
+router.get ('/orders/:orderId/invoice',     protect, ctrl.getInvoice);
+router.patch('/orders/:orderId/refund-preference', protect, ctrl.setRefundPreference);
 
 module.exports = router;

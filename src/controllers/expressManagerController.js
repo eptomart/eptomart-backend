@@ -14,7 +14,11 @@ const ExpressAuditLog         = require('../models/ExpressAuditLog');
 const ExpressStockLog         = require('../models/ExpressStockLog');
 const ExpressMarginConfig     = require('../models/ExpressMarginConfig');
 const { computeSellingPrice } = require('../services/expressPricingService');
-const { notifyExpressBuyer, notifyExpressStoreTeam } = require('./expressCustomerController');
+const customerCtrl = require('./expressCustomerController');
+const { notifyExpressBuyer, notifyExpressStoreTeam } = customerCtrl;
+const refundSvc = require('../services/expressRefundService');
+const Razorpay = require('razorpay');
+const wallet = require('../services/expressWalletService');
 
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
 
@@ -343,7 +347,47 @@ const recordDeliveryExpense = async (req, res) => {
   }
 };
 
+// ── Decline items (e.g. out of stock) + refund ───────────────────────────
+// What the customer will get back, before the store confirms.
+const previewDecline = async (req, res) => {
+  try {
+    const order = await ExpressOrder.findOne({ _id: req.params.orderId, store: req.manager.store });
+    if (!order) return fail(res, 404, 'Order not found');
+    const ids = String(req.query.itemIds || '').split(',').filter(Boolean);
+    const c = refundSvc.computeRefund(order, ids);
+    const walletPaid = order.pricing.walletApplied || 0;
+    const cardPaid = Math.round(((order.pricing.total || 0) - walletPaid) * 100) / 100;
+    res.json({
+      success: true, amount: c.amount, fullDecline: c.fullDecline, refundPreference: order.refundPreference,
+      paidByWallet: walletPaid, paidByCard: cardPaid, isDemo: !!order.isDemoOrder,
+      items: c.perLine.map(l => ({ _id: l.item._id, name: l.item.name, refund: l.refund })),
+      note: c.fullDecline ? 'All items declined — the order will be cancelled and delivery + platform fees refunded too.' : null,
+    });
+  } catch (err) { fail(res, 500, 'Failed to preview refund'); }
+};
+
+const declineOrderItems = async (req, res) => {
+  try {
+    const order = await ExpressOrder.findOne({ _id: req.params.orderId, store: req.manager.store });
+    if (!order) return fail(res, 404, 'Order not found');
+    const razorpay = (!order.isDemoOrder && process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET)
+      ? new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET }) : null;
+    const actor = `${req.manager.name}${req.managerRole && req.managerRole !== 'owner' ? ` (${req.managerRole})` : ''}`;
+    const result = await refundSvc.declineItems(order, {
+      itemIds: req.body.itemIds, code: req.body.code, reason: req.body.reason, actorName: actor, razorpay,
+    });
+    logAudit({ actorName: req.manager.name, action: 'order.decline-items', store: req.manager.store, meta: { orderId: order.orderId, items: result.itemNames, amount: result.amount, toWallet: result.toWallet, toSource: result.toSource } });
+    customerCtrl.notifyExpressItemDeclined(order, result, req.manager.name).catch(() => {});
+    res.json({ success: true, order, refund: result });
+  } catch (err) {
+    if (err.statusCode) return fail(res, err.statusCode, err.message);
+    console.error('[expressManager.declineOrderItems]', err);
+    fail(res, 500, 'Failed to decline items');
+  }
+};
+
 module.exports = {
+  previewDecline, declineOrderItems,
   getDashboard, getMyStore, toggleMyStore,
   listMyStoreProducts, listMyStoreProductsForPrint, toggleProductAvailability,
   recordLoss, listMyStockLogs,

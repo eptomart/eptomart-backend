@@ -170,6 +170,7 @@ const createOwnProduct = async (req, res) => {
     const storeId = String(req.manager.store);
     const { name, description, unit, category, image, procurementBaseCost, minOrderQty, maxOrderQty } = req.body;
     if (!name || !String(name).trim()) return fail(res, 400, 'Product name is required');
+    const gstBad = validGstFields(req.body); if (gstBad) return fail(res, 400, gstBad);
     if (procurementBaseCost == null || procurementBaseCost === '' || !Number.isFinite(Number(procurementBaseCost)) || Number(procurementBaseCost) < 0) {
       return fail(res, 400, 'Enter your cost price per unit');
     }
@@ -184,6 +185,8 @@ const createOwnProduct = async (req, res) => {
       isWeightBased: ['kg', 'gram'].includes(u),
       procurementBaseCost: Number(procurementBaseCost), ownerStore: storeId,
     };
+    if (req.body.gstRate !== undefined && req.body.gstRate !== '' && req.body.gstRate !== null) doc.gstRate = Number(req.body.gstRate);
+    if (req.body.hsnCode) doc.hsnCode = String(req.body.hsnCode).trim();
     if (minOrderQty !== undefined && minOrderQty !== '' && Number(minOrderQty) > 0) doc.minOrderQty = Number(minOrderQty);
     if (maxOrderQty !== undefined && maxOrderQty !== '' && Number(maxOrderQty) > 0) doc.maxOrderQty = Number(maxOrderQty);
     const product = await ExpressProduct.create(doc);
@@ -208,6 +211,9 @@ const updateOwnProduct = async (req, res) => {
     if (b.unit && UNITS.includes(b.unit)) { product.unit = b.unit; product.isWeightBased = ['kg', 'gram'].includes(b.unit); }
     if (b.procurementBaseCost !== undefined && b.procurementBaseCost !== '' && Number(b.procurementBaseCost) >= 0) product.procurementBaseCost = Number(b.procurementBaseCost);
     if (b.isActive != null) product.isActive = !!b.isActive;
+    const gstBad = validGstFields(b); if (gstBad) return fail(res, 400, gstBad);
+    if (b.gstRate !== undefined) product.gstRate = (b.gstRate === '' || b.gstRate === null) ? null : Number(b.gstRate);
+    if (b.hsnCode !== undefined) product.hsnCode = b.hsnCode ? String(b.hsnCode).trim() : null;
     await product.save();
     res.json({ success: true, product });
   } catch (err) {
@@ -309,7 +315,9 @@ const overview = async (req, res) => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const monthStart = new Date(today); monthStart.setDate(1);
     const sum = async (Model, match, field) => {
-      const a = await Model.aggregate([{ $match: match }, { $group: { _id: null, t: { $sum: `$${field}` }, n: { $sum: 1 } } }]);
+      // online orders: net of refunds for declined items
+      const expr = field === 'pricing.total' ? { $subtract: ['$pricing.total', { $ifNull: ['$pricing.refundedAmount', 0] }] } : `$${field}`;
+      const a = await Model.aggregate([{ $match: match }, { $group: { _id: null, t: { $sum: expr }, n: { $sum: 1 } } }]);
       return { total: a[0]?.t || 0, count: a[0]?.n || 0 };
     };
     const oBase = { store, paymentStatus: 'paid', isDemoOrder: { $ne: true } };
@@ -560,7 +568,74 @@ const adminSetApprovalRequired = async (req, res) => {
   } catch (err) { fail(res, 500, 'Failed to save setting'); }
 };
 
+// ── Store GST / billing profile (set ONCE; locked after first final invoice) ──
+const { GSTIN_RE, stateFromPin } = require('../utils/expressInvoice');
+const CORE_GST_FIELDS = ['registered', 'gstin', 'legalName', 'stateCode', 'pan', 'invoicePrefix'];
+function validGstFields(b) {
+  if (b.gstRate !== undefined && b.gstRate !== '' && b.gstRate !== null && !(Number(b.gstRate) >= 0 && Number(b.gstRate) <= 28)) return 'GST % must be between 0 and 28';
+  if (b.hsnCode && !/^\d{4,8}$/.test(String(b.hsnCode).trim())) return 'HSN code must be 4–8 digits';
+  return null;
+}
+
+const getGst = async (req, res) => {
+  try {
+    const store = await ExpressStore.findById(req.manager.store).select('name code address pincode gst').lean();
+    if (!store) return fail(res, 404, 'Store not found');
+    const g = store.gst || {};
+    res.json({ success: true, gst: { ...g, invoiceCounter: undefined }, storeName: store.name, locked: !!g.lockedAt, complete: !!(g.legalName && (g.address || store.address)) });
+  } catch (err) { fail(res, 500, 'Failed to load GST profile'); }
+};
+
+const saveGst = async (req, res) => {
+  try {
+    const store = await ExpressStore.findById(req.manager.store);
+    if (!store) return fail(res, 404, 'Store not found');
+    const b = req.body || {};
+    const cur = store.gst ? store.gst.toObject() : {};
+    const locked = !!cur.lockedAt && !req.manager.isAdmin;
+    const next = {};
+
+    const str = (v) => (v === undefined || v === null ? undefined : String(v).trim());
+    for (const k of ['legalName', 'tradeName', 'address', 'pincode', 'fssai', 'hsnDefault', 'invoicePrefix', 'pan']) if (b[k] !== undefined) next[k] = str(b[k]) || null;
+    if (b.registered !== undefined) next.registered = !!b.registered;
+    if (b.gstin !== undefined) next.gstin = str(b.gstin) ? String(b.gstin).trim().toUpperCase() : null;
+    for (const k of ['defaultGstRate', 'deliveryGstRate']) if (b[k] !== undefined && b[k] !== '') {
+      const v = Number(b[k]); if (!(v >= 0 && v <= 28)) return fail(res, 400, 'GST % must be between 0 and 28'); next[k] = v;
+    }
+    if (next.hsnDefault && !/^\d{4,8}$/.test(next.hsnDefault)) return fail(res, 400, 'HSN code must be 4–8 digits');
+    if (next.pincode && !/^\d{6}$/.test(next.pincode)) return fail(res, 400, 'Pincode must be 6 digits');
+    if (next.pan && !/^[A-Z]{5}\d{4}[A-Z]$/.test(next.pan)) return fail(res, 400, 'PAN looks wrong (e.g. ABCDE1234F)');
+
+    const merged = { ...cur, ...next };
+    if (merged.registered) {
+      if (!merged.gstin || !GSTIN_RE.test(merged.gstin)) return fail(res, 400, 'Enter a valid 15-character GSTIN (e.g. 33ABCDE1234F1Z5)');
+      next.stateCode = merged.gstin.slice(0, 2);            // state is DEFINED by the GSTIN
+      if (!merged.pan && !next.pan && !locked) next.pan = merged.gstin.slice(2, 12);
+    } else {
+      next.gstin = null;
+      next.stateCode = stateFromPin(merged.pincode || store.pincode) || merged.stateCode || '33';
+    }
+    if (!merged.legalName) return fail(res, 400, 'Legal / business name is required — it appears on every invoice');
+    if (!(merged.address || store.address)) return fail(res, 400, 'Business address is required');
+
+    if (locked) {
+      const changed = CORE_GST_FIELDS.filter((k) => next[k] !== undefined && String(next[k] ?? '') !== String(cur[k] ?? ''));
+      if (changed.length) return fail(res, 403, `GST identity is locked because invoices have been issued (${changed.join(', ')}). Ask Eptomart admin to change it.`);
+    }
+    for (const [k, v] of Object.entries(next)) store.set(`gst.${k}`, v);
+    if (!cur.completedAt) store.set('gst.completedAt', new Date());
+    await store.save();
+    await audit(req, 'owner.gst-save', { registered: !!merged.registered, gstin: merged.gstin || null });
+    const g = store.gst.toObject(); delete g.invoiceCounter;
+    res.json({ success: true, gst: g, locked: !!g.lockedAt });
+  } catch (err) {
+    console.error('[expressOwner.saveGst]', err);
+    fail(res, 500, 'Failed to save GST profile');
+  }
+};
+
 module.exports = {
+  getGst, saveGst,
   getStoreSettings, updateMyDeliverySlots, updateMyDeliveryFee, toggleMyPause, toggleMyOnlineShop,
   adminListApprovals, adminDecideApprovals, adminSetApprovalRequired,
   listTeam, addTeamMember, updateTeamMember, removeTeamMember, getAlerts, setAlerts,

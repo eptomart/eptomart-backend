@@ -23,6 +23,8 @@ const KoyambeduProcurementChecklist = require('../models/KoyambeduProcurementChe
 const KoyambeduProcurementShare     = require('../models/KoyambeduProcurementShare');
 const KoyambeduDailyExpense         = require('../models/KoyambeduDailyExpense');
 const KoyambeduProcurer             = require('../models/KoyambeduProcurer');
+const KoyambeduExpenseParty         = require('../models/KoyambeduExpenseParty');
+const KoyambeduDayExpense           = require('../models/KoyambeduDayExpense');
 const KoyambeduOfferBroadcast       = require('../models/KoyambeduOfferBroadcast');
 const { notifyAudience, notifyAll } = require('../utils/pushNotification');
 const User                  = require('../models/User');
@@ -8471,6 +8473,69 @@ function annotateMargin(row) {
   };
 }
 
+// ── Loadman & Transport payments ledger + payer names ─────────────────
+const partyNames = async () =>
+  (await KoyambeduExpenseParty.find().sort({ name: 1 }).select('name').lean()).map(n => n.name);
+const CYCLE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// GET /koyambedu/admin/pnl/parties
+const adminListExpenseParties = async (req, res) => {
+  try { res.json({ success: true, names: await partyNames() }); }
+  catch (err) { res.status(500).json({ success: false, message: 'Failed to fetch names' }); }
+};
+
+// POST /koyambedu/admin/pnl/parties { name }
+const adminAddExpenseParty = async (req, res) => {
+  try {
+    const name = String(req.body.name || '').trim().slice(0, 60);
+    if (!name) return res.status(400).json({ success: false, message: 'name is required' });
+    await KoyambeduExpenseParty.updateOne({ name }, { $setOnInsert: { name, addedBy: req.user._id } }, { upsert: true });
+    res.json({ success: true, names: await partyNames() });
+  } catch (err) { res.status(500).json({ success: false, message: 'Failed to add name' }); }
+};
+
+// DELETE /koyambedu/admin/pnl/parties  { name } — past entries keep the text
+const adminDeleteExpenseParty = async (req, res) => {
+  try {
+    const name = String(req.body?.name || req.query.name || '').trim();
+    if (!name) return res.status(400).json({ success: false, message: 'name is required' });
+    await KoyambeduExpenseParty.deleteOne({ name });
+    res.json({ success: true, names: await partyNames() });
+  } catch (err) { res.status(500).json({ success: false, message: 'Failed to delete name' }); }
+};
+
+// POST /koyambedu/admin/pnl/day-expenses { cycle, kind, amount, paidBy, paidTo, note }
+const adminAddDayExpense = async (req, res) => {
+  try {
+    const { cycle, kind, paidBy, paidTo, note } = req.body;
+    const amount = Number(req.body.amount);
+    if (!CYCLE_RE.test(String(cycle || ''))) return res.status(400).json({ success: false, message: 'valid cycle is required' });
+    if (!['loadman', 'transport'].includes(kind)) return res.status(400).json({ success: false, message: 'kind must be loadman or transport' });
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ success: false, message: 'amount must be greater than 0' });
+    const payer = String(paidBy || '').trim().slice(0, 60);
+    const doc = await KoyambeduDayExpense.create({
+      cycle, kind, amount, paidBy: payer,
+      paidTo: String(paidTo || '').trim().slice(0, 60), note: String(note || '').trim().slice(0, 200),
+      createdBy: req.user._id,
+    });
+    // A typed-in new payer name joins the list automatically
+    if (payer) await KoyambeduExpenseParty.updateOne({ name: payer }, { $setOnInsert: { name: payer, addedBy: req.user._id } }, { upsert: true });
+    res.status(201).json({ success: true, entry: doc });
+  } catch (err) {
+    console.error('[adminAddDayExpense] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to save payment' });
+  }
+};
+
+// DELETE /koyambedu/admin/pnl/day-expenses/:id
+const adminDeleteDayExpense = async (req, res) => {
+  try {
+    const r = await KoyambeduDayExpense.findByIdAndDelete(req.params.id);
+    if (!r) return res.status(404).json({ success: false, message: 'Payment not found' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ success: false, message: 'Failed to delete payment' }); }
+};
+
 // GET /koyambedu/admin/pnl/daily-expense?cycle=2026-09-26
 const adminGetDailyExpense = async (req, res) => {
   try {
@@ -8581,7 +8646,14 @@ async function computeKoyambeduPnLForCycle(cycle) {
   }
 
   const dailyExpense = await KoyambeduDailyExpense.findOne({ cycle }).lean();
-  const loadmanCharge = dailyExpense?.loadmanCharge || 0;
+  // Ledger entries (Loadman & Transport payments) take over once any exist
+  // for the day; otherwise the legacy single loadmanCharge keeps working.
+  const expenseEntries = await KoyambeduDayExpense.find({ cycle }).sort({ createdAt: 1 }).lean();
+  const loadmanEntries = expenseEntries.filter(e => e.kind === 'loadman');
+  const dayTransportCharge = expenseEntries.filter(e => e.kind === 'transport').reduce((s, e) => s + (e.amount || 0), 0);
+  const loadmanCharge = loadmanEntries.length
+    ? loadmanEntries.reduce((s, e) => s + (e.amount || 0), 0)
+    : (dailyExpense?.loadmanCharge || 0);
   const loadmanPerUnitRate = totalQtyForDay > 0 ? loadmanCharge / totalQtyForDay : 0;
 
   // Purchase cost + "procured by" come from the Procurement checklist,
@@ -8604,6 +8676,11 @@ async function computeKoyambeduPnLForCycle(cycle) {
 
   const itemRollup = {};   // productKey -> { productName, unit, totalQty, purchaseCost, loadmanCost, totalProcurement, procuredBy }
   const procuredByRollup = {}; // name -> { name, totalQty, purchaseCost, loadmanCost, totalProcurement, products: Set }
+
+  const orderRevenueOf = (o) => o.calculatedPricing?.finalPayableAmount || o.pricing?.total
+    || (o.items || []).filter(it => it.itemStatus !== 'declined')
+      .reduce((a, it) => a + (it.finalPrice || it.orderedPrice || 0) * (it.quantity || 0), 0);
+  const totalOrderRevenue = orders.reduce((s, o) => s + orderRevenueOf(o), 0);
 
   const orderLines = orders.map(order => {
     let itemsSubtotal = 0, purchaseCost = 0, loadmanCost = 0;
@@ -8699,7 +8776,12 @@ async function computeKoyambeduPnLForCycle(cycle) {
     // Admin now only ever types in two numbers per bill — actual
     // transportation and packing cost. Everything else (procurement,
     // loadman share, Razorpay's cut) is computed by the system.
-    const totalCost         = totalProcurement + transportCost + packingCost + razorpayDeduction;
+    // Day-level transport payments (ledger) are shared across the day's
+    // orders pro-rata by revenue; kept separate from per-bill transportCost.
+    const dayTransportShare = dayTransportCharge > 0 && orders.length
+      ? (totalOrderRevenue > 0 ? dayTransportCharge * (amountPaidByCustomer / totalOrderRevenue) : dayTransportCharge / orders.length)
+      : 0;
+    const totalCost         = totalProcurement + transportCost + packingCost + razorpayDeduction + dayTransportShare;
     const profit            = amountPaidByCustomer - totalCost;
 
     return {
@@ -8714,7 +8796,7 @@ async function computeKoyambeduPnLForCycle(cycle) {
         discount: order.pricing?.discount || 0,
       },
       purchaseCost, loadmanCost, totalProcurement,
-      transportCost, packingCost, razorpayDeduction,
+      transportCost, packingCost, razorpayDeduction, dayTransportShare,
       totalCost, profit,
     };
   });
@@ -8738,6 +8820,14 @@ async function computeKoyambeduPnLForCycle(cycle) {
     totalQtyForDay,
     loadmanCharge,
     loadmanPerUnitRate,
+    dayTransportCharge,
+    transportUnallocated: orders.length === 0 ? dayTransportCharge : 0,
+    expenseEntries: expenseEntries.map(e => ({ _id: e._id, kind: e.kind, amount: e.amount, paidBy: e.paidBy || '', paidTo: e.paidTo || '', note: e.note || '', createdAt: e.createdAt })),
+    paidByRollup: Object.values(expenseEntries.reduce((m, e) => {
+      const k = e.paidBy || '(not set)';
+      m[k] = m[k] || { name: k, loadman: 0, transport: 0, total: 0 };
+      m[k][e.kind] += e.amount || 0; m[k].total += e.amount || 0; return m;
+    }, {})),
     orders: orderLines,
     itemRollup: itemRollupWithMargin,
     marginAlerts,
@@ -9081,6 +9171,7 @@ module.exports = {
   adminProcurementReport, adminUpdateProcurementItem, adminShareProcurement,
   adminGetDailyExpense, adminSetDailyExpense, adminPnLDay, adminPnLSummary, adminExportPnL, adminSetItemProcurementCost,
   adminMarginReport,
+  adminListExpenseParties, adminAddExpenseParty, adminDeleteExpenseParty, adminAddDayExpense, adminDeleteDayExpense,
   adminListProcurers, adminAddProcurer, adminBulkUpdateProcurementItems,
   // Super Admin — Offer push notifications
   adminPreviewOfferAudience, adminBroadcastOffer, adminGetOfferBroadcasts,

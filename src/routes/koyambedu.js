@@ -287,6 +287,11 @@ router.get  ('/admin/reports/procurement-confirmed',                  protectAdm
 router.patch('/admin/reports/procurement-confirmed/item',             protectAdmin,      ctrl.adminUpdateProcurementItem);
 router.patch('/admin/reports/procurement-confirmed/bulk',              protectAdmin,      ctrl.adminBulkUpdateProcurementItems);
 router.post ('/admin/reports/procurement-confirmed/share',            protectAdmin,      ctrl.adminShareProcurement);
+router.get   ('/admin/pnl/parties',                                  protectAdmin,      ctrl.adminListExpenseParties);
+router.post  ('/admin/pnl/parties',                                  protectAdmin,      ctrl.adminAddExpenseParty);
+router.delete('/admin/pnl/parties',                                  protectAdmin,      ctrl.adminDeleteExpenseParty);
+router.post  ('/admin/pnl/day-expenses',                             protectAdmin,      ctrl.adminAddDayExpense);
+router.delete('/admin/pnl/day-expenses/:id',                         protectAdmin,      ctrl.adminDeleteDayExpense);
 router.get  ('/admin/procurers',                                      protectAdmin,      ctrl.adminListProcurers);
 router.post ('/admin/procurers',                                      protectAdmin,      ctrl.adminAddProcurer);
 

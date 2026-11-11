@@ -10,6 +10,11 @@ const devCtrl   = require('../controllers/koyambeduDevSettingsController');
 const { protect, optionalAuth } = require('../middleware/auth');
 const { uploadKoyambedu } = require('../config/cloudinary');
 const { protectAdmin, protectSuperAdmin } = require('../middleware/adminAuth');
+// Customer activity (super-admin "User Activity" tab). Cart changes are logged
+// by watching the existing cart routes AFTER they respond — the cart / checkout
+// controllers themselves are untouched.
+const activityCtrl = require('../controllers/koyambeduActivityController');
+const { cartTracker: trackCart } = require('../services/koyambeduActivityService');
 // Inventory / Purchase / Wastage / Profit dashboard — self-contained router,
 // mounted here so it rides on the existing /api/koyambedu base path without
 // any server.js changes. See routes/koyambeduInventory.js.
@@ -120,8 +125,9 @@ router.post('/check-delivery', optionalAuth, ctrl.checkDeliveryAvailability);
 // BUYER — auth required
 // ══════════════════════════════════════════════
 router.get   ('/cart',                      protect, ctrl.getCart);
-router.post  ('/cart',                      protect, ctrl.updateCart);
-router.delete('/cart/clear',               protect, ctrl.clearCart);
+router.post  ('/cart',                      protect, trackCart('set'), ctrl.updateCart);
+router.delete('/cart/clear',               protect, trackCart('clear'), ctrl.clearCart);
+router.post  ('/activity',                  protect, activityCtrl.track);
 
 router.post  ('/orders',                    protect, ctrl.placeOrder);
 router.post  ('/orders/create-razorpay',    protect, ctrl.createRazorpayOrder);
@@ -270,6 +276,12 @@ router.get  ('/admin/refund-requests',                                protectAdm
 router.patch('/admin/refund-requests/:walletId/:requestId',           protectAdmin, ctrl.adminUpdateRefundRequest);
 // Users Cart — view in-progress (not-yet-ordered) customer carts (SuperAdmin)
 router.get  ('/admin/carts',                                          protectSuperAdmin, ctrl.adminGetUserCarts);
+// User Activity — everything a customer did (SuperAdmin)
+router.get  ('/admin/activity',                                       protectSuperAdmin, activityCtrl.adminFeed);
+router.get  ('/admin/activity/summary',                               protectSuperAdmin, activityCtrl.adminSummary);
+router.get  ('/admin/activity/users',                                 protectSuperAdmin, activityCtrl.adminUsers);
+router.get  ('/admin/activity/export',                                protectSuperAdmin, activityCtrl.adminExport);
+router.get  ('/admin/activity/user/:userId',                          protectSuperAdmin, activityCtrl.adminProfile);
 // Procurement Report — confirmed orders only, with purchased/comment checklist (SuperAdmin)
 router.get  ('/admin/reports/procurement-confirmed',                  protectAdmin,      ctrl.adminProcurementReport);
 router.patch('/admin/reports/procurement-confirmed/item',             protectAdmin,      ctrl.adminUpdateProcurementItem);

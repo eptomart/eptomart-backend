@@ -134,15 +134,24 @@ const toggleStoreActive = async (req, res) => {
 // message can be set when pausing; it's cleared on resume. Every customer
 // who hits that checkout gate gets logged to ExpressHoldWaitlist (see
 // getHoldWaitlist below) so Admin knows exactly who to call back.
+const DEFAULT_PAUSE_MESSAGE = "We're taking a short break and will be back soon. You can order fresh produce in bulk from Koyambedu Daily Wholesale in the meantime.";
 const togglePauseStore = async (req, res) => {
   try {
     const { storeId } = req.params;
-    const { message } = req.body || {};
+    const { message, update } = req.body || {};
     const store = await ExpressStore.findById(storeId);
     if (!store) return fail(res, 404, 'Store not found');
 
+    // update:true → just change the message of a store that is already on hold
+    if (update && store.isPaused) {
+      store.pauseMessage = String(message || '').trim().slice(0, 300) || DEFAULT_PAUSE_MESSAGE;
+      await store.save();
+      return res.json({ success: true, store });
+    }
+
     store.isPaused = !store.isPaused;
-    store.pauseMessage = store.isPaused ? (message || null) : null;
+    // Blank reason → the default "we'll be back soon" message
+    store.pauseMessage = store.isPaused ? (String(message || '').trim().slice(0, 300) || DEFAULT_PAUSE_MESSAGE) : null;
     await store.save();
 
     await logAudit({

@@ -112,6 +112,7 @@ async function fetchLogged(scope, q, groups, before, L) {
     id: `a-${a._id}`, at: a.createdAt, type: a.type, user: a.user,
     productId: a.product?._id || null, productName: a.product?.name || null, unit: a.product?.unit || null,
     quantity: a.quantity ?? null, query: a.query || null, page: a.page || null, device: a.device || null,
+    byAdmin: !!a.byAdmin,
     detail: a.type === 'page_view' ? pagePretty(a.page) : a.type === 'search' ? `“${a.query}”` : a.type === 'cart_set' ? `${a.product?.name || 'Item'} → ${a.quantity}${a.product?.unit ? ' ' + a.product.unit : ''}` : a.type === 'cart_remove' ? (a.product?.name || 'Item') : a.type === 'product_view' ? (a.product?.name || 'Product') : '',
   }));
 }
@@ -382,6 +383,7 @@ function logActivity(req, type, data = {}) {
       page: data.page ? String(data.page).slice(0, 200) : undefined,
       query: data.query ? String(data.query).trim().slice(0, 120) : undefined,
       device: deviceOf(req.headers?.['user-agent']), sessionId: req.headers?.['x-session-id'] || undefined,
+      byAdmin: req.actingAdmin?._id || undefined,
     }).catch(() => {});
   } catch (_) { /* logging must never break a request */ }
 }

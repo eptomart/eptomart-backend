@@ -23,6 +23,7 @@ const koyambeduActivitySchema = new Schema({
   page:        { type: String, maxlength: 200 },   // path visited
   device:      String,                 // mobile | tablet | desktop
   sessionId:   String,
+  byAdmin:     { type: Schema.Types.ObjectId, ref: 'User' },   // set when a super admin acted on the customer's behalf
   createdAt:   { type: Date, default: Date.now },
 }, { versionKey: false });
 

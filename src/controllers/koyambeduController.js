@@ -8011,6 +8011,7 @@ const adminGetUserCarts = async (req, res) => {
         const cartValue = items.reduce((s, it) => s + (it.unitPrice || 0) * (it.quantity || 0), 0);
         return {
           _id:          c._id,
+          userId:       c.user?._id || null,
           customerName: c.user?.name || 'Unknown',
           phone:        c.user?.phone || '—',
           email:        c.user?.email || '—',

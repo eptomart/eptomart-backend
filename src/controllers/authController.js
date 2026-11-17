@@ -269,6 +269,7 @@ const getMe = async (req, res) => {
   // so the user never gets logged out mid-session
   let refreshedToken = null;
   try {
+    if (req.actingAdmin) throw new Error('view-as: never mint a token for the viewed customer');
     const jwt = require('jsonwebtoken');
     const decoded = jwt.decode(req.headers.authorization?.replace('Bearer ', '') || '');
     if (decoded?.exp) {

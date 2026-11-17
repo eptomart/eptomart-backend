@@ -39,6 +39,11 @@ const protect = async (req, res, next) => {
     }
 
     req.user = user;
+    // Super admin "view as customer" (header-driven; no-op otherwise)
+    if (req.headers['x-view-as-user']) {
+      const err = await require('./viewAsCustomer').applyViewAs(req);
+      if (err) return res.status(err.status).json({ success: false, message: err.message });
+    }
     next();
   } catch (error) {
     return res.status(401).json({ success: false, message: 'Invalid or expired token' });

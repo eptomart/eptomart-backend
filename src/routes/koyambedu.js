@@ -8,7 +8,6 @@ const ctrl     = require('../controllers/koyambeduController');
 const schedCtrl = require('../controllers/koyambeduScheduleController');
 const devCtrl   = require('../controllers/koyambeduDevSettingsController');
 const { protect, optionalAuth } = require('../middleware/auth');
-const viewAsCustomer = require('../middleware/viewAsCustomer');
 const { uploadKoyambedu } = require('../config/cloudinary');
 const { protectAdmin, protectSuperAdmin } = require('../middleware/adminAuth');
 // Customer activity (super-admin "User Activity" tab). Cart changes are logged
@@ -125,9 +124,9 @@ router.post('/check-delivery', optionalAuth, ctrl.checkDeliveryAvailability);
 // ══════════════════════════════════════════════
 // BUYER — auth required
 // ══════════════════════════════════════════════
-router.get   ('/cart',                      protect, viewAsCustomer, ctrl.getCart);
-router.post  ('/cart',                      protect, viewAsCustomer, trackCart('set'), ctrl.updateCart);
-router.delete('/cart/clear',               protect, viewAsCustomer, trackCart('clear'), ctrl.clearCart);
+router.get   ('/cart',                      protect, ctrl.getCart);
+router.post  ('/cart',                      protect, trackCart('set'), ctrl.updateCart);
+router.delete('/cart/clear',               protect, trackCart('clear'), ctrl.clearCart);
 router.post  ('/activity',                  protect, activityCtrl.track);
 
 router.post  ('/orders',                    protect, ctrl.placeOrder);
@@ -152,8 +151,8 @@ router.post  ('/orders/:orderId/address/verify',      protect, ctrl.verifyAddres
 // DEV ONLY — guarded by ENABLE_TEST_PAYMENT_BUTTONS=true on the server; no-op in production
 router.post  ('/orders/test-payment',       protect, ctrl.testPayment);
 router.delete('/orders/:orderId/pending',   protect, ctrl.cancelPendingOrder);
-router.get   ('/my-orders',                 protect, viewAsCustomer, ctrl.getMyOrders);
-router.get   ('/my-orders/:orderId',        protect, viewAsCustomer, ctrl.getMyOrder);
+router.get   ('/my-orders',                 protect, ctrl.getMyOrders);
+router.get   ('/my-orders/:orderId',        protect, ctrl.getMyOrder);
 router.post  ('/orders/:orderId/approve-revision', protect, ctrl.approveRevision);
 router.post  ('/orders/:orderId/cancel',    protect, ctrl.cancelOrder);
 router.get   ('/orders/:orderId/invoice',   protect, ctrl.getOrderInvoice);
@@ -174,7 +173,7 @@ router.get   ('/orders/:orderId/calculation', protect, ctrl.getOrderCalculation)
 // Settings — public
 router.get('/settings/last-update', ctrl.getLastProductUpdateTime);
 
-router.get ('/wallet',                 protect, viewAsCustomer, ctrl.getWallet);
+router.get ('/wallet',                 protect, ctrl.getWallet);
 router.post('/wallet/refund-request',  protect, ctrl.requestWalletRefund);
 
 // ══════════════════════════════════════════════

@@ -455,6 +455,8 @@ const koyambeduOrderSchema = new Schema({
     // Purely additive fields; existing two fields above are untouched.
     transportCharge:    { type: Number, default: 0 },
     packingCharge:       { type: Number, default: 0 },
+    // Who paid this bill's transport / packing out of pocket (for settlement)
+    costPaidBy:         { type: String, default: '' },
     // Added for the daily P&L report (see adminPnLDay in koyambeduController) —
     // outflow-side platform/aggregator fee and the Razorpay gateway deduction
     // for this order. Distinct from pricing.platformFee, which is what the

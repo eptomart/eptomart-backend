@@ -8559,14 +8559,15 @@ const adminDeleteExpenseParty = async (req, res) => {
 // POST /koyambedu/admin/pnl/day-expenses { cycle, kind, amount, paidBy, paidTo, note }
 const adminAddDayExpense = async (req, res) => {
   try {
-    const { cycle, kind, paidBy, paidTo, note } = req.body;
+    const { cycle, kind, paidBy, paidTo, note, category } = req.body;
     const amount = Number(req.body.amount);
     if (!CYCLE_RE.test(String(cycle || ''))) return res.status(400).json({ success: false, message: 'valid cycle is required' });
-    if (!['loadman', 'transport'].includes(kind)) return res.status(400).json({ success: false, message: 'kind must be loadman or transport' });
+    if (!['loadman', 'transport', 'misc'].includes(kind)) return res.status(400).json({ success: false, message: 'kind must be loadman, transport or misc' });
     if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ success: false, message: 'amount must be greater than 0' });
     const payer = String(paidBy || '').trim().slice(0, 60);
     const doc = await KoyambeduDayExpense.create({
       cycle, kind, amount, paidBy: payer,
+      category: kind === 'misc' ? (String(category || '').trim().slice(0, 40) || 'Other') : '',
       paidTo: String(paidTo || '').trim().slice(0, 60), note: String(note || '').trim().slice(0, 200),
       createdBy: req.user._id,
     });
@@ -8703,10 +8704,17 @@ async function computeKoyambeduPnLForCycle(cycle) {
   const expenseEntries = await KoyambeduDayExpense.find({ cycle }).sort({ createdAt: 1 }).lean();
   const loadmanEntries = expenseEntries.filter(e => e.kind === 'loadman');
   const dayTransportCharge = expenseEntries.filter(e => e.kind === 'transport').reduce((s, e) => s + (e.amount || 0), 0);
+  const miscEntries = expenseEntries.filter(e => e.kind === 'misc');
+  const miscTotal = miscEntries.reduce((s, e) => s + (e.amount || 0), 0);
+  const miscByCategory = Object.values(miscEntries.reduce((m, e) => {
+    const k = e.category || 'Other'; m[k] = m[k] || { category: k, amount: 0 }; m[k].amount += e.amount || 0; return m;
+  }, {}));
   const loadmanCharge = loadmanEntries.length
     ? loadmanEntries.reduce((s, e) => s + (e.amount || 0), 0)
     : (dailyExpense?.loadmanCharge || 0);
-  const loadmanPerUnitRate = totalQtyForDay > 0 ? loadmanCharge / totalQtyForDay : 0;
+  // Accounting: loadman is a DAY-LEVEL overhead (booked with miscellaneous
+  // expenses at day end), NOT spread over items — so no per-unit rate.
+  const loadmanPerUnitRate = 0;
 
   // Purchase cost + "procured by" come from the Procurement checklist,
   // keyed the same way as adminProcurementReport (productId, or
@@ -8729,11 +8737,6 @@ async function computeKoyambeduPnLForCycle(cycle) {
   const itemRollup = {};   // productKey -> { productName, unit, totalQty, purchaseCost, loadmanCost, totalProcurement, procuredBy }
   const procuredByRollup = {}; // name -> { name, totalQty, purchaseCost, loadmanCost, totalProcurement, products: Set }
 
-  const orderRevenueOf = (o) => o.calculatedPricing?.finalPayableAmount || o.pricing?.total
-    || (o.items || []).filter(it => it.itemStatus !== 'declined')
-      .reduce((a, it) => a + (it.finalPrice || it.orderedPrice || 0) * (it.quantity || 0), 0);
-  const totalOrderRevenue = orders.reduce((s, o) => s + orderRevenueOf(o), 0);
-
   const orderLines = orders.map(order => {
     let itemsSubtotal = 0, purchaseCost = 0, loadmanCost = 0;
     const items = (order.items || []).filter(it => it.itemStatus !== 'declined').map(item => {
@@ -8752,7 +8755,7 @@ async function computeKoyambeduPnLForCycle(cycle) {
       // figure applied to every order at once.
       const purchaseCostPerUnit = item.procurementCostPerUnit ?? c?.purchaseCostPerUnit ?? null;
       const lineePurchaseCost = (purchaseCostPerUnit || 0) * qty;
-      const lineLoadmanCost = isLoadmanEligible(item.unit || item.unitLabel, lineRevenue) ? loadmanPerUnitRate * qty : 0;
+      const lineLoadmanCost = 0;   // loadman no longer allocated to items (see day overheads)
       const procuredByName = c?.purchasedByName || null;
 
       itemsSubtotal += lineRevenue;
@@ -8828,12 +8831,7 @@ async function computeKoyambeduPnLForCycle(cycle) {
     // Admin now only ever types in two numbers per bill — actual
     // transportation and packing cost. Everything else (procurement,
     // loadman share, Razorpay's cut) is computed by the system.
-    // Day-level transport payments (ledger) are shared across the day's
-    // orders pro-rata by revenue; kept separate from per-bill transportCost.
-    const dayTransportShare = dayTransportCharge > 0 && orders.length
-      ? (totalOrderRevenue > 0 ? dayTransportCharge * (amountPaidByCustomer / totalOrderRevenue) : dayTransportCharge / orders.length)
-      : 0;
-    const totalCost         = totalProcurement + transportCost + packingCost + razorpayDeduction + dayTransportShare;
+    const totalCost         = totalProcurement + transportCost + packingCost + razorpayDeduction;
     const profit            = amountPaidByCustomer - totalCost;
 
     return {
@@ -8848,14 +8846,19 @@ async function computeKoyambeduPnLForCycle(cycle) {
         discount: order.pricing?.discount || 0,
       },
       purchaseCost, loadmanCost, totalProcurement,
-      transportCost, packingCost, razorpayDeduction, dayTransportShare,
+      transportCost, packingCost, razorpayDeduction, costPaidBy: order.adminCosts?.costPaidBy || '',
       totalCost, profit,
     };
   });
 
   const dayRevenue = orderLines.reduce((s, o) => s + o.revenue, 0);
-  const dayCost     = orderLines.reduce((s, o) => s + o.totalCost, 0);
-  const dayProfit   = dayRevenue - dayCost;
+  const orderCostTotal = orderLines.reduce((s, o) => s + o.totalCost, 0);
+  // Day-level overheads (not tied to any bill/item): loadman + day transport +
+  // miscellaneous. Booked once, at day end.
+  const dayOverheads = loadmanCharge + dayTransportCharge + miscTotal;
+  const grossProfit = dayRevenue - orderCostTotal;            // before day overheads
+  const dayCost     = orderCostTotal + dayOverheads;
+  const dayProfit   = dayRevenue - dayCost;                   // net profit
 
   // Margin/alert fields per product — "is this product being sold for
   // enough above what it actually cost today", and if not, what it should
@@ -8872,14 +8875,18 @@ async function computeKoyambeduPnLForCycle(cycle) {
     totalQtyForDay,
     loadmanCharge,
     loadmanPerUnitRate,
-    dayTransportCharge,
-    transportUnallocated: orders.length === 0 ? dayTransportCharge : 0,
-    expenseEntries: expenseEntries.map(e => ({ _id: e._id, kind: e.kind, amount: e.amount, paidBy: e.paidBy || '', paidTo: e.paidTo || '', note: e.note || '', createdAt: e.createdAt })),
-    paidByRollup: Object.values(expenseEntries.reduce((m, e) => {
-      const k = e.paidBy || '(not set)';
-      m[k] = m[k] || { name: k, loadman: 0, transport: 0, total: 0 };
-      m[k][e.kind] += e.amount || 0; m[k].total += e.amount || 0; return m;
-    }, {})),
+    dayTransportCharge, miscTotal, miscByCategory, dayOverheads, orderCostTotal, grossProfit,
+    expenseEntries: expenseEntries.map(e => ({ _id: e._id, kind: e.kind, category: e.category || '', amount: e.amount, paidBy: e.paidBy || '', paidTo: e.paidTo || '', note: e.note || '', createdAt: e.createdAt })),
+    // Who paid what out of pocket → what the business owes each person.
+    settlement: (() => {
+      const m = {};
+      const row = (n) => (m[n] = m[n] || { name: n, procurement: 0, loadman: 0, transport: 0, misc: 0, billCosts: 0, total: 0 });
+      const add = (n, k, v) => { if (!(v > 0)) return; const r = row((n || '').trim() || '(not set)'); r[k] += v; r.total += v; };
+      for (const e of expenseEntries) add(e.paidBy, e.kind, e.amount);
+      for (const o of orderLines) add(o.costPaidBy, 'billCosts', (o.transportCost || 0) + (o.packingCost || 0));
+      for (const p of Object.values(procuredByRollup)) add(p.name, 'procurement', p.purchaseCost);
+      return Object.values(m).sort((a, b) => b.total - a.total);
+    })(),
     orders: orderLines,
     itemRollup: itemRollupWithMargin,
     marginAlerts,
@@ -9311,7 +9318,7 @@ module.exports = {
 // ══════════════════════════════════════════════════════════════════
 async function adminUpdateOrderCosts(req, res) {
   try {
-    const { actualDeliveryCost, miscExpenses, transportCharge, packingCharge, platformFeeCost, razorpayDeduction, costNote } = req.body;
+    const { actualDeliveryCost, miscExpenses, transportCharge, packingCharge, platformFeeCost, razorpayDeduction, costNote, costPaidBy } = req.body;
     const order = await KoyambeduOrder.findById(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     // Merge onto the existing sub-document rather than replacing it wholesale —
@@ -9327,6 +9334,7 @@ async function adminUpdateOrderCosts(req, res) {
       platformFeeCost:    platformFeeCost    !== undefined ? (Number(platformFeeCost)    || 0) : (existing.platformFeeCost    || 0),
       razorpayDeduction:  razorpayDeduction  !== undefined ? (Number(razorpayDeduction)  || 0) : (existing.razorpayDeduction  || 0),
       costNote:           costNote           !== undefined ? costNote : (existing.costNote || ''),
+      costPaidBy:         costPaidBy         !== undefined ? String(costPaidBy || '').trim().slice(0, 60) : (existing.costPaidBy || ''),
       updatedAt:          new Date(),
       updatedBy:          req.user._id,
     };

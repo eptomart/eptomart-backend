@@ -156,3 +156,16 @@ test('PP-12 Procured By names can be deleted; blank rejected', async () => {
   r = fakeRes(); await ctrl.adminDeleteProcurer({ body: {}, query: {} }, r);
   assert.equal(r.statusCode, 400);
 });
+
+test('PP-13 saving procurement rows does not bring a deleted Procured-By name back', async () => {
+  const Procurer = require('../../src/models/KoyambeduProcurer');
+  let touched = false; Procurer.updateOne = async () => { touched = true; };
+  const Checklist2 = require('../../src/models/KoyambeduProcurementChecklist');
+  Checklist2.findOneAndUpdate = async () => ({}); Checklist2.bulkWrite = async () => ({});
+  Checklist2.find = () => chain([]);
+  try {
+    await ctrl.adminBulkUpdateProcurementItems({ body: { cycle: '2026-11-10', items: [{ productKey: 'p', productName: 'P', purchasedByName: 'Ghost' }] }, user: admin }, fakeRes());
+  } catch (_) { /* other stubs may be missing — only the name registration matters */ }
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(touched, false);
+});

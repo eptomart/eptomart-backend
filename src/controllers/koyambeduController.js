@@ -8344,20 +8344,11 @@ const adminUpdateProcurementItem = async (req, res) => {
   }
 };
 
-// Fire-and-forget: the first time a name is typed/selected as "Procured By"
-// anywhere, it joins the maintained dropdown list forever after, so admin
-// never has to visit a separate screen to manage the list — it just grows
-// from use. Never throws into the caller; a failure here shouldn't block
-// the actual save the admin was trying to make.
-function registerProcurerName(name, userId) {
-  const trimmed = String(name || '').trim();
-  if (!trimmed) return;
-  KoyambeduProcurer.updateOne(
-    { name: trimmed },
-    { $setOnInsert: { name: trimmed, addedBy: userId } },
-    { upsert: true }
-  ).catch(err => console.error('[registerProcurerName] error:', err.message));
-}
+// The "Procured By" dropdown is a strict list managed on the P&L tab (add +
+// delete). Saving a row must NEVER put a name back on that list — otherwise a
+// name you just deleted comes straight back the next time rows are saved
+// (rows still holding it). Kept as a no-op so the call sites stay unchanged.
+function registerProcurerName() { /* intentionally does nothing */ }
 
 // GET /koyambedu/admin/procurers — maintained dropdown list for "Procured By"
 const adminListProcurers = async (req, res) => {

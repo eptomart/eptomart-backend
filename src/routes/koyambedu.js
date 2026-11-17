@@ -294,6 +294,7 @@ router.post  ('/admin/pnl/day-expenses',                             protectAdmi
 router.delete('/admin/pnl/day-expenses/:id',                         protectAdmin,      ctrl.adminDeleteDayExpense);
 router.get  ('/admin/procurers',                                      protectAdmin,      ctrl.adminListProcurers);
 router.post ('/admin/procurers',                                      protectAdmin,      ctrl.adminAddProcurer);
+router.delete('/admin/procurers',                                    protectAdmin,      ctrl.adminDeleteProcurer);
 
 // Daily P&L report — see computeKoyambeduPnLForCycle in koyambeduController.js
 router.get  ('/admin/pnl/margin-report',   protectAdmin, ctrl.adminMarginReport);

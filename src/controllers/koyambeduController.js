@@ -8390,6 +8390,21 @@ const adminAddProcurer = async (req, res) => {
   }
 };
 
+// DELETE /koyambedu/admin/procurers { name } — remove a name from the dropdown.
+// Past procurement entries keep the name they were saved with.
+const adminDeleteProcurer = async (req, res) => {
+  try {
+    const name = String(req.body?.name || req.query.name || '').trim();
+    if (!name) return res.status(400).json({ success: false, message: 'name is required' });
+    await KoyambeduProcurer.deleteOne({ name });
+    const names = await KoyambeduProcurer.find().sort({ name: 1 }).select('name').lean();
+    res.json({ success: true, names: names.map(n => n.name) });
+  } catch (err) {
+    console.error('[adminDeleteProcurer] error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to delete procurer' });
+  }
+};
+
 // PATCH /koyambedu/admin/reports/procurement-confirmed/bulk
 // Body: { cycle, items: [{ productKey, productName, gradeKey, gradeName,
 // purchaseCostPerUnit, purchasedByName }] } — saves every row of the
@@ -9231,7 +9246,7 @@ module.exports = {
   adminGetDailyExpense, adminSetDailyExpense, adminPnLDay, adminPnLSummary, adminExportPnL, adminSetItemProcurementCost,
   adminMarginReport,
   adminListExpenseParties, adminAddExpenseParty, adminDeleteExpenseParty, adminAddDayExpense, adminDeleteDayExpense,
-  adminListProcurers, adminAddProcurer, adminBulkUpdateProcurementItems,
+  adminListProcurers, adminAddProcurer, adminDeleteProcurer, adminBulkUpdateProcurementItems,
   // Super Admin — Offer push notifications
   adminPreviewOfferAudience, adminBroadcastOffer, adminGetOfferBroadcasts,
   // Buyer orders

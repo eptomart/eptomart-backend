@@ -146,3 +146,13 @@ test('PP-11 per-bill costs can record who paid', async () => {
   await ctrl.adminUpdateOrderCosts({ params: { orderId: 'x' }, body: { transportCharge: 30, costPaidBy: ' Ravi ' }, user: admin }, fakeRes());
   assert.equal(saved.costPaidBy, 'Ravi'); assert.equal(saved.transportCharge, 30);
 });
+
+test('PP-12 Procured By names can be deleted; blank rejected', async () => {
+  const Procurer = require('../../src/models/KoyambeduProcurer');
+  let deleted; Procurer.deleteOne = async (f) => { deleted = f.name; };
+  Procurer.find = () => chain([{ name: 'B' }]);
+  let r = fakeRes(); await ctrl.adminDeleteProcurer({ body: { name: ' A ' }, query: {} }, r);
+  assert.equal(deleted, 'A'); assert.deepEqual(r.body.names, ['B']);
+  r = fakeRes(); await ctrl.adminDeleteProcurer({ body: {}, query: {} }, r);
+  assert.equal(r.statusCode, 400);
+});

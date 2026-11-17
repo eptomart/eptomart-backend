@@ -10,7 +10,7 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
-const TYPES = ['page_view', 'product_view', 'search', 'cart_set', 'cart_remove', 'cart_clear', 'checkout_view'];
+const TYPES = ['page_view', 'product_view', 'search', 'cart_set', 'cart_remove', 'cart_clear', 'cart_pruned', 'checkout_view'];
 
 const koyambeduActivitySchema = new Schema({
   user:        { type: Schema.Types.ObjectId, ref: 'User', required: true },

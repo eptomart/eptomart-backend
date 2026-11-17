@@ -31,7 +31,7 @@ const endOf = (v) => new Date(/^\d{4}-\d{2}-\d{2}$/.test(v) ? `${v}T23:59:59.999
 // ── event catalogue ───────────────────────────────────────────────────────
 const GROUPS = {
   browsing: ['page_view', 'product_view', 'search'],
-  cart:     ['cart_set', 'cart_remove', 'cart_clear', 'in_cart'],
+  cart:     ['cart_set', 'cart_remove', 'cart_clear', 'cart_pruned', 'in_cart'],
   checkout: ['checkout_view', 'payment_started'],
   orders:   ['order_placed', 'order_update'],
   wallet:   ['wallet_credit', 'wallet_debit'],
@@ -41,7 +41,7 @@ const GROUPS = {
 const TYPE_GROUP = Object.fromEntries(Object.entries(GROUPS).flatMap(([g, ts]) => ts.map((t) => [t, g])));
 const LABELS = {
   page_view: 'Visited a page', product_view: 'Viewed a product', search: 'Searched',
-  cart_set: 'Changed cart', cart_remove: 'Removed from cart', cart_clear: 'Cleared cart', in_cart: 'Item sitting in cart',
+  cart_set: 'Changed cart', cart_remove: 'Removed from cart', cart_clear: 'Cleared cart', cart_pruned: 'Removed automatically (item unavailable)', in_cart: 'Item sitting in cart',
   checkout_view: 'Opened checkout', payment_started: 'Started payment (not completed)',
   order_placed: 'Placed an order', order_update: 'Order update',
   wallet_credit: 'Wallet credit', wallet_debit: 'Wallet debit',
@@ -113,7 +113,7 @@ async function fetchLogged(scope, q, groups, before, L) {
     productId: a.product?._id || null, productName: a.product?.name || null, unit: a.product?.unit || null,
     quantity: a.quantity ?? null, query: a.query || null, page: a.page || null, device: a.device || null,
     byAdmin: !!a.byAdmin,
-    detail: a.type === 'page_view' ? pagePretty(a.page) : a.type === 'search' ? `“${a.query}”` : a.type === 'cart_set' ? `${a.product?.name || 'Item'} → ${a.quantity}${a.product?.unit ? ' ' + a.product.unit : ''}` : a.type === 'cart_remove' ? (a.product?.name || 'Item') : a.type === 'product_view' ? (a.product?.name || 'Product') : '',
+    detail: a.type === 'page_view' ? pagePretty(a.page) : a.type === 'search' ? `“${a.query}”` : a.type === 'cart_set' ? `${a.product?.name || 'Item'} → ${a.quantity}${a.product?.unit ? ' ' + a.product.unit : ''}` : a.type === 'cart_remove' ? (a.product?.name || 'Item') : a.type === 'cart_pruned' ? `${a.product?.name || 'Item'} — ${a.query || 'unavailable'} (kept aside, returns when available)` : a.type === 'product_view' ? (a.product?.name || 'Product') : '',
   }));
 }
 

@@ -14,6 +14,7 @@ const KoyambeduSeller       = require('../models/KoyambeduSeller');
 const KoyambeduSellerAdmin  = require('../models/KoyambeduSellerAdmin');
 const KoyambeduCategory     = require('../models/KoyambeduCategory');
 const KoyambeduProduct      = require('../models/KoyambeduProduct');
+const { logActivity }       = require('../services/koyambeduActivityService');
 const KoyambeduCart         = require('../models/KoyambeduCart');
 const KoyambeduOrder        = require('../models/KoyambeduOrder');
 const KoyambeduWallet       = require('../models/KoyambeduWallet');
@@ -620,6 +621,7 @@ const getCart = async (req, res) => {
     return res.json({ success: true, cart: { items: [] }, minQtyIssues: [] });
   }
 
+  let restoredItems = false;
   const isActive = (it) =>
     it.product?.isActive && it.product?.isAvailable &&
     it.product?.seller?.isActive && it.product?.seller?.status === 'approved';
@@ -628,14 +630,63 @@ const getCart = async (req, res) => {
   // so that placeOrder never encounters them and throws a false "unavailable" error
   const hadInactive = cart.items.some(it => !isActive(it));
   if (hadInactive) {
+    // Park (don't lose) what is being taken out, and say why in the activity log.
+    const PARK_TTL_MS = 14 * 24 * 3600 * 1000;
+    const now = Date.now();
+    const parked = (cart.parked || []).filter(x => now - new Date(x.parkedAt).getTime() < PARK_TTL_MS);
+    for (const it of cart.items) {
+      if (isActive(it) || !it.product?._id) continue;   // product hard-deleted → nothing to restore
+      const reason = !it.product.isActive ? 'product switched off'
+        : !it.product.isAvailable ? 'product marked unavailable'
+        : 'seller not active / approved';
+      const key = `${it.product._id}|${it.gradeKey || ''}`;
+      if (!parked.some(x => `${x.product}|${x.gradeKey || ''}` === key)) {
+        parked.push({
+          product: it.product._id, seller: it.seller, name: it.name, unitPrice: it.unitPrice, unit: it.unit,
+          unitLabel: it.unitLabel, quantity: it.quantity, deliveryType: it.deliveryType,
+          gradeKey: it.gradeKey || null, gradeName: it.gradeName || null, addedAt: it.addedAt,
+          parkedAt: new Date(), reason,
+        });
+      }
+      logActivity(req, 'cart_pruned', { product: it.product._id, quantity: it.quantity, query: reason });
+    }
+    cart.parked = parked.slice(-50);
+    cart.markModified('parked');
     cart.items = cart.items.filter(isActive);
+  }
+
+  // Bring back parked items whose product is available again.
+  if ((cart.parked || []).length) {
+    try {
+      const ids = [...new Set(cart.parked.map(x => String(x.product)))];
+      const live = await KoyambeduProduct.find({ _id: { $in: ids } })
+        .select('isActive isAvailable').populate('seller', 'isActive status');
+      const okIds = new Set(live.filter(p => p.isActive && p.isAvailable && p.seller?.isActive && p.seller?.status === 'approved').map(p => String(p._id)));
+      const back = cart.parked.filter(x => okIds.has(String(x.product)));
+      if (back.length) {
+        for (const x of back) {
+          if (cart.items.some(i => String(i.product?._id || i.product) === String(x.product) && (i.gradeKey || null) === (x.gradeKey || null))) continue;
+          cart.items.push({ product: x.product, seller: x.seller, name: x.name, unitPrice: x.unitPrice, unit: x.unit,
+            unitLabel: x.unitLabel, quantity: x.quantity, deliveryType: x.deliveryType, gradeKey: x.gradeKey || null,
+            gradeName: x.gradeName || null, addedAt: x.addedAt });
+        }
+        cart.parked = cart.parked.filter(x => !okIds.has(String(x.product)));
+        cart.markModified('parked');
+        await cart.populate({
+          path: 'items.product',
+          select: 'name nameTamil currentPrice unit minQty maxQty qtyStep isAvailable isActive isSameDay isNextDay images weightKg variants gradesEnabled grades category isCombo comboContents',
+          populate: { path: 'seller', select: 'businessName isActive status' },
+        });
+        restoredItems = true;
+      }
+    } catch (e) { console.error('[KBD] restore parked items failed:', e.message); }
   }
 
   // Always refresh price + collect minQty issues against the LIVE product —
   // a cart is frequently viewed minutes/hours/days after items were added, and
   // daily price updates or admin edits to minQty must never be silently ignored.
   const minQtyIssues = [];
-  let pricesChanged = hadInactive;
+  let pricesChanged = hadInactive || restoredItems;
   for (const it of cart.items) {
     const p = it.product;
     if (!p) continue;
@@ -800,7 +851,7 @@ const updateCart = async (req, res) => {
 
 /** DELETE /api/koyambedu/cart/clear */
 const clearCart = async (req, res) => {
-  await KoyambeduCart.findOneAndUpdate({ user: req.user._id }, { items: [] });
+  await KoyambeduCart.findOneAndUpdate({ user: req.user._id }, { items: [], parked: [] });
   res.json({ success: true });
 };
 
@@ -1248,7 +1299,7 @@ const placeOrder = async (req, res) => {
   if (!isRazorpay) {
     // ── COD / wallet_full: clear cart, increment coupon, deduct wallet, notify sellers ──
     try {
-      await KoyambeduCart.findOneAndUpdate({ user: req.user._id }, { items: [] });
+      await KoyambeduCart.findOneAndUpdate({ user: req.user._id }, { items: [], parked: [] });
     } catch (e) {
       console.error('[KBD] Cart-clear failed after COD/wallet order', order.orderId, ':', e.message);
     }
@@ -1360,7 +1411,7 @@ const confirmKoyambeduPayment = async (order, { razorpayOrderId, razorpayPayment
   // already captured and the order is already marked paid by this point; a
   // failed clear just means the (idempotent) retry above gets another shot.
   try {
-    await KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [] });
+    await KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [], parked: [] });
   } catch (e) {
     console.error('[KBD] Cart-clear failed after payment for', order.orderId, ':', e.message);
   }
@@ -1420,7 +1471,7 @@ const verifyPayment = async (req, res) => {
   // the only chance a retry gets to actually finish the job — the block below
   // would otherwise never run again for this order.
   if (order.paymentStatus === 'paid') {
-    KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [] })
+    KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [], parked: [] })
       .catch(e => console.error('[KBD] Retry cart-clear failed for', order.orderId, ':', e.message));
     return res.json({ success: true, message: 'Payment already confirmed', orderId: order.orderId });
   }
@@ -2251,7 +2302,7 @@ const testPayment = async (req, res) => {
   // Idempotency guard — same as verifyPayment. Also retries the cart clear
   // (idempotent) in case it failed on a previous call for this order.
   if (order.paymentStatus === 'paid') {
-    KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [] })
+    KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [], parked: [] })
       .catch(e => console.error('[KBD][TEST] Retry cart-clear failed for', order.orderId, ':', e.message));
     return res.json({ success: true, message: '[TEST] Payment already confirmed', orderId: order.orderId });
   }
@@ -2281,7 +2332,7 @@ const testPayment = async (req, res) => {
 
   // Clear cart and increment coupon (same as verifyPayment)
   try {
-    await KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [] });
+    await KoyambeduCart.findOneAndUpdate({ user: order.buyer }, { items: [], parked: [] });
   } catch (e) {
     console.error('[KBD][TEST] Cart-clear failed after payment for', order.orderId, ':', e.message);
   }

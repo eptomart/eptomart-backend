@@ -22,6 +22,12 @@ const koyambeduCartSchema = new Schema({
     addedAt:      { type: Date, default: Date.now },
   }],
 
+  // Items taken out of the cart automatically because the product / seller
+  // was unavailable at the time. Kept here (not deleted) so they come back on
+  // their own when the product is available again. Cleared when an order is
+  // placed or the cart is emptied. Each entry mirrors an item + parkedAt/reason.
+  parked: { type: [Schema.Types.Mixed], default: [] },
+
   updatedAt: { type: Date, default: Date.now },
 }, { timestamps: true });
 

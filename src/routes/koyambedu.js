@@ -291,6 +291,7 @@ router.get   ('/admin/pnl/parties',                                  protectAdmi
 router.post  ('/admin/pnl/parties',                                  protectAdmin,      ctrl.adminAddExpenseParty);
 router.delete('/admin/pnl/parties',                                  protectAdmin,      ctrl.adminDeleteExpenseParty);
 router.post  ('/admin/pnl/day-expenses',                             protectAdmin,      ctrl.adminAddDayExpense);
+router.patch ('/admin/pnl/day-expenses/:id',                        protectAdmin,      ctrl.adminUpdateDayExpense);
 router.delete('/admin/pnl/day-expenses/:id',                         protectAdmin,      ctrl.adminDeleteDayExpense);
 router.get  ('/admin/procurers',                                      protectAdmin,      ctrl.adminListProcurers);
 router.post ('/admin/procurers',                                      protectAdmin,      ctrl.adminAddProcurer);

@@ -8,6 +8,7 @@ const Daily = require('../../src/models/KoyambeduDailyExpense');
 const Checklist = require('../../src/models/KoyambeduProcurementChecklist');
 const Entry = require('../../src/models/KoyambeduDayExpense');
 const Party = require('../../src/models/KoyambeduExpenseParty');
+const Procurer = require('../../src/models/KoyambeduProcurer');
 const ctrl = require('../../src/controllers/koyambeduController');
 
 const admin = { _id: 'aaaaaaaaaaaaaaaaaaaaaaaa' };
@@ -89,17 +90,15 @@ test('PP-06 add payment validates cycle, kind and amount', async () => {
   }
 });
 
-test('PP-07 add payment saves and auto-registers a new payer name', async () => {
-  let created, party;
+test('PP-07 add expense saves; transport is refused (bill level only)', async () => {
+  let created;
   Entry.create = async (d) => { created = d; return d; };
-  Party.updateOne = async (f, u) => { party = f; };
-  const r = fakeRes();
-  await ctrl.adminAddDayExpense({ body: { cycle: '2026-11-10', kind: 'transport', amount: '150', paidBy: ' Mani ', paidTo: 'Lorry' }, user: admin }, r);
-  assert.equal(created.category, '');
-  assert.equal(r.statusCode, 201);
-  assert.equal(created.amount, 150);
-  assert.equal(created.paidBy, 'Mani');
-  assert.equal(party.name, 'Mani');
+  let r = fakeRes();
+  await ctrl.adminAddDayExpense({ body: { cycle: '2026-11-10', kind: 'loadman', amount: '150', paidBy: ' Mani ', paidTo: 'Gate' }, user: admin }, r);
+  assert.equal(r.statusCode, 201); assert.equal(created.amount, 150); assert.equal(created.paidBy, 'Mani'); assert.equal(created.category, '');
+  r = fakeRes();
+  await ctrl.adminAddDayExpense({ body: { cycle: '2026-11-10', kind: 'transport', amount: 100 }, user: admin }, r);
+  assert.equal(r.statusCode, 400); assert.match(r.body.message, /per bill/i);
 });
 
 test('PP-08 delete payment: found and not found', async () => {
@@ -111,20 +110,23 @@ test('PP-08 delete payment: found and not found', async () => {
   assert.equal(r.statusCode, 404);
 });
 
-test('PP-09 names: add, list, delete; blank rejected; delete leaves entries alone', async () => {
-  let names = [], deleted;
-  Party.updateOne = async (f) => { names.push(f.name); };
-  Party.deleteOne = async (f) => { deleted = f.name; names = names.filter(n => n !== f.name); };
-  Party.find = () => chain(names.map(name => ({ name })));
-  Entry.deleteMany = () => { throw new Error('must not touch entries'); };
-  let r = fakeRes(); await ctrl.adminAddExpenseParty({ body: { name: '  ' }, user: admin }, r);
+test('PP-09 ONE people list: add, list, delete from the same list; old paid-by names merged in', async () => {
+  let procs = [{ name: 'Ravi' }], parties = [{ name: 'OldPayer' }];
+  Procurer.find = () => chain(procs); Party.find = () => chain(parties);
+  Procurer.updateOne = async (f) => { if (!procs.some(p => p.name === f.name)) procs.push({ name: f.name }); };
+  Procurer.deleteOne = async (f) => { procs = procs.filter(p => p.name !== f.name); };
+  Party.deleteOne = async (f) => { parties = parties.filter(p => p.name !== f.name); };
+  let r = fakeRes(); await ctrl.adminListProcurers({}, r);
+  assert.deepEqual(r.body.names, ['OldPayer', 'Ravi']);                 // merged
+  r = fakeRes(); await ctrl.adminAddExpenseParty({ body: { name: '  ' }, user: admin }, r);
   assert.equal(r.statusCode, 400);
-  r = fakeRes(); await ctrl.adminAddExpenseParty({ body: { name: 'Ravi' }, user: admin }, r);
-  assert.deepEqual(r.body.names, ['Ravi']);
-  r = fakeRes(); await ctrl.adminDeleteExpenseParty({ body: { name: 'Ravi' }, query: {} }, r);
-  assert.equal(deleted, 'Ravi');
-  assert.deepEqual(r.body.names, []);
-  r = fakeRes(); await ctrl.adminDeleteExpenseParty({ body: {}, query: {} }, r);
+  r = fakeRes(); await ctrl.adminAddProcurer({ body: { name: 'Mani' }, user: admin }, r);
+  assert.deepEqual(r.body.names, ['Mani', 'OldPayer', 'Ravi']);
+  r = fakeRes(); await ctrl.adminDeleteExpenseParty({ body: {}, query: { name: 'OldPayer' } }, r);   // via the "paid by" route
+  assert.deepEqual(r.body.names, ['Mani', 'Ravi']);
+  r = fakeRes(); await ctrl.adminDeleteProcurer({ body: {}, query: { name: 'Ravi' } }, r);          // via the "procured by" route
+  assert.deepEqual(r.body.names, ['Mani']);
+  r = fakeRes(); await ctrl.adminDeleteProcurer({ body: {}, query: {} }, r);
   assert.equal(r.statusCode, 400);
 });
 
@@ -147,14 +149,17 @@ test('PP-11 per-bill costs can record who paid', async () => {
   assert.equal(saved.costPaidBy, 'Ravi'); assert.equal(saved.transportCharge, 30);
 });
 
-test('PP-12 Procured By names can be deleted; blank rejected', async () => {
-  const Procurer = require('../../src/models/KoyambeduProcurer');
-  let deleted; Procurer.deleteOne = async (f) => { deleted = f.name; };
-  Procurer.find = () => chain([{ name: 'B' }]);
-  let r = fakeRes(); await ctrl.adminDeleteProcurer({ body: { name: ' A ' }, query: {} }, r);
-  assert.equal(deleted, 'A'); assert.deepEqual(r.body.names, ['B']);
-  r = fakeRes(); await ctrl.adminDeleteProcurer({ body: {}, query: {} }, r);
+test('PP-12 edit an expense: amount, paid by, comments; bad amount rejected; kind cannot change', async () => {
+  const doc = { kind: 'misc', amount: 10, paidBy: 'A', note: '', category: 'Fuel', async save() { this.saved = true; } };
+  Entry.findById = async () => doc;
+  let r = fakeRes();
+  await ctrl.adminUpdateDayExpense({ params: { id: 'x' }, body: { amount: '75', paidBy: ' B ', note: 'tape', category: 'Stationery', kind: 'loadman' } }, r);
+  assert.equal(doc.amount, 75); assert.equal(doc.paidBy, 'B'); assert.equal(doc.note, 'tape'); assert.equal(doc.category, 'Stationery'); assert.equal(doc.kind, 'misc');
+  r = fakeRes(); await ctrl.adminUpdateDayExpense({ params: { id: 'x' }, body: { amount: 0 } }, r);
   assert.equal(r.statusCode, 400);
+  Entry.findById = async () => null;
+  r = fakeRes(); await ctrl.adminUpdateDayExpense({ params: { id: 'x' }, body: {} }, r);
+  assert.equal(r.statusCode, 404);
 });
 
 test('PP-13 saving procurement rows does not bring a deleted Procured-By name back', async () => {

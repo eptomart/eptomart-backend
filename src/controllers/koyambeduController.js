@@ -8350,51 +8350,13 @@ const adminUpdateProcurementItem = async (req, res) => {
 // (rows still holding it). Kept as a no-op so the call sites stay unchanged.
 function registerProcurerName() { /* intentionally does nothing */ }
 
-// GET /koyambedu/admin/procurers — maintained dropdown list for "Procured By"
+// /koyambedu/admin/procurers — same single people list as /admin/pnl/parties
 const adminListProcurers = async (req, res) => {
-  try {
-    const names = await KoyambeduProcurer.find().sort({ name: 1 }).select('name').lean();
-    res.json({ success: true, names: names.map(n => n.name) });
-  } catch (err) {
-    console.error('[adminListProcurers] error:', err.message);
-    res.status(500).json({ success: false, message: 'Failed to fetch procurers' });
-  }
+  try { res.json({ success: true, names: await partyNames() }); }
+  catch (err) { console.error('[adminListProcurers]', err.message); res.status(500).json({ success: false, message: 'Failed to fetch people' }); }
 };
-
-// POST /koyambedu/admin/procurers — explicitly add a new name to the
-// maintained "Procured By" dropdown (the dropdown is a strict select, so a
-// brand-new person has to be added here once before they can be picked).
-const adminAddProcurer = async (req, res) => {
-  try {
-    const name = String(req.body.name || '').trim();
-    if (!name) return res.status(400).json({ success: false, message: 'name is required' });
-    await KoyambeduProcurer.updateOne(
-      { name },
-      { $setOnInsert: { name, addedBy: req.user._id } },
-      { upsert: true }
-    );
-    const names = await KoyambeduProcurer.find().sort({ name: 1 }).select('name').lean();
-    res.json({ success: true, names: names.map(n => n.name) });
-  } catch (err) {
-    console.error('[adminAddProcurer] error:', err.message);
-    res.status(500).json({ success: false, message: 'Failed to add procurer' });
-  }
-};
-
-// DELETE /koyambedu/admin/procurers { name } — remove a name from the dropdown.
-// Past procurement entries keep the name they were saved with.
-const adminDeleteProcurer = async (req, res) => {
-  try {
-    const name = String(req.body?.name || req.query.name || '').trim();
-    if (!name) return res.status(400).json({ success: false, message: 'name is required' });
-    await KoyambeduProcurer.deleteOne({ name });
-    const names = await KoyambeduProcurer.find().sort({ name: 1 }).select('name').lean();
-    res.json({ success: true, names: names.map(n => n.name) });
-  } catch (err) {
-    console.error('[adminDeleteProcurer] error:', err.message);
-    res.status(500).json({ success: false, message: 'Failed to delete procurer' });
-  }
-};
+const adminAddProcurer = (req, res) => adminAddExpenseParty(req, res);
+const adminDeleteProcurer = (req, res) => adminDeleteExpenseParty(req, res);
 
 // PATCH /koyambedu/admin/reports/procurement-confirmed/bulk
 // Body: { cycle, items: [{ productKey, productName, gradeKey, gradeName,
@@ -8532,8 +8494,23 @@ function annotateMargin(row) {
 }
 
 // ── Loadman & Transport payments ledger + payer names ─────────────────
-const partyNames = async () =>
-  (await KoyambeduExpenseParty.find().sort({ name: 1 }).select('name').lean()).map(n => n.name);
+// ONE people list for the whole P&L (Procured By + Paid By). Stored in the
+// procurer collection; names from the older separate "paid by" list are merged
+// in the first time the list is read, so nothing is lost.
+const partyNames = async () => {
+  const [procs, parties] = await Promise.all([
+    KoyambeduProcurer.find().select('name').lean(),
+    KoyambeduExpenseParty.find().select('name').lean(),
+  ]);
+  const have = new Set(procs.map(p => p.name));
+  for (const p of parties) {
+    if (!have.has(p.name)) {
+      have.add(p.name);
+      await KoyambeduProcurer.updateOne({ name: p.name }, { $setOnInsert: { name: p.name } }, { upsert: true });
+    }
+  }
+  return [...have].sort((a, b) => a.localeCompare(b));
+};
 const CYCLE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // GET /koyambedu/admin/pnl/parties
@@ -8542,22 +8519,22 @@ const adminListExpenseParties = async (req, res) => {
   catch (err) { res.status(500).json({ success: false, message: 'Failed to fetch names' }); }
 };
 
-// POST /koyambedu/admin/pnl/parties { name }
+// POST /koyambedu/admin/pnl/parties { name }   (same list as /admin/procurers)
 const adminAddExpenseParty = async (req, res) => {
   try {
     const name = String(req.body.name || '').trim().slice(0, 60);
     if (!name) return res.status(400).json({ success: false, message: 'name is required' });
-    await KoyambeduExpenseParty.updateOne({ name }, { $setOnInsert: { name, addedBy: req.user._id } }, { upsert: true });
+    await KoyambeduProcurer.updateOne({ name }, { $setOnInsert: { name, addedBy: req.user._id } }, { upsert: true });
     res.json({ success: true, names: await partyNames() });
   } catch (err) { res.status(500).json({ success: false, message: 'Failed to add name' }); }
 };
 
-// DELETE /koyambedu/admin/pnl/parties  { name } — past entries keep the text
+// DELETE /koyambedu/admin/pnl/parties?name=  — removes from the single list; past entries keep the text
 const adminDeleteExpenseParty = async (req, res) => {
   try {
     const name = String(req.body?.name || req.query.name || '').trim();
     if (!name) return res.status(400).json({ success: false, message: 'name is required' });
-    await KoyambeduExpenseParty.deleteOne({ name });
+    await Promise.all([KoyambeduProcurer.deleteOne({ name }), KoyambeduExpenseParty.deleteOne({ name })]);
     res.json({ success: true, names: await partyNames() });
   } catch (err) { res.status(500).json({ success: false, message: 'Failed to delete name' }); }
 };
@@ -8568,7 +8545,8 @@ const adminAddDayExpense = async (req, res) => {
     const { cycle, kind, paidBy, paidTo, note, category } = req.body;
     const amount = Number(req.body.amount);
     if (!CYCLE_RE.test(String(cycle || ''))) return res.status(400).json({ success: false, message: 'valid cycle is required' });
-    if (!['loadman', 'transport', 'misc'].includes(kind)) return res.status(400).json({ success: false, message: 'kind must be loadman, transport or misc' });
+    if (kind === 'transport') return res.status(400).json({ success: false, message: 'Transport is entered per bill (open the bill in Bill-wise Profit / Loss)' });
+    if (!['loadman', 'misc'].includes(kind)) return res.status(400).json({ success: false, message: 'kind must be loadman or misc' });
     if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ success: false, message: 'amount must be greater than 0' });
     const payer = String(paidBy || '').trim().slice(0, 60);
     const doc = await KoyambeduDayExpense.create({
@@ -8577,13 +8555,31 @@ const adminAddDayExpense = async (req, res) => {
       paidTo: String(paidTo || '').trim().slice(0, 60), note: String(note || '').trim().slice(0, 200),
       createdBy: req.user._id,
     });
-    // A typed-in new payer name joins the list automatically
-    if (payer) await KoyambeduExpenseParty.updateOne({ name: payer }, { $setOnInsert: { name: payer, addedBy: req.user._id } }, { upsert: true });
     res.status(201).json({ success: true, entry: doc });
   } catch (err) {
     console.error('[adminAddDayExpense] error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to save payment' });
   }
+};
+
+// PATCH /koyambedu/admin/pnl/day-expenses/:id { amount, paidBy, paidTo, note, category }
+const adminUpdateDayExpense = async (req, res) => {
+  try {
+    const doc = await KoyambeduDayExpense.findById(req.params.id);
+    if (!doc) return res.status(404).json({ success: false, message: 'Payment not found' });
+    const b = req.body || {};
+    if (b.amount !== undefined) {
+      const a = Number(b.amount);
+      if (!Number.isFinite(a) || a <= 0) return res.status(400).json({ success: false, message: 'amount must be greater than 0' });
+      doc.amount = a;
+    }
+    if (b.paidBy !== undefined) doc.paidBy = String(b.paidBy || '').trim().slice(0, 60);
+    if (b.paidTo !== undefined) doc.paidTo = String(b.paidTo || '').trim().slice(0, 60);
+    if (b.note !== undefined) doc.note = String(b.note || '').trim().slice(0, 200);
+    if (b.category !== undefined && doc.kind === 'misc') doc.category = String(b.category || '').trim().slice(0, 40) || 'Other';
+    await doc.save();
+    res.json({ success: true, entry: doc });
+  } catch (err) { res.status(500).json({ success: false, message: 'Failed to update payment' }); }
 };
 
 // DELETE /koyambedu/admin/pnl/day-expenses/:id
@@ -9236,7 +9232,7 @@ module.exports = {
   adminProcurementReport, adminUpdateProcurementItem, adminShareProcurement,
   adminGetDailyExpense, adminSetDailyExpense, adminPnLDay, adminPnLSummary, adminExportPnL, adminSetItemProcurementCost,
   adminMarginReport,
-  adminListExpenseParties, adminAddExpenseParty, adminDeleteExpenseParty, adminAddDayExpense, adminDeleteDayExpense,
+  adminListExpenseParties, adminAddExpenseParty, adminDeleteExpenseParty, adminAddDayExpense, adminUpdateDayExpense, adminDeleteDayExpense,
   adminListProcurers, adminAddProcurer, adminDeleteProcurer, adminBulkUpdateProcurementItems,
   // Super Admin — Offer push notifications
   adminPreviewOfferAudience, adminBroadcastOffer, adminGetOfferBroadcasts,

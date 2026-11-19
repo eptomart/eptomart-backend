@@ -4,14 +4,14 @@ const mongoose = require('mongoose');
 const businessSettingsSchema = new mongoose.Schema({
   name:    { type: String, default: 'Eptomart' },
   tagline: { type: String, default: "India's fast, affordable online shopping destination" },
-  address: { type: String, default: 'No.2, 3rd St, Janaki Nagar, Karthikeyan Nagar, Maduravoyal, Chennai, Tamil Nadu – 600095' },
+  address: { type: String, default: '22, Murali Krishna Nagar 1st Main Rd, Murali Krishna Nagar, Valasaravakkam, Chennai, Tamil Nadu – 600087' },
   phone:   { type: String, default: '+91 6369 129 995' },
   email:   { type: String, default: 'support@eptomart.com' },
   website: { type: String, default: 'www.eptomart.com' },
   gstNo:   { type: String, default: '' },
   state:   { type: String, default: 'Tamil Nadu' },
   city:    { type: String, default: 'Chennai' },
-  pincode: { type: String, default: '600095' },
+  pincode: { type: String, default: '600087' },
 
   // Koyambedu Daily home hero video (admin-configurable)
   koyambeduHeroVideo: {

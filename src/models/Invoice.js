@@ -62,7 +62,7 @@ const invoiceSchema = new mongoose.Schema({
 
   business: {
     name:    { type: String, default: 'Eptomart' },
-    address: { type: String, default: 'No.2, 3rd St, Janaki Nagar, Karthikeyan Nagar, Maduravoyal, Chennai, Tamil Nadu – 600095' },
+    address: { type: String, default: '22, Murali Krishna Nagar 1st Main Rd, Murali Krishna Nagar, Valasaravakkam, Chennai, Tamil Nadu – 600087' },
     phone:   { type: String, default: '+91 6369 129 995' },
     email:   { type: String, default: 'support@eptomart.com' },
     gstNo:   String,

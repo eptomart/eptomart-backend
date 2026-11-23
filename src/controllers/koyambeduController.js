@@ -3086,7 +3086,9 @@ const getOrdersForPrinting = async (req, res) => {
         deliveryDate: o.deliveryDate,
         deliverySlot: o.deliverySlot,
         customerName: o.shippingAddress?.fullName || o.buyer?.name || '—',
-        customerPhone: o.shippingAddress?.phone || o.buyer?.phone || '',
+        // Phone numbers are visible to Super Admin only; nobody else gets them from this endpoint.
+        // (The printed slip / label never uses it either.)
+        customerPhone: req.user?.role === 'superAdmin' ? (o.shippingAddress?.phone || o.buyer?.phone || '') : '',
         // Area/locality only — used on pack labels (a label stuck on a
         // pack that may pass through several hands doesn't need the full
         // street address, just enough to identify roughly where it's going).

@@ -4295,6 +4295,34 @@ const adminCreateProduct = async (req, res) => {
   res.status(201).json({ success: true, product });
 };
 
+/**
+ * POST /api/koyambedu/admin/products/quick-add  (Super Admin)
+ * Fast single-price product creation used from the list-import screen when an
+ * item isn't in the catalogue. Goes live immediately (super admin = approved).
+ * Body: { name, nameTamil?, categoryId, unit?, price, minQty?, sellerId, tags? }
+ */
+const adminQuickAddProduct = async (req, res) => {
+  try {
+    const { name, nameTamil, categoryId, unit, price, minQty, sellerId, tags } = req.body || {};
+    if (!name || !String(name).trim()) return res.status(400).json({ success: false, message: 'Product name is required' });
+    if (!categoryId) return res.status(400).json({ success: false, message: 'Choose a category' });
+    if (!(Number(price) > 0)) return res.status(400).json({ success: false, message: 'Enter a selling price' });
+    if (!sellerId) return res.status(400).json({ success: false, message: 'Choose a seller' });
+    const seller = await KoyambeduSeller.findById(sellerId);
+    if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+    const mq = Number(minQty) > 0 ? Number(minQty) : 1;
+    const product = await _createProductForSeller(seller, {
+      categoryId, name: String(name).trim(), nameTamil: nameTamil ? String(nameTamil).trim() : undefined,
+      unit: unit || 'kg', minQty: mq, qtyStep: mq,
+      variants: [{ basePrice: Number(price), fromQty: mq }],
+      tags: Array.isArray(tags) ? tags : [],
+    });
+    res.status(201).json({ success: true, product });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ success: false, message: err.message });
+  }
+};
+
 /** PATCH /api/koyambedu/seller-admin/sellers/:sellerId/products/:productId/toggle — toggle availability */
 const sellerAdminToggleProduct = async (req, res) => {
   const sa = await KoyambeduSellerAdmin.findOne({ user: req.user._id, status: 'approved' });
@@ -9222,6 +9250,7 @@ const fixProcurementCutoffCycle = async (req, res) => {
 };
 
 module.exports = {
+  adminQuickAddProduct,
   // Public
   getCategories, getProducts, getFeaturedProducts, getHomepageProducts, getProductsByCategory, getProductDetail, getDeliverySlots,
   checkDeliveryAvailability,

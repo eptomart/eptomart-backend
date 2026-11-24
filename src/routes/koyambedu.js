@@ -300,6 +300,12 @@ router.delete('/admin/pnl/parties',                                  protectAdmi
 router.post  ('/admin/pnl/day-expenses',                             protectAdmin,      ctrl.adminAddDayExpense);
 router.patch ('/admin/pnl/day-expenses/:id',                        protectAdmin,      ctrl.adminUpdateDayExpense);
 router.delete('/admin/pnl/day-expenses/:id',                         protectAdmin,      ctrl.adminDeleteDayExpense);
+// Add items to a customer's cart from an uploaded list (photo / Excel / CSV)
+const listImport = require('../controllers/koyambeduListImportController');
+router.post('/admin/cart-import/parse',    protectAdmin, listImport.uploadMiddleware, listImport.parse);
+router.get ('/admin/cart-import/products', protectAdmin, listImport.searchProducts);
+router.post('/admin/cart-import/apply',    protectAdmin, listImport.apply);
+router.post('/admin/products/quick-add',   protectSuperAdmin, ctrl.adminQuickAddProduct);
 router.get  ('/admin/procurers',                                      protectAdmin,      ctrl.adminListProcurers);
 router.post ('/admin/procurers',                                      protectAdmin,      ctrl.adminAddProcurer);
 router.delete('/admin/procurers',                                    protectAdmin,      ctrl.adminDeleteProcurer);

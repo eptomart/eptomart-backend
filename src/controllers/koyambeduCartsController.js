@@ -158,4 +158,4 @@ const deleteCart = async (req, res) => {
   res.json({ success: true, carts: await summary(uid) });
 };
 
-module.exports = { listCarts, createCart, switchCart, updateCartMeta, deleteCart };
+module.exports = { listCarts, createCart, switchCart, updateCartMeta, deleteCart, workingCart, ensureActive, plainItems, summary, validAddress };

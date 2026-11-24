@@ -13,7 +13,7 @@ exports.list = async (req, res) => {
     const stores = await ExpressStore.find({ isArchived: false }).select('name city address location isActive').sort({ name: 1 }).lean();
     res.json({
       success: true,
-      hubs: (doc.hubs || []).map(h => ({ _id: h._id, name: h.name, lat: h.lat, lng: h.lng, expressStore: h.expressStore || null, isActive: h.isActive !== false })),
+      hubs: (doc.hubs || []).map(h => ({ _id: h._id, name: h.name, lat: h.lat, lng: h.lng, expressStore: h.expressStore || null, isActive: h.isActive !== false, freeDeliveryKm: h.freeDeliveryKm ?? null, freePlatformKm: h.freePlatformKm ?? null })),
       expressStores: stores.map(s => ({ _id: s._id, name: s.name, city: s.city, address: s.address, lat: s.location?.lat, lng: s.location?.lng, isActive: s.isActive })),
     });
   } catch (e) { console.error('[hubs.list]', e); res.status(500).json({ success: false, message: 'Failed to load hubs' }); }
@@ -37,7 +37,12 @@ exports.save = async (req, res) => {
       if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
         return res.status(400).json({ success: false, message: `"${name}" needs a valid latitude and longitude` });
       }
-      hubs.push({ name, lat, lng, expressStore: st ? st._id : null, isActive: h.isActive !== false });
+      const km = (v) => (v === '' || v == null) ? null : Number(v);
+      const fd = km(h.freeDeliveryKm), fp = km(h.freePlatformKm);
+      for (const [lbl, v] of [['Free delivery km', fd], ['Free platform fee km', fp]]) {
+        if (v !== null && !(v >= 0 && v <= 500)) return res.status(400).json({ success: false, message: `"${name}": ${lbl} must be 0–500` });
+      }
+      hubs.push({ name, lat, lng, expressStore: st ? st._id : null, isActive: h.isActive !== false, freeDeliveryKm: fd, freePlatformKm: fp });
     }
     const doc = await KoyambeduSettings.findOneAndUpdate({ key: 'global' }, { $set: { hubs } }, { upsert: true, new: true, setDefaultsOnInsert: true });
     res.json({ success: true, hubs: doc.hubs });

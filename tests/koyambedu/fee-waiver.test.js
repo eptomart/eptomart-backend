@@ -99,3 +99,13 @@ test('OF-06 offer limited to maxKm of nearest hub', () => {
   assert.throws(() => resolveOffers({}, cfg, 100, ['delivery'], 30), e => /not available/.test(e.message));
   assert.deepEqual(resolveOffers({}, cfg, 100, ['delivery'], 10).applied, ['delivery']);
 });
+
+test('OF-07 hub-wise radius overrides the default; blank hub uses default', () => {
+  const cfg = { freeDelivery: { enabled: true, minOrder: 0, percent: 100, maxKm: 25 } };
+  assert.equal(offerStatuses(cfg, 1, 12, { freeDeliveryKm: 10 }).length, 0);   // hub says 10 km
+  assert.equal(offerStatuses(cfg, 1, 12, { freeDeliveryKm: 15 }).length, 1);
+  assert.equal(offerStatuses(cfg, 1, 30, { freeDeliveryKm: 40 }).length, 1);   // hub wider than default
+  assert.equal(offerStatuses(cfg, 1, 30, { freeDeliveryKm: null }).length, 0); // default 25
+  assert.equal(offerStatuses(cfg, 1, 30, { freeDeliveryKm: 0 }).length, 1);    // 0 = no limit at this hub
+  assert.throws(() => resolveOffers({}, cfg, 1, ['delivery'], 12, { freeDeliveryKm: 10 }), e => /not available/.test(e.message));
+});

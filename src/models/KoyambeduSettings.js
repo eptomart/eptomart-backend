@@ -134,6 +134,9 @@ const koyambeduSettingsSchema = new mongoose.Schema({
       lng:          { type: Number, required: true },
       expressStore: { type: mongoose.Schema.Types.ObjectId, ref: 'ExpressStore', default: null },
       isActive:     { type: Boolean, default: true },
+      // Hub-wise offer radius (km). null/blank = use the default "Within km" of the offer.
+      freeDeliveryKm: { type: Number, default: null, min: 0 },
+      freePlatformKm: { type: Number, default: null, min: 0 },
     }],
     default: [],
   },
@@ -171,11 +174,11 @@ const _hav = (lat1, lon1, lat2, lon2) => {
 koyambeduSettingsSchema.statics.distanceFromNearestHub = async function(lat, lng) {
   const doc = await this.findOne({ key: 'global' }).select('hubs').lean();
   const hubs = (doc?.hubs || []).filter(h => h.isActive !== false && Number.isFinite(h.lat) && Number.isFinite(h.lng));
-  if (!hubs.length) return { distanceKm: _hav(lat, lng, _KB_LAT, _KB_LNG), hubName: 'Koyambedu' };
+  if (!hubs.length) return { distanceKm: _hav(lat, lng, _KB_LAT, _KB_LNG), hubName: 'Koyambedu', hub: {} };
   let best = null;
   for (const h of hubs) {
     const d = _hav(lat, lng, h.lat, h.lng);
-    if (!best || d < best.distanceKm) best = { distanceKm: d, hubName: h.name };
+    if (!best || d < best.distanceKm) best = { distanceKm: d, hubName: h.name, hub: { freeDeliveryKm: h.freeDeliveryKm ?? null, freePlatformKm: h.freePlatformKm ?? null } };
   }
   return best;
 };

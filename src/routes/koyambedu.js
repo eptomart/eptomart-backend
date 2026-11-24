@@ -127,6 +127,13 @@ router.post('/check-delivery', optionalAuth, ctrl.checkDeliveryAvailability);
 router.get   ('/cart',                      protect, ctrl.getCart);
 router.post  ('/cart',                      protect, trackCart('set'), ctrl.updateCart);
 router.delete('/cart/clear',               protect, trackCart('clear'), ctrl.clearCart);
+// Named carts (several carts per customer, each optionally tagged to a saved address)
+const cartsCtrl = require('../controllers/koyambeduCartsController');
+router.get   ('/carts',                protect, cartsCtrl.listCarts);
+router.post  ('/carts',                protect, cartsCtrl.createCart);
+router.post  ('/carts/:id/switch',     protect, cartsCtrl.switchCart);
+router.patch ('/carts/:id',            protect, cartsCtrl.updateCartMeta);
+router.delete('/carts/:id',            protect, cartsCtrl.deleteCart);
 router.post  ('/activity',                  protect, activityCtrl.track);
 
 router.post  ('/orders',                    protect, ctrl.placeOrder);

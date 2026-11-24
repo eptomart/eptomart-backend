@@ -29,6 +29,9 @@ const addressSchema = new mongoose.Schema({
   // traditional text-only way simply leave these null.
   lat: { type: Number, default: null },
   lng: { type: Number, default: null },
+  // Area name from the map pin (e.g. "Valasaravakkam") — saved WITH the address so the
+  // pin never has to be asked again when this address is picked.
+  areaName: { type: String, default: '' },
 }, { _id: true });
 
 const userSchema = new mongoose.Schema({

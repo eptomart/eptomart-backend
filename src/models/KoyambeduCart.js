@@ -28,6 +28,13 @@ const koyambeduCartSchema = new Schema({
   // placed or the cart is emptied. Each entry mirrors an item + parkedAt/reason.
   parked: { type: [Schema.Types.Mixed], default: [] },
 
+  // Named carts: this document is the customer's WORKING cart (everything else —
+  // cart page, checkout, orders — keeps using it unchanged). `activeCartId` says which
+  // saved cart (KoyambeduSavedCart) is currently loaded here; `addressId` is that
+  // cart's tagged saved address, used to pre-select address + pin at checkout.
+  activeCartId: { type: Schema.Types.ObjectId, ref: 'KoyambeduSavedCart', default: null },
+  addressId:    { type: String, default: '' },
+
   updatedAt: { type: Date, default: Date.now },
 }, { timestamps: true });
 

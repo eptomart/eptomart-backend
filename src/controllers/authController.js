@@ -481,6 +481,7 @@ const addAddress = async (req, res) => {
     isDefault: !!isDefault || user.addresses.length === 0,
     lat: lat != null ? Number(lat) : null,
     lng: lng != null ? Number(lng) : null,
+    areaName: req.body.areaName ? String(req.body.areaName).slice(0, 80) : '',
   });
   await user.save();
   res.json({ success: true, addresses: user.addresses });
@@ -512,6 +513,7 @@ const updateAddress = async (req, res) => {
   if (pincode != null) address.pincode = pincode;
   if (lat != null) address.lat = Number(lat);
   if (lng != null) address.lng = Number(lng);
+  if (req.body.areaName != null) address.areaName = String(req.body.areaName).slice(0, 80);
   if (isDefault) user.addresses.forEach(a => { a.isDefault = a._id.toString() === req.params.addressId; });
 
   await user.save();

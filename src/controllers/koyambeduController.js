@@ -28,7 +28,7 @@ const KoyambeduExpenseParty         = require('../models/KoyambeduExpenseParty')
 const KoyambeduDayExpense           = require('../models/KoyambeduDayExpense');
 const KoyambeduOfferBroadcast       = require('../models/KoyambeduOfferBroadcast');
 const { notifyAudience, notifyAll } = require('../utils/pushNotification');
-const { effectivePercents, applyFeeDiscount } = require('../utils/koyambeduFeeDiscount');
+const { effectivePercents, applyFeeDiscount, offerStatuses, resolveOffers } = require('../utils/koyambeduFeeDiscount');
 /** Fee waiver % for a customer = max(global promo, per-customer). */
 const feeWaiverFor = async (userId) => {
   const [g, u] = await Promise.all([
@@ -574,6 +574,10 @@ const checkDeliveryAvailability = async (req, res) => {
   } catch (_) { /* non-blocking preview only */ }
 
   // Super-admin fee waiver (global and/or this customer) — struck-out real fee
+  let offersOut = [];
+  try {
+    if (!cartHasCombo) { const cfg = await KoyambeduSettings.getOffers(); offersOut = offerStatuses(cfg, 0).map(({ key, title, minOrder, percent }) => ({ key, title, minOrder, percent })); }
+  } catch (_) { /* optional */ }
   let waived = { deliveryCharge: charges.deliveryCharge, originalDeliveryCharge: charges.originalDeliveryCharge, platformFee: previewPlatformFee, originalPlatformFee: previewOriginalPlatformFee };
   try { waived = applyFeeDiscount(waived, await feeWaiverFor(req.user?._id)); } catch (_) { /* non-blocking */ }
 
@@ -582,6 +586,9 @@ const checkDeliveryAvailability = async (req, res) => {
     available:     true,
     distanceKm:    kmRounded,
     hubName,
+    baseDeliveryCharge:     charges.deliveryCharge,
+    basePlatformFee:        previewPlatformFee,
+    offers:                 offersOut,
     deliveryCharge:         waived.deliveryCharge,
     originalDeliveryCharge: waived.originalDeliveryCharge,
     platformFee:            waived.platformFee,
@@ -874,7 +881,7 @@ const clearCart = async (req, res) => {
 
 /** POST /api/koyambedu/orders — place order */
 const placeOrder = async (req, res) => {
-  const { shippingAddress, paymentMethod = 'razorpay', deliverySlot, deliverySlotKey, deliveryDate, notes, buyerLocation, couponCode } = req.body;
+  const { shippingAddress, paymentMethod = 'razorpay', deliverySlot, deliverySlotKey, deliveryDate, notes, buyerLocation, couponCode, offers: pickedOffers } = req.body;
 
   // ── 1. Location mandatory ──────────────────────────────────
   if (!buyerLocation?.lat || !buyerLocation?.lng) {
@@ -1082,12 +1089,7 @@ const placeOrder = async (req, res) => {
     normalOrderMinDoc = await KoyambeduSettings.getOrderMinimum();
   }
   const MIN_ORDER_VALUE = comboActive ? (comboSettingsDoc.minOrderValue?.value ?? 0) : (normalOrderMinDoc?.value ?? 799);
-  if (subtotal < MIN_ORDER_VALUE) {
-    return res.status(400).json({
-      success: false,
-      message: `Minimum order value is ₹${MIN_ORDER_VALUE.toLocaleString('en-IN')}. Your cart total is ₹${subtotal.toFixed(0)}.`,
-    });
-  }
+  // (the minimum is enforced right after the charges are known — a light "small order" can have its own minimum)
 
   // ── 7b. Delivery charge ────────────────────────────────────────────────
   // Combo carts use the Super-Admin-managed combo distance-tiered pricing
@@ -1112,6 +1114,16 @@ const placeOrder = async (req, res) => {
     charges = computeKoyambeduCharges(distanceKm, summarizeCartForDeliveryFee(cart.items));
   }
   let { deliveryCharge, originalDeliveryCharge, platformFee, originalPlatformFee, packingCharge, isSmallOrder } = charges;
+  const offersCfg = await KoyambeduSettings.getOffers();
+  {
+    const effMin = (!comboActive && isSmallOrder && offersCfg.lowWeightMinOrder > 0) ? offersCfg.lowWeightMinOrder : MIN_ORDER_VALUE;
+    if (subtotal < effMin) {
+      return res.status(400).json({
+        success: false,
+        message: `Minimum order value is ₹${effMin.toLocaleString('en-IN')}${!comboActive && isSmallOrder && offersCfg.lowWeightMinOrder > 0 ? ' for light orders' : ''}. Your cart total is ₹${subtotal.toFixed(0)}.`,
+      });
+    }
+  }
   const deliveryType   = deliveryTypes.size > 1 ? 'mixed' : [...deliveryTypes][0];
 
   // ── 7c. Platform fee discount — reward for meeting the minimum order
@@ -1137,7 +1149,12 @@ const placeOrder = async (req, res) => {
 
   // ── 7d. Super-admin fee waiver (0–100 % off delivery / platform fee),
   // applied last so the min-order platform discount above is unchanged.
-  const feeWaiver = await feeWaiverFor(req.user._id);
+  let feeWaiver = await feeWaiverFor(req.user._id);
+  let offersApplied = [];
+  if (!comboActive && Array.isArray(pickedOffers) && pickedOffers.length) {
+    try { const r = resolveOffers(feeWaiver, offersCfg, subtotal, pickedOffers); feeWaiver = r.pcts; offersApplied = r.applied; }
+    catch (e) { return res.status(400).json({ success: false, message: e.message || 'Offer not available' }); }
+  }
   {
     const w = applyFeeDiscount({ deliveryCharge, originalDeliveryCharge, platformFee: finalPlatformFee, originalPlatformFee: finalOriginalPlatformFee }, feeWaiver);
     deliveryCharge = w.deliveryCharge; originalDeliveryCharge = w.originalDeliveryCharge;
@@ -1247,6 +1264,7 @@ const placeOrder = async (req, res) => {
     originalDeliveryCharge: originalDeliveryCharge ?? undefined,
     originalPlatformFee:    finalOriginalPlatformFee ?? undefined,
     feeDiscount:            (feeWaiver.deliveryPercent || feeWaiver.platformPercent) ? feeWaiver : undefined,
+    offersApplied:          offersApplied.length ? offersApplied : undefined,
   };
 
   // ── 9. Build the order ───────────────────────────────────────────────────────

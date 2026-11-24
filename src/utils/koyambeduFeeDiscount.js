@@ -33,4 +33,35 @@ function applyFeeDiscount(charges, pcts, { delivery = true, platform = true } = 
   return out;
 }
 
-module.exports = { clampPct, effectivePercents, applyFeeDiscount };
+/**
+ * Customer-selectable offers (Super Admin sets the minimum order + % for each):
+ *   delivery → "Free delivery",  platform → "Free platform fee".
+ * cfg: { freeDelivery:{enabled,minOrder,percent}, freePlatform:{...} }
+ */
+const OFFER_DEFS = [
+  { key: 'delivery', cfgKey: 'freeDelivery', title: 'Free delivery' },
+  { key: 'platform', cfgKey: 'freePlatform', title: 'Free platform fee' },
+];
+function offerStatuses(cfg, subtotal) {
+  const st = Number(subtotal) || 0;
+  return OFFER_DEFS.filter(d => cfg?.[d.cfgKey]?.enabled).map(d => {
+    const c = cfg[d.cfgKey], minOrder = Math.max(0, Number(c.minOrder) || 0), percent = clampPct(c.percent ?? 100) || 100;
+    return { key: d.key, title: d.title, minOrder, percent, eligible: st >= minOrder, shortBy: Math.max(0, Math.ceil(minOrder - st)) };
+  });
+}
+/** Merge global/customer waiver with the offers the customer picked (higher % wins). Throws {message} if a picked offer is not available. */
+function resolveOffers(waiver, cfg, subtotal, picked) {
+  const keys = [...new Set((Array.isArray(picked) ? picked : []).filter(k => OFFER_DEFS.some(d => d.key === k)))];
+  const st = offerStatuses(cfg, subtotal);
+  const out = { ...waiver };
+  for (const k of keys) {
+    const o = st.find(x => x.key === k);
+    if (!o) throw { message: `The "${OFFER_DEFS.find(d => d.key === k).title}" offer is not available right now.` };
+    if (!o.eligible) throw { message: `Add ₹${o.shortBy} more to get ${o.title.toLowerCase()}.` };
+    const f = k === 'delivery' ? 'deliveryPercent' : 'platformPercent';
+    out[f] = Math.max(out[f] || 0, o.percent);
+  }
+  return { pcts: out, applied: keys };
+}
+
+module.exports = { clampPct, effectivePercents, applyFeeDiscount, offerStatuses, resolveOffers };

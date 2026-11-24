@@ -539,7 +539,34 @@ const setCustomerFeeDiscount = async (req, res) => {
   }
 };
 
+// ── Offers + low-weight minimum (SuperAdmin) ──
+//   GET/PUT /koyambedu/admin/dev-settings/offers
+const getOffersAdmin = async (req, res) => {
+  try { res.json({ success: true, ...(await KoyambeduSettings.getOffers()) }); }
+  catch (e) { res.status(500).json({ success: false, message: 'Failed to fetch offers' }); }
+};
+const updateOffers = async (req, res) => {
+  try {
+    const b = req.body || {}, u = { 'offers.updatedByName': req.user.name || req.user.email, 'offers.updatedAt': new Date() };
+    const money = (v) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.round(n) : null; };
+    if (b.lowWeightMinOrder !== undefined) {
+      const n = money(b.lowWeightMinOrder); if (n === null) return res.status(400).json({ success: false, message: 'Low-weight minimum must be 0 or more' });
+      u['offers.lowWeightMinOrder'] = n;
+    }
+    for (const k of ['freeDelivery', 'freePlatform']) {
+      const x = b[k]; if (!x) continue;
+      if (x.enabled !== undefined) u[`offers.${k}.enabled`] = !!x.enabled;
+      if (x.minOrder !== undefined) { const n = money(x.minOrder); if (n === null) return res.status(400).json({ success: false, message: `${k} minimum must be 0 or more` }); u[`offers.${k}.minOrder`] = n; }
+      if (x.percent !== undefined) { const n = Number(x.percent); if (!(n >= 1 && n <= 100)) return res.status(400).json({ success: false, message: `${k} percent must be 1–100` }); u[`offers.${k}.percent`] = n; }
+    }
+    await KoyambeduSettings.findOneAndUpdate({ key: 'global' }, u, { upsert: true, new: true, setDefaultsOnInsert: true });
+    res.json({ success: true, ...(await KoyambeduSettings.getOffers()) });
+  } catch (e) { console.error('[DevSettings] updateOffers', e.message); res.status(500).json({ success: false, message: 'Failed to update offers' }); }
+};
+
 module.exports = {
+  getOffersAdmin,
+  updateOffers,
   getFeeDiscountAdmin,
   updateFeeDiscount,
   setCustomerFeeDiscount,

@@ -335,6 +335,7 @@ const koyambeduOrderSchema = new Schema({
     originalPlatformFee:    Number,
     // Super-admin fee waiver applied to this order (percent off delivery / platform fee)
     feeDiscount: { deliveryPercent: Number, platformPercent: Number },
+    offersApplied: [String], // customer-selected offers: 'delivery' | 'platform'
   },
 
   // calculatedPricing: always recomputed by orderCalculationService, stored for synchronization

@@ -55,3 +55,37 @@ test('FW-09 per-customer set / validate / not found', async () => {
   const nf = fakeRes(); await dev.setCustomerFeeDiscount({ params: { userId: 'none' }, body: {} }, nf);
   assert.equal(nf.statusCode, 404);
 });
+
+// ── customer-selectable offers ───────────────────────────────────────────
+const { offerStatuses, resolveOffers } = require('../../src/utils/koyambeduFeeDiscount');
+const CFG = { freeDelivery: { enabled: true, minOrder: 1500, percent: 100 }, freePlatform: { enabled: true, minOrder: 2500, percent: 50 } };
+
+test('OF-01 only enabled offers listed; eligibility by cart value', () => {
+  assert.equal(offerStatuses({ freeDelivery: { enabled: false } }, 9999).length, 0);
+  const s = offerStatuses(CFG, 1800);
+  assert.equal(s.find(o => o.key === 'delivery').eligible, true);
+  const p = s.find(o => o.key === 'platform'); assert.equal(p.eligible, false); assert.equal(p.shortBy, 700);
+});
+test('OF-02 picked eligible offer sets the %', () => {
+  const r = resolveOffers({ deliveryPercent: 0, platformPercent: 0 }, CFG, 3000, ['delivery', 'platform']);
+  assert.deepEqual(r.pcts, { deliveryPercent: 100, platformPercent: 50 }); assert.deepEqual(r.applied, ['delivery', 'platform']);
+});
+test('OF-03 ineligible or disabled offer is rejected', () => {
+  assert.throws(() => resolveOffers({}, CFG, 1000, ['delivery']), /Add ₹500 more/);
+  assert.throws(() => resolveOffers({}, { freeDelivery: { enabled: false } }, 9999, ['delivery']), /not available/);
+});
+test('OF-04 higher of waiver and offer wins; unknown keys ignored', () => {
+  const r = resolveOffers({ deliveryPercent: 100, platformPercent: 0 }, { freeDelivery: { enabled: true, minOrder: 0, percent: 40 } }, 10, ['delivery', 'bogus']);
+  assert.equal(r.pcts.deliveryPercent, 100); assert.deepEqual(r.applied, ['delivery']);
+});
+test('OF-05 admin saves offers with validation', async () => {
+  let u;
+  Settings.findOneAndUpdate = async (q, upd) => { u = upd; return {}; };
+  Settings.getOffers = async () => ({ lowWeightMinOrder: 400 });
+  const ok = fakeRes(); await dev.updateOffers({ user: { name: 'SA' }, body: { lowWeightMinOrder: 400, freeDelivery: { enabled: true, minOrder: 1500, percent: 100 } } }, ok);
+  assert.equal(ok.body.success, true); assert.equal(u['offers.lowWeightMinOrder'], 400); assert.equal(u['offers.freeDelivery.minOrder'], 1500);
+  const bad = fakeRes(); await dev.updateOffers({ user: { name: 'SA' }, body: { freePlatform: { percent: 0 } } }, bad);
+  assert.equal(bad.statusCode, 400);
+  const neg = fakeRes(); await dev.updateOffers({ user: { name: 'SA' }, body: { lowWeightMinOrder: -1 } }, neg);
+  assert.equal(neg.statusCode, 400);
+});

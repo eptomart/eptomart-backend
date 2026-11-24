@@ -74,6 +74,18 @@ const koyambeduSettingsSchema = new mongoose.Schema({
     updatedAt:       { type: Date },
   },
 
+  // ── Customer-selectable offers + low-weight minimum (Super Admin) ──
+  // lowWeightMinOrder: minimum cart value for light "small orders" (0 = use the
+  // regular minimum). freeDelivery / freePlatform: shown to the customer as an
+  // offer once the cart reaches minOrder; they opt in at checkout.
+  offers: {
+    lowWeightMinOrder: { type: Number, default: 0, min: 0 },
+    freeDelivery: { enabled: { type: Boolean, default: false }, minOrder: { type: Number, default: 0, min: 0 }, percent: { type: Number, default: 100, min: 1, max: 100 } },
+    freePlatform: { enabled: { type: Boolean, default: false }, minOrder: { type: Number, default: 0, min: 0 }, percent: { type: Number, default: 100, min: 1, max: 100 } },
+    updatedByName: String,
+    updatedAt: Date,
+  },
+
   // ── Minimum Order Value — NORMAL products (Koyambedu Daily) ─────────
   // Super Admin controlled. Replaces the old hardcoded ₹799 floor in
   // placeOrder. Kept separate from KoyambeduComboSettings.minOrderValue,
@@ -240,6 +252,14 @@ koyambeduSettingsSchema.statics.getOrderMinimum = async function() {
       value:   om.platformFeeDiscount?.value   ?? 0,
     },
   };
+};
+
+/** Offers config with safe defaults. */
+koyambeduSettingsSchema.statics.getOffers = async function() {
+  const doc = await this.findOne({ key: 'global' }).select('offers').lean();
+  const o = doc?.offers || {};
+  const blk = (b) => ({ enabled: !!b?.enabled, minOrder: b?.minOrder || 0, percent: b?.percent || 100 });
+  return { lowWeightMinOrder: o.lowWeightMinOrder || 0, freeDelivery: blk(o.freeDelivery), freePlatform: blk(o.freePlatform), updatedByName: o.updatedByName || null, updatedAt: o.updatedAt || null };
 };
 
 /** Global fee waiver percentages (0 when unset). */

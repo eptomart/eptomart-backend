@@ -71,8 +71,8 @@ test('OF-02 picked eligible offer sets the %', () => {
   assert.deepEqual(r.pcts, { deliveryPercent: 100, platformPercent: 50 }); assert.deepEqual(r.applied, ['delivery', 'platform']);
 });
 test('OF-03 ineligible or disabled offer is rejected', () => {
-  assert.throws(() => resolveOffers({}, CFG, 1000, ['delivery']), /Add ₹500 more/);
-  assert.throws(() => resolveOffers({}, { freeDelivery: { enabled: false } }, 9999, ['delivery']), /not available/);
+  assert.throws(() => resolveOffers({}, CFG, 1000, ['delivery']), e => /Add ₹500 more/.test(e.message));
+  assert.throws(() => resolveOffers({}, { freeDelivery: { enabled: false } }, 9999, ['delivery']), e => /not available/.test(e.message));
 });
 test('OF-04 higher of waiver and offer wins; unknown keys ignored', () => {
   const r = resolveOffers({ deliveryPercent: 100, platformPercent: 0 }, { freeDelivery: { enabled: true, minOrder: 0, percent: 40 } }, 10, ['delivery', 'bogus']);

@@ -333,6 +333,8 @@ const koyambeduOrderSchema = new Schema({
     isSmallOrder:           { type: Boolean, default: false },
     originalDeliveryCharge: Number,
     originalPlatformFee:    Number,
+    // Super-admin fee waiver applied to this order (percent off delivery / platform fee)
+    feeDiscount: { deliveryPercent: Number, platformPercent: Number },
   },
 
   // calculatedPricing: always recomputed by orderCalculationService, stored for synchronization

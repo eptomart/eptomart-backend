@@ -326,7 +326,7 @@ async function users(q = {}) {
 
 async function profile(userId) {
   if (!isId(userId)) return null;
-  const u = await User.findById(userId).select('name phone email createdAt lastLogin').lean();
+  const u = await User.findById(userId).select('name phone email createdAt lastLogin koyambeduFeeDiscount').lean();
   if (!u) return null;
   const [orders, wallet, cart, firstSeen, lastSeen, loc, topViewed] = await Promise.all([
     KoyambeduOrder.aggregate([{ $match: { buyer: oid(userId), orderStatus: { $ne: 'payment_pending' } } }, { $group: { _id: null, orders: { $sum: 1 }, spend: { $sum: '$pricing.total' }, last: { $max: '$createdAt' }, cancelled: { $sum: { $cond: [{ $eq: ['$orderStatus', 'cancelled'] }, 1, 0] } } } }]),
@@ -347,6 +347,7 @@ async function profile(userId) {
     area: loc?.buyerLocation?.areaName || loc?.shippingAddress?.city || null, pincode: loc?.buyerLocation?.pincode || loc?.shippingAddress?.pincode || null,
     orders: o.orders || 0, cancelledOrders: o.cancelled || 0, spend: r2(o.spend), lastOrderAt: o.last || null,
     walletBalance: r2(wallet?.balance), walletReserved: r2(wallet?.reservedBalance),
+    feeDiscount: { deliveryPercent: u.koyambeduFeeDiscount?.deliveryPercent || 0, platformPercent: u.koyambeduFeeDiscount?.platformPercent || 0 },
     cart: { itemCount: items.length, value: r2(items.reduce((s, i) => s + (i.unitPrice || 0) * i.quantity, 0)), updatedAt: cart?.updatedAt || null,
       items: items.map((i) => ({ name: i.product?.name || i.name, quantity: i.quantity, unit: i.product?.unit || i.unit, gradeName: i.gradeName || null, unitPrice: i.unitPrice })) },
     topViewed: topViewed.map((x) => ({ name: nm[String(x._id)] || 'Product', views: x.n })),

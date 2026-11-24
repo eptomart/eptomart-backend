@@ -64,6 +64,16 @@ const koyambeduSettingsSchema = new mongoose.Schema({
     updatedAt:    { type: Date },
   },
 
+  // ── Fee waiver (Super Admin): 0–100 % off delivery charge / platform fee,
+  // shown struck-out at checkout. Per-customer overrides live on User.
+  feeDiscount: {
+    deliveryPercent: { type: Number, default: 0, min: 0, max: 100 },
+    platformPercent: { type: Number, default: 0, min: 0, max: 100 },
+    updatedBy:       { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    updatedByName:   { type: String },
+    updatedAt:       { type: Date },
+  },
+
   // ── Minimum Order Value — NORMAL products (Koyambedu Daily) ─────────
   // Super Admin controlled. Replaces the old hardcoded ₹799 floor in
   // placeOrder. Kept separate from KoyambeduComboSettings.minOrderValue,
@@ -230,6 +240,13 @@ koyambeduSettingsSchema.statics.getOrderMinimum = async function() {
       value:   om.platformFeeDiscount?.value   ?? 0,
     },
   };
+};
+
+/** Global fee waiver percentages (0 when unset). */
+koyambeduSettingsSchema.statics.getFeeDiscount = async function() {
+  const doc = await this.findOne({ key: 'global' }).select('feeDiscount').lean();
+  const f = doc?.feeDiscount || {};
+  return { deliveryPercent: f.deliveryPercent || 0, platformPercent: f.platformPercent || 0, updatedByName: f.updatedByName || null, updatedAt: f.updatedAt || null };
 };
 
 module.exports = mongoose.model('KoyambeduSettings', koyambeduSettingsSchema);

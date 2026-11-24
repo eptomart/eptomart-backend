@@ -99,6 +99,9 @@ router.get('/dev-settings/order-minimum',                    devCtrl.getOrderMin
 router.get('/admin/dev-settings/order-minimum',              protectSuperAdmin, devCtrl.getOrderMinimumAdmin);
 // SuperAdmin: update — body: { value?: number, platformFeeDiscount?: { enabled?, type?: 'flat'|'percent', value? } }
 router.put('/admin/dev-settings/order-minimum',              protectSuperAdmin, devCtrl.updateOrderMinimum);
+router.get('/admin/dev-settings/fee-discount',                protectSuperAdmin, devCtrl.getFeeDiscountAdmin);
+router.put('/admin/dev-settings/fee-discount',                protectSuperAdmin, devCtrl.updateFeeDiscount);
+router.put('/admin/customers/:userId/fee-discount',           protectSuperAdmin, devCtrl.setCustomerFeeDiscount);
 
 // ══════════════════════════════════════════════
 // PUBLIC — no auth required

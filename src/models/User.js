@@ -105,6 +105,11 @@ const userSchema = new mongoose.Schema({
     publicId: String,
   },
   addresses: [addressSchema],
+  // Super-admin fee waiver for this customer (Koyambedu Daily), 0–100 %
+  koyambeduFeeDiscount: {
+    deliveryPercent: { type: Number, default: 0, min: 0, max: 100 },
+    platformPercent: { type: Number, default: 0, min: 0, max: 100 },
+  },
   wishlist: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
   loginHistory: {
     type: [loginHistorySchema],

@@ -28,6 +28,15 @@ const KoyambeduExpenseParty         = require('../models/KoyambeduExpenseParty')
 const KoyambeduDayExpense           = require('../models/KoyambeduDayExpense');
 const KoyambeduOfferBroadcast       = require('../models/KoyambeduOfferBroadcast');
 const { notifyAudience, notifyAll } = require('../utils/pushNotification');
+const { effectivePercents, applyFeeDiscount } = require('../utils/koyambeduFeeDiscount');
+/** Fee waiver % for a customer = max(global promo, per-customer). */
+const feeWaiverFor = async (userId) => {
+  const [g, u] = await Promise.all([
+    KoyambeduSettings.getFeeDiscount().catch(() => null),
+    userId ? User.findById(userId).select('koyambeduFeeDiscount').lean().catch(() => null) : null,
+  ]);
+  return effectivePercents(g, u?.koyambeduFeeDiscount);
+};
 const User                  = require('../models/User');
 const EptoFreshCoupon       = require('../models/EptoFreshCoupon');
 const Product                = require('../models/Product');
@@ -564,15 +573,19 @@ const checkDeliveryAvailability = async (req, res) => {
     }
   } catch (_) { /* non-blocking preview only */ }
 
+  // Super-admin fee waiver (global and/or this customer) — struck-out real fee
+  let waived = { deliveryCharge: charges.deliveryCharge, originalDeliveryCharge: charges.originalDeliveryCharge, platformFee: previewPlatformFee, originalPlatformFee: previewOriginalPlatformFee };
+  try { waived = applyFeeDiscount(waived, await feeWaiverFor(req.user?._id)); } catch (_) { /* non-blocking */ }
+
   res.json({
     success:       true,
     available:     true,
     distanceKm:    kmRounded,
     hubName,
-    deliveryCharge:         charges.deliveryCharge,
-    originalDeliveryCharge: charges.originalDeliveryCharge,
-    platformFee:            previewPlatformFee,
-    originalPlatformFee:    previewOriginalPlatformFee,
+    deliveryCharge:         waived.deliveryCharge,
+    originalDeliveryCharge: waived.originalDeliveryCharge,
+    platformFee:            waived.platformFee,
+    originalPlatformFee:    waived.originalPlatformFee,
     packingCharge:          charges.packingCharge,
     isSmallOrder:           charges.isSmallOrder,
     message:       `Delivery available · ${kmRounded} km from Koyambedu market`,
@@ -1098,7 +1111,7 @@ const placeOrder = async (req, res) => {
     // 1kg minimum-order-quantity gate).
     charges = computeKoyambeduCharges(distanceKm, summarizeCartForDeliveryFee(cart.items));
   }
-  const { deliveryCharge, originalDeliveryCharge, platformFee, originalPlatformFee, packingCharge, isSmallOrder } = charges;
+  let { deliveryCharge, originalDeliveryCharge, platformFee, originalPlatformFee, packingCharge, isSmallOrder } = charges;
   const deliveryType   = deliveryTypes.size > 1 ? 'mixed' : [...deliveryTypes][0];
 
   // ── 7c. Platform fee discount — reward for meeting the minimum order
@@ -1120,6 +1133,15 @@ const placeOrder = async (req, res) => {
         finalPlatformFee = Math.round((platformFee - clampedDiscount) * 100) / 100;
       }
     }
+  }
+
+  // ── 7d. Super-admin fee waiver (0–100 % off delivery / platform fee),
+  // applied last so the min-order platform discount above is unchanged.
+  const feeWaiver = await feeWaiverFor(req.user._id);
+  {
+    const w = applyFeeDiscount({ deliveryCharge, originalDeliveryCharge, platformFee: finalPlatformFee, originalPlatformFee: finalOriginalPlatformFee }, feeWaiver);
+    deliveryCharge = w.deliveryCharge; originalDeliveryCharge = w.originalDeliveryCharge;
+    finalPlatformFee = w.platformFee; finalOriginalPlatformFee = w.originalPlatformFee;
   }
 
   // ── 7b. Coupon discount (applied on subtotal, shipping excluded) ──
@@ -1224,6 +1246,7 @@ const placeOrder = async (req, res) => {
     isSmallOrder,
     originalDeliveryCharge: originalDeliveryCharge ?? undefined,
     originalPlatformFee:    finalOriginalPlatformFee ?? undefined,
+    feeDiscount:            (feeWaiver.deliveryPercent || feeWaiver.platformPercent) ? feeWaiver : undefined,
   };
 
   // ── 9. Build the order ───────────────────────────────────────────────────────
@@ -1865,6 +1888,7 @@ const priceAmendmentRequest = async (order, requestedItems) => {
     ];
 
     newCharges = computeKoyambeduCharges(order.pricing.deliveryDistance || 0, summarizeCartForDeliveryFee(combinedForWeight));
+    if (order.pricing.feeDiscount) newCharges = applyFeeDiscount(newCharges, order.pricing.feeDiscount);
     if (!newCharges.isSmallOrder) {
       willExceedSmallOrder = true;
       const deliveryDelta = newCharges.deliveryCharge - (order.pricing.deliveryCharge || 0);
@@ -2100,7 +2124,7 @@ const priceAddressChange = async (order, body) => {
   const summary = summarizeCartForDeliveryFee(liveItems.map(it => ({
     unit: it.unit, quantity: it.confirmedQty ?? it.quantity, product: pmap.get(String(it.product)) || null,
   })));
-  const charges = computeKoyambeduCharges(distanceKm, summary);
+  let charges = computeKoyambeduCharges(distanceKm, summary);
 
   const p0 = order.pricing || {};
   // Keep whatever platform-fee discount the customer already got. Only when
@@ -2122,6 +2146,9 @@ const priceAddressChange = async (order, body) => {
       }
     } catch (_) { /* non-blocking */ }
   }
+  // Keep the customer's fee waiver (stored on the order) on the new delivery charge.
+  // Platform fee is excluded: it is either carried over already-waived or re-derived above.
+  if (p0.feeDiscount?.deliveryPercent) charges = applyFeeDiscount(charges, p0.feeDiscount, { platform: !!charges.isSmallOrder !== !!p0.isSmallOrder });
   const oldTotal = r2c((p0.deliveryCharge || 0) + (p0.platformFee || 0) + (p0.packingLogisticsFee || 0));
   const newTotal = r2c(charges.deliveryCharge + charges.platformFee + charges.packingCharge);
   const delta    = r2c(newTotal - oldTotal);

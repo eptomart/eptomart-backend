@@ -1,0 +1,57 @@
+// Koyambedu fee waiver (0–100 % off delivery / platform fee)
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { fakeRes, chain } = require('../express/helpers');
+const { effectivePercents, applyFeeDiscount } = require('../../src/utils/koyambeduFeeDiscount');
+const Settings = require('../../src/models/KoyambeduSettings');
+const User = require('../../src/models/User');
+const dev = require('../../src/controllers/koyambeduDevSettingsController');
+
+test('FW-01 100% delivery waiver → 0, real fee struck out', () => {
+  const o = applyFeeDiscount({ deliveryCharge: 125, originalDeliveryCharge: null, platformFee: 75 }, { deliveryPercent: 100, platformPercent: 0 });
+  assert.equal(o.deliveryCharge, 0); assert.equal(o.originalDeliveryCharge, 125); assert.equal(o.platformFee, 75); assert.equal(o.originalPlatformFee, undefined);
+});
+test('FW-02 partial platform waiver', () => {
+  const o = applyFeeDiscount({ deliveryCharge: 125, platformFee: 75 }, { deliveryPercent: 0, platformPercent: 40 });
+  assert.equal(o.platformFee, 45); assert.equal(o.originalPlatformFee, 75); assert.equal(o.deliveryCharge, 125);
+});
+test('FW-03 existing small-order list price stays as the struck-out figure', () => {
+  const o = applyFeeDiscount({ deliveryCharge: 49, originalDeliveryCharge: 149, platformFee: 25, originalPlatformFee: 75 }, { deliveryPercent: 100, platformPercent: 100 });
+  assert.equal(o.deliveryCharge, 0); assert.equal(o.originalDeliveryCharge, 149); assert.equal(o.platformFee, 0); assert.equal(o.originalPlatformFee, 75);
+});
+test('FW-04 percentages clamp to 0–100; bad values ignored', () => {
+  const o = applyFeeDiscount({ deliveryCharge: 100, platformFee: 50 }, { deliveryPercent: 250, platformPercent: 'x' });
+  assert.equal(o.deliveryCharge, 0); assert.equal(o.platformFee, 50);
+});
+test('FW-05 customer and global: higher wins', () => {
+  assert.deepEqual(effectivePercents({ deliveryPercent: 20, platformPercent: 100 }, { deliveryPercent: 50, platformPercent: 0 }), { deliveryPercent: 50, platformPercent: 100 });
+  assert.deepEqual(effectivePercents(null, undefined), { deliveryPercent: 0, platformPercent: 0 });
+});
+test('FW-06 platform:false leaves platform fee untouched (address-change re-pricing)', () => {
+  const o = applyFeeDiscount({ deliveryCharge: 200, platformFee: 10 }, { deliveryPercent: 50, platformPercent: 100 }, { platform: false });
+  assert.equal(o.deliveryCharge, 100); assert.equal(o.platformFee, 10);
+});
+test('FW-07 zero-fee stays zero, no fake strike-through', () => {
+  const o = applyFeeDiscount({ deliveryCharge: 0, platformFee: 0 }, { deliveryPercent: 100, platformPercent: 100 });
+  assert.equal(o.originalDeliveryCharge, undefined); assert.equal(o.originalPlatformFee, undefined);
+});
+
+test('FW-08 global update validates 0–100 and saves', async () => {
+  let upd;
+  Settings.findOneAndUpdate = async (q, u) => { upd = u; return {}; };
+  Settings.getFeeDiscount = async () => ({ deliveryPercent: 100, platformPercent: 30 });
+  const bad = fakeRes(); await dev.updateFeeDiscount({ user: { _id: 'a', name: 'SA' }, body: { deliveryPercent: 101 } }, bad);
+  assert.equal(bad.statusCode, 400);
+  const ok = fakeRes(); await dev.updateFeeDiscount({ user: { _id: 'a', name: 'SA' }, body: { deliveryPercent: 100, platformPercent: 30 } }, ok);
+  assert.equal(ok.body.success, true); assert.equal(upd['feeDiscount.deliveryPercent'], 100); assert.equal(upd['feeDiscount.platformPercent'], 30);
+});
+test('FW-09 per-customer set / validate / not found', async () => {
+  let set;
+  User.findOneAndUpdate = (q, u) => { set = u; return chain(q._id === 'none' ? null : { _id: q._id }); };
+  const r = fakeRes(); await dev.setCustomerFeeDiscount({ params: { userId: 'u1' }, body: { deliveryPercent: 100, platformPercent: 0 } }, r);
+  assert.equal(r.body.success, true); assert.equal(set.$set['koyambeduFeeDiscount.deliveryPercent'], 100);
+  const bad = fakeRes(); await dev.setCustomerFeeDiscount({ params: { userId: 'u1' }, body: { deliveryPercent: -5 } }, bad);
+  assert.equal(bad.statusCode, 400);
+  const nf = fakeRes(); await dev.setCustomerFeeDiscount({ params: { userId: 'none' }, body: {} }, nf);
+  assert.equal(nf.statusCode, 404);
+});

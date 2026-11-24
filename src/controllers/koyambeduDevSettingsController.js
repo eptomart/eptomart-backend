@@ -486,7 +486,63 @@ const updateOrderMinimum = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════════════════════════
+// FEE WAIVER — 0–100 % off delivery charge / platform fee (SuperAdmin)
+//   GET/PUT /koyambedu/admin/dev-settings/fee-discount        (global promo)
+//   PUT     /koyambedu/admin/customers/:userId/fee-discount   (one customer)
+// ══════════════════════════════════════════════════════════════════
+const { clampPct } = require('../utils/koyambeduFeeDiscount');
+const parsePct = (v) => {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0 || n > 100) return null;
+  return Math.round(n * 100) / 100;
+};
+
+const getFeeDiscountAdmin = async (req, res) => {
+  try { res.json({ success: true, ...(await KoyambeduSettings.getFeeDiscount()) }); }
+  catch (err) { res.status(500).json({ success: false, message: 'Failed to fetch fee waiver' }); }
+};
+
+const updateFeeDiscount = async (req, res) => {
+  try {
+    const { deliveryPercent, platformPercent } = req.body || {};
+    const update = { 'feeDiscount.updatedBy': req.user._id, 'feeDiscount.updatedByName': req.user.name || req.user.email, 'feeDiscount.updatedAt': new Date() };
+    for (const [k, v] of [['deliveryPercent', deliveryPercent], ['platformPercent', platformPercent]]) {
+      if (v === undefined) continue;
+      const n = parsePct(v);
+      if (n === null) return res.status(400).json({ success: false, message: `${k} must be between 0 and 100` });
+      update[`feeDiscount.${k}`] = n;
+    }
+    await KoyambeduSettings.findOneAndUpdate({ key: 'global' }, update, { upsert: true, new: true, setDefaultsOnInsert: true });
+    console.log(`[DevSettings] Fee waiver updated by ${req.user.email}:`, update);
+    res.json({ success: true, ...(await KoyambeduSettings.getFeeDiscount()) });
+  } catch (err) {
+    console.error('[DevSettings] updateFeeDiscount error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to update fee waiver' });
+  }
+};
+
+const setCustomerFeeDiscount = async (req, res) => {
+  try {
+    const User = require('../models/User');
+    const d = parsePct(req.body?.deliveryPercent ?? 0), p = parsePct(req.body?.platformPercent ?? 0);
+    if (d === null || p === null) return res.status(400).json({ success: false, message: 'Percent must be between 0 and 100' });
+    const u = await User.findOneAndUpdate(
+      { _id: req.params.userId, role: { $nin: ['admin', 'superAdmin'] } },
+      { $set: { 'koyambeduFeeDiscount.deliveryPercent': d, 'koyambeduFeeDiscount.platformPercent': p } },
+      { new: true }
+    ).select('koyambeduFeeDiscount');
+    if (!u) return res.status(404).json({ success: false, message: 'Customer not found' });
+    res.json({ success: true, deliveryPercent: d, platformPercent: p });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to update customer fee waiver' });
+  }
+};
+
 module.exports = {
+  getFeeDiscountAdmin,
+  updateFeeDiscount,
+  setCustomerFeeDiscount,
   getPaymentTestModePublic,
   getPaymentTestModeAdmin,
   enablePaymentTestMode,

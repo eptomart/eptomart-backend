@@ -576,7 +576,7 @@ const checkDeliveryAvailability = async (req, res) => {
   // Super-admin fee waiver (global and/or this customer) — struck-out real fee
   let offersOut = [];
   try {
-    if (!cartHasCombo) { const cfg = await KoyambeduSettings.getOffers(); offersOut = offerStatuses(cfg, 0).map(({ key, title, minOrder, percent }) => ({ key, title, minOrder, percent })); }
+    if (!cartHasCombo) { const cfg = await KoyambeduSettings.getOffers(); offersOut = offerStatuses(cfg, 0, distanceKm).map(({ key, title, minOrder, percent }) => ({ key, title, minOrder, percent })); }
   } catch (_) { /* optional */ }
   let waived = { deliveryCharge: charges.deliveryCharge, originalDeliveryCharge: charges.originalDeliveryCharge, platformFee: previewPlatformFee, originalPlatformFee: previewOriginalPlatformFee };
   try { waived = applyFeeDiscount(waived, await feeWaiverFor(req.user?._id)); } catch (_) { /* non-blocking */ }
@@ -1152,7 +1152,7 @@ const placeOrder = async (req, res) => {
   let feeWaiver = await feeWaiverFor(req.user._id);
   let offersApplied = [];
   if (!comboActive && Array.isArray(pickedOffers) && pickedOffers.length) {
-    try { const r = resolveOffers(feeWaiver, offersCfg, subtotal, pickedOffers); feeWaiver = r.pcts; offersApplied = r.applied; }
+    try { const r = resolveOffers(feeWaiver, offersCfg, subtotal, pickedOffers, distanceKm); feeWaiver = r.pcts; offersApplied = r.applied; }
     catch (e) { return res.status(400).json({ success: false, message: e.message || 'Offer not available' }); }
   }
   {

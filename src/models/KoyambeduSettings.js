@@ -80,8 +80,8 @@ const koyambeduSettingsSchema = new mongoose.Schema({
   // offer once the cart reaches minOrder; they opt in at checkout.
   offers: {
     lowWeightMinOrder: { type: Number, default: 0, min: 0 },
-    freeDelivery: { enabled: { type: Boolean, default: false }, minOrder: { type: Number, default: 0, min: 0 }, percent: { type: Number, default: 100, min: 1, max: 100 } },
-    freePlatform: { enabled: { type: Boolean, default: false }, minOrder: { type: Number, default: 0, min: 0 }, percent: { type: Number, default: 100, min: 1, max: 100 } },
+    freeDelivery: { enabled: { type: Boolean, default: false }, minOrder: { type: Number, default: 0, min: 0 }, percent: { type: Number, default: 100, min: 1, max: 100 }, maxKm: { type: Number, default: 0, min: 0 } },
+    freePlatform: { enabled: { type: Boolean, default: false }, minOrder: { type: Number, default: 0, min: 0 }, percent: { type: Number, default: 100, min: 1, max: 100 }, maxKm: { type: Number, default: 0, min: 0 } },
     updatedByName: String,
     updatedAt: Date,
   },
@@ -258,7 +258,7 @@ koyambeduSettingsSchema.statics.getOrderMinimum = async function() {
 koyambeduSettingsSchema.statics.getOffers = async function() {
   const doc = await this.findOne({ key: 'global' }).select('offers').lean();
   const o = doc?.offers || {};
-  const blk = (b) => ({ enabled: !!b?.enabled, minOrder: b?.minOrder || 0, percent: b?.percent || 100 });
+  const blk = (b) => ({ enabled: !!b?.enabled, minOrder: b?.minOrder || 0, percent: b?.percent || 100, maxKm: b?.maxKm || 0 });
   return { lowWeightMinOrder: o.lowWeightMinOrder || 0, freeDelivery: blk(o.freeDelivery), freePlatform: blk(o.freePlatform), updatedByName: o.updatedByName || null, updatedAt: o.updatedAt || null };
 };
 

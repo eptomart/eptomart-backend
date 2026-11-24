@@ -89,3 +89,13 @@ test('OF-05 admin saves offers with validation', async () => {
   const neg = fakeRes(); await dev.updateOffers({ user: { name: 'SA' }, body: { lowWeightMinOrder: -1 } }, neg);
   assert.equal(neg.statusCode, 400);
 });
+
+test('OF-06 offer limited to maxKm of nearest hub', () => {
+  const cfg = { freeDelivery: { enabled: true, minOrder: 0, percent: 100, maxKm: 25 } };
+  assert.equal(offerStatuses(cfg, 100, 24.9).length, 1);
+  assert.equal(offerStatuses(cfg, 100, 25).length, 1);
+  assert.equal(offerStatuses(cfg, 100, 25.1).length, 0);
+  assert.equal(offerStatuses({ freeDelivery: { enabled: true, minOrder: 0, maxKm: 0 } }, 100, 400).length, 1);
+  assert.throws(() => resolveOffers({}, cfg, 100, ['delivery'], 30), e => /not available/.test(e.message));
+  assert.deepEqual(resolveOffers({}, cfg, 100, ['delivery'], 10).applied, ['delivery']);
+});

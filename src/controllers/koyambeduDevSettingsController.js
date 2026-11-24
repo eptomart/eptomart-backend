@@ -557,6 +557,7 @@ const updateOffers = async (req, res) => {
       const x = b[k]; if (!x) continue;
       if (x.enabled !== undefined) u[`offers.${k}.enabled`] = !!x.enabled;
       if (x.minOrder !== undefined) { const n = money(x.minOrder); if (n === null) return res.status(400).json({ success: false, message: `${k} minimum must be 0 or more` }); u[`offers.${k}.minOrder`] = n; }
+      if (x.maxKm !== undefined) { const n = Number(x.maxKm); if (!(n >= 0 && n <= 500)) return res.status(400).json({ success: false, message: `${k} distance must be 0–500 km` }); u[`offers.${k}.maxKm`] = n; }
       if (x.percent !== undefined) { const n = Number(x.percent); if (!(n >= 1 && n <= 100)) return res.status(400).json({ success: false, message: `${k} percent must be 1–100` }); u[`offers.${k}.percent`] = n; }
     }
     await KoyambeduSettings.findOneAndUpdate({ key: 'global' }, u, { upsert: true, new: true, setDefaultsOnInsert: true });

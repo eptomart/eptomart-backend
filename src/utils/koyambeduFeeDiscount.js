@@ -42,17 +42,19 @@ const OFFER_DEFS = [
   { key: 'delivery', cfgKey: 'freeDelivery', title: 'Free delivery' },
   { key: 'platform', cfgKey: 'freePlatform', title: 'Free platform fee' },
 ];
-function offerStatuses(cfg, subtotal) {
+// distanceKm (nearest Eptomart hub): an offer with maxKm > 0 is NOT offered beyond that distance (0 = anywhere).
+function offerStatuses(cfg, subtotal, distanceKm) {
   const st = Number(subtotal) || 0;
-  return OFFER_DEFS.filter(d => cfg?.[d.cfgKey]?.enabled).map(d => {
+  const inRange = (c) => !(Number(c.maxKm) > 0) || distanceKm == null || Number(distanceKm) <= Number(c.maxKm);
+  return OFFER_DEFS.filter(d => cfg?.[d.cfgKey]?.enabled && inRange(cfg[d.cfgKey])).map(d => {
     const c = cfg[d.cfgKey], minOrder = Math.max(0, Number(c.minOrder) || 0), percent = clampPct(c.percent ?? 100) || 100;
     return { key: d.key, title: d.title, minOrder, percent, eligible: st >= minOrder, shortBy: Math.max(0, Math.ceil(minOrder - st)) };
   });
 }
 /** Merge global/customer waiver with the offers the customer picked (higher % wins). Throws {message} if a picked offer is not available. */
-function resolveOffers(waiver, cfg, subtotal, picked) {
+function resolveOffers(waiver, cfg, subtotal, picked, distanceKm) {
   const keys = [...new Set((Array.isArray(picked) ? picked : []).filter(k => OFFER_DEFS.some(d => d.key === k)))];
-  const st = offerStatuses(cfg, subtotal);
+  const st = offerStatuses(cfg, subtotal, distanceKm);
   const out = { ...waiver };
   for (const k of keys) {
     const o = st.find(x => x.key === k);

@@ -3121,6 +3121,12 @@ const getOrdersForPrinting = async (req, res) => {
       KoyambeduOrder.countDocuments(filter),
     ]);
 
+    // Tamil product names for the printed slip (English + Tamil side by side)
+    const prodIds = [...new Set(orders.flatMap(o => (o.itemsOrdered?.length ? o.itemsOrdered : (o.items || [])).map(it => it.product && String(it.product)).filter(Boolean)))];
+    const tamilById = prodIds.length
+      ? Object.fromEntries((await KoyambeduProduct.find({ _id: { $in: prodIds } }).select('nameTamil').lean()).map(p => [String(p._id), p.nameTamil || '']))
+      : {};
+
     const slips = orders.map(o => {
       const sourceItems = o.itemsOrdered?.length ? o.itemsOrdered : (o.items || []);
       return {
@@ -3152,6 +3158,7 @@ const getOrdersForPrinting = async (req, res) => {
           .filter(it => it.itemStatus !== 'declined')
           .map(it => ({
             name: it.name,
+            nameTamil: tamilById[String(it.product)] || '',
             unit: it.unit || it.unitLabel || '',
             qty: it.confirmedQty ?? it.orderedQty ?? it.quantity ?? 0,
             gradeName: it.gradeName || null,

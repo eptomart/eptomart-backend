@@ -6529,7 +6529,9 @@ const getOrderInvoice = async (req, res) => {
   const fmtAmt = n => `INR ${r2(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmtDate = d => new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 
-  const doc = new PDFDocument({ size: 'A4', margin: 45, info: { Title: `Invoice ${order.orderId}`, Author: 'Eptomart' } });
+  // bottom margin 0: PDFKit must not auto-add a page for text placed near the foot (that caused
+  // one-line-per-page output); long bills are paged manually with newPage() below.
+  const doc = new PDFDocument({ size: 'A4', margins: { top: 45, left: 45, right: 45, bottom: 0 }, info: { Title: `Invoice ${order.orderId}`, Author: 'Eptomart' } });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="Invoice-${order.orderId}.pdf"`);
   doc.pipe(res);
@@ -6600,17 +6602,41 @@ const getOrderInvoice = async (req, res) => {
   // ── ITEMS TABLE HEADER ────────────────────────────────────
   const tHdr = secTop + 8;
   const ROW_H = 18;
-  doc.rect(L, tHdr, W, ROW_H).fill('#065f46');
-  doc.fontSize(8).font('Helvetica-Bold').fillColor('#ffffff');
-  doc.text('S.No', C.sno, tHdr+5, { width: CW.sno, align: 'center' });
-  doc.text('Description / Grade', C.desc, tHdr+5, { width: CW.desc });
-  doc.text('Qty', C.qty, tHdr+5, { width: CW.qty, align: 'right' });
-  doc.text('Unit', C.unit, tHdr+5, { width: CW.unit, align: 'center' });
-  doc.text('Rate', C.rate, tHdr+5, { width: CW.rate, align: 'right' });
-  doc.text('Amount', C.amt, tHdr+5, { width: CW.amt, align: 'right' });
+  const PAGE_BOTTOM = 770; // content stops here; footer lives below
+  const drawItemsHeader = (y) => {
+    doc.rect(L, y, W, ROW_H).fill('#065f46');
+    doc.fontSize(8).font('Helvetica-Bold').fillColor('#ffffff');
+    doc.text('S.No', C.sno, y+5, { width: CW.sno, align: 'center' });
+    doc.text('Description / Grade', C.desc, y+5, { width: CW.desc });
+    doc.text('Qty', C.qty, y+5, { width: CW.qty, align: 'right' });
+    doc.text('Unit', C.unit, y+5, { width: CW.unit, align: 'center' });
+    doc.text('Rate', C.rate, y+5, { width: CW.rate, align: 'right' });
+    doc.text('Amount', C.amt, y+5, { width: CW.amt, align: 'right' });
+  };
+  drawItemsHeader(tHdr);
 
   // ── ITEMS ROWS ────────────────────────────────────────────
   let rowY = tHdr + ROW_H;
+  let tableTop = tHdr;
+  const drawFooter = () => {
+    const footerY = 795;
+    doc.moveTo(L, footerY - 8).lineTo(R, footerY - 8).strokeColor('#e5e7eb').lineWidth(0.5).stroke();
+    doc.fontSize(7.5).font('Helvetica').fillColor('#9ca3af')
+      .text('Fresh vegetables and fruits are exempt from GST under Indian GST law (Chapter 7 & 8, Notification 2/2017-CT(Rate)).',
+        L, footerY, { width: W, align: 'center', lineBreak: false })
+      .text('This is a computer-generated document and does not require a signature. | eptomart.com',
+        L, footerY + 11, { width: W, align: 'center', lineBreak: false });
+  };
+  // Start a new page; withHeader repeats the items-table header (for rows that continue the table).
+  const newPage = (withHeader) => {
+    if (withHeader) doc.rect(L, tableTop, W, rowY - tableTop).stroke('#e5e7eb').lineWidth(0.5);
+    drawFooter();
+    doc.addPage();
+    rowY = 45;
+    doc.fontSize(8).font('Helvetica-Bold').fillColor('#6b7280').text(`Invoice ${order.orderId} (continued)`, L, rowY, { lineBreak: false });
+    rowY += 14;
+    if (withHeader) { tableTop = rowY; drawItemsHeader(rowY); rowY += ROW_H; }
+  };
   let subtotal = 0;
   const billedItems   = [];
   const declinedItems = [];
@@ -6628,6 +6654,7 @@ const getOrderInvoice = async (req, res) => {
   billedItems.forEach((item, idx) => {
     const lineAmt = r2(item.price * item.billQty);
     const rH = item.gradeKey ? 26 : ROW_H;
+    if (rowY + rH > PAGE_BOTTOM) newPage(true);
     const fill = idx % 2 === 0 ? '#f9fafb' : '#ffffff';
     doc.rect(L, rowY, W, rH).fill(fill);
     const yMid = rowY + (item.gradeKey ? 5 : 5);
@@ -6650,11 +6677,12 @@ const getOrderInvoice = async (req, res) => {
   });
 
   // Bottom border of items table
-  doc.rect(L, tHdr, W, rowY - tHdr).stroke('#e5e7eb').lineWidth(0.5);
+  doc.rect(L, tableTop, W, rowY - tableTop).stroke('#e5e7eb').lineWidth(0.5);
 
   // ── DECLINED ITEMS (if any, after approval) ───────────────
   if (declinedItems.length > 0) {
     rowY += 10;
+    if (rowY + 12 + ROW_H * 2 > PAGE_BOTTOM) newPage(false);
     doc.fontSize(8).font('Helvetica-Bold').fillColor('#dc2626')
       .text('ITEMS DECLINED / NOT DELIVERED', L, rowY);
     rowY += 12;
@@ -6667,7 +6695,12 @@ const getOrderInvoice = async (req, res) => {
     doc.text('Rate', C.rate, rowY+5, { width: CW.rate, align: 'right' });
     doc.text('Refund', C.amt, rowY+5, { width: CW.amt, align: 'right' });
     rowY += ROW_H;
+    let declTop = rowY - ROW_H - 0;
     declinedItems.forEach((item, idx) => {
+      if (rowY + ROW_H > PAGE_BOTTOM) {
+        doc.rect(L, declTop, W, rowY - declTop).stroke('#fca5a5').lineWidth(0.5);
+        newPage(false); declTop = rowY;
+      }
       const decQty = r2(item.declinedQty || item.orderedQty || item.quantity || 0);
       doc.rect(L, rowY, W, ROW_H).fill(idx % 2 === 0 ? '#fff5f5' : '#ffffff');
       doc.fontSize(8).font('Helvetica').fillColor('#374151')
@@ -6681,11 +6714,12 @@ const getOrderInvoice = async (req, res) => {
         .text(fmtAmt(r2(item.price * decQty)), C.amt, rowY+5, { width: CW.amt, align: 'right' });
       rowY += ROW_H;
     });
-    doc.rect(L, rowY - declinedItems.length * ROW_H - ROW_H, W, declinedItems.length * ROW_H + ROW_H).stroke('#fca5a5').lineWidth(0.5);
+    doc.rect(L, declTop, W, rowY - declTop).stroke('#fca5a5').lineWidth(0.5);
   }
 
   // ── TOTALS SECTION ────────────────────────────────────────
   rowY += 16;
+  if (rowY + 260 > PAGE_BOTTOM) newPage(false); // keep the whole price summary together
   const pricing = order.pricing || {};
   const calc    = order.calculatedPricing || {};
   const hasCalc = !!(calc.lastCalculatedAt || calc.finalPayableAmount);
@@ -6787,13 +6821,7 @@ const getOrderInvoice = async (req, res) => {
     .text(`  PAID via ${(order.paymentMethod || 'Online').toUpperCase()}`, L + 85, rowY);
 
   // ── FOOTER ───────────────────────────────────────────────
-  const footerY = 795;
-  doc.moveTo(L, footerY - 8).lineTo(R, footerY - 8).strokeColor('#e5e7eb').lineWidth(0.5).stroke();
-  doc.fontSize(7.5).font('Helvetica').fillColor('#9ca3af')
-    .text('Fresh vegetables and fruits are exempt from GST under Indian GST law (Chapter 7 & 8, Notification 2/2017-CT(Rate)).',
-      L, footerY, { width: W, align: 'center' })
-    .text('This is a computer-generated document and does not require a signature. | eptomart.com',
-      L, footerY + 11, { width: W, align: 'center' });
+  drawFooter();
 
   doc.end();
 };
@@ -6899,7 +6927,7 @@ const adminGenerateQuotationPDF = async (req, res) => {
     : 'All Products';
   const priceModeLabel = priceMode === 'highest' ? 'Highest Price (small-quantity rate)' : 'Lowest Price (bulk rate)';
 
-  const doc = new PDFDocument({ size: 'A4', margin: 45, info: { Title: 'Koyambedu Daily — Price Quotation', Author: 'Eptomart' } });
+  const doc = new PDFDocument({ size: 'A4', margins: { top: 45, left: 45, right: 45, bottom: 0 }, info: { Title: 'Koyambedu Daily — Price Quotation', Author: 'Eptomart' } });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="Koyambedu-Quotation-${fileStamp}.pdf"`);
   doc.pipe(res);
